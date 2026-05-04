@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Blue flame">
+  <defs>
+    <linearGradient id="outerFlame" x1="18" y1="10" x2="48" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff7d6" />
+      <stop offset="0.35" stop-color="#ffb02e" />
+      <stop offset="0.7" stop-color="#ff3b1f" />
+      <stop offset="1" stop-color="#9b001b" />
+    </linearGradient>
+    <linearGradient id="innerFlame" x1="27" y1="31" x2="39" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0e8ff" />
+      <stop offset="0.28" stop-color="#9fe7ff" />
+      <stop offset="0.62" stop-color="#6b4dff" />
+      <stop offset="1" stop-color="#28006f" />
+    </linearGradient>
+  </defs>
+
+  <path
+    d="M33 4c4 10-4 16-4 24 0-5-3-9-7-12 1 11-9 15-9 29 0 10 8 17 19 17s19-7 19-18c0-14-12-21-18-40Z"
+    fill="url(#outerFlame)"
+  >
+    <animate
+      attributeName="d"
+      values="
+        M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z;
+        M30 4C35 14 27 20 29 28C28 23 25 19 20 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 36 23 30 4Z;
+        M36 4C39 14 31 20 29 28C30 23 27 19 24 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 42 23 36 4Z;
+        M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z"
+      dur="1.8s"
+      repeatCount="indefinite"
+    />
+  </path>
+  <path
+    d="M32 62C23 62 17 56 17 48C17 39 24 34 28 24C29 33 34 35 34 40C38 36 37 29 34 22C44 32 48 39 48 49C48 57 42 62 32 62Z"
+    fill="#17002f"
+    opacity="0.46"
+  >
+    <animate
+      attributeName="d"
+      values="
+        M32 62C23 62 17 56 17 48C17 39 24 34 28 24C29 33 34 35 34 40C38 36 37 29 34 22C44 32 48 39 48 49C48 57 42 62 32 62Z;
+        M32 62C23 62 17 56 17 48C17 39 22 34 26 24C27 33 32 35 34 40C36 36 35 29 31 22C41 32 48 39 48 49C48 57 42 62 32 62Z;
+        M32 62C23 62 17 56 17 48C17 39 26 34 30 24C31 33 36 35 34 40C40 36 39 29 37 22C47 32 48 39 48 49C48 57 42 62 32 62Z;
+        M32 62C23 62 17 56 17 48C17 39 24 34 28 24C29 33 34 35 34 40C38 36 37 29 34 22C44 32 48 39 48 49C48 57 42 62 32 62Z"
+      dur="1.45s"
+      repeatCount="indefinite"
+    />
+  </path>
+  <path
+    d="M32 62C27 62 24 58 24 53C24 48 29 45 30 39C31 44 35 47 35 52C37 48 37 44 35 39C40 44 42 49 42 54C42 59 38 62 32 62Z"
+    fill="url(#innerFlame)"
+  >
+    <animate
+      attributeName="d"
+      values="
+        M32 62C27 62 24 58 24 53C24 48 29 45 30 39C31 44 35 47 35 52C37 48 37 44 35 39C40 44 42 49 42 54C42 59 38 62 32 62Z;
+        M32 62C27 62 24 58 24 53C24 48 28 45 29 39C30 44 34 47 35 52C36 48 36 44 33 39C39 44 42 49 42 54C42 59 38 62 32 62Z;
+        M32 62C27 62 24 58 24 53C24 48 30 45 31 39C32 44 36 47 35 52C38 48 38 44 37 39C41 44 42 49 42 54C42 59 38 62 32 62Z;
+        M32 62C27 62 24 58 24 53C24 48 29 45 30 39C31 44 35 47 35 52C37 48 37 44 35 39C40 44 42 49 42 54C42 59 38 62 32 62Z"
+      dur="1.25s"
+      repeatCount="indefinite"
+    />
+  </path>
+</svg>

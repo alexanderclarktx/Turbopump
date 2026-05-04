@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Turbopump</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="settings-collapsed">
+    <main>
+      <aside class="sidebar" id="settingsPane">
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <button
+            id="settingsToggle"
+            class="settings-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-label="Collapse settings"
+            title="Collapse settings"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m15 6-6 6 6 6" />
+            </svg>
+          </button>
+          <!-- <span class="settings-collapsed-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z" />
+              <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.66V21a2 2 0 1 1-4 0v-.09a1.8 1.8 0 0 0-1.1-1.66 1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.66-1.1H2.85a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.8a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.8 1.8 0 0 0 1.98.36 1.8 1.8 0 0 0 1.1-1.66V2.6a2 2 0 1 1 4 0v.09a1.8 1.8 0 0 0 1.1 1.66 1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.66 1.1h.09a2 2 0 1 1 0 4h-.09A1.8 1.8 0 0 0 19.4 15Z" />
+            </svg>
+          </span> -->
+        </div>
+
+        <div class="settings-content">
+          <section>
+            <h2>Linear</h2>
+            <span id="linearState" class="pill">Linear disconnected</span>
+            <form id="linearKeyForm" class="linear-key-form">
+              <input id="linearApiKey" type="password" placeholder="Linear API key" autocomplete="off" />
+              <button type="submit">Connect Linear</button>
+            </form>
+          </section>
+
+          <section>
+            <h2>Repo</h2>
+            <label>
+              url
+              <input id="repoUrl" placeholder="git@github.com:my/repo.git" />
+            </label>
+          </section>
+
+          <section class="agent-settings">
+            <h2>Agents</h2>
+            <label class="agent-instructions-label">
+              <span class="setting-label-row">
+                <span>developer instructions</span>
+                <button
+                  id="resetAgentDeveloperInstructions"
+                  class="icon-button"
+                  type="button"
+                  aria-label="Reset developer instructions"
+                  title="Reset developer instructions"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 6v5h-5" />
+                    <path d="M4 18v-5h5" />
+                    <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
+                    <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
+                  </svg>
+                </button>
+              </span>
+              <textarea id="agentDeveloperInstructions" spellcheck="false"></textarea>
+            </label>
+          </section>
+
+          <section class="development-settings" hidden>
+            <h2>Development</h2>
+            <label>
+              serve script
+              <input id="serveCommand" placeholder="bun run dev" />
+            </label>
+            <label>
+              environment
+              <textarea id="envEditor" spellcheck="false"></textarea>
+            </label>
+          </section>
+        </div>
+      </aside>
+
+      <aside class="ticket-drawer">
+        <div class="ticket-drawer-header">
+          <div>
+            <h2>Linear Tickets</h2>
+            <p id="ticketState">Connect Linear to load assigned tickets.</p>
+          </div>
+          <button id="refreshLinearTickets" class="icon-button" type="button" aria-label="Refresh tickets" title="Refresh tickets">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 6v5h-5" />
+              <path d="M4 18v-5h5" />
+              <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
+              <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
+            </svg>
+          </button>
+        </div>
+        <div class="ticket-grid" id="ticketGrid"></div>
+      </aside>
+
+      <section class="workspace">
+        <article class="flow-pane empty" id="flowPane">
+          <div class="flow-content">
+            <div class="linear-panel">
+              <div class="linear-detail"></div>
+            </div>
+            <div
+              class="flow-resizer"
+              role="separator"
+              aria-label="Resize Linear and agent panes"
+              aria-orientation="horizontal"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              tabindex="0"
+            ></div>
+            <div class="agent-panel terminal-panel">
+              <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
+              <div class="terminal" role="log" aria-live="polite"></div>
+              <form class="message-form">
+                <button class="agent-interrupt icon-button" type="button" aria-label="Pause agent" title="Pause agent" disabled>
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M9 6v12" />
+                    <path d="M15 6v12" />
+                  </svg>
+                </button>
+                <textarea class="message-input" placeholder="Prompt the agent" rows="1"></textarea>
+                <div class="agent-context" aria-label="Current flow context" hidden>
+                  <span class="agent-context-window"></span>
+                  <span class="agent-context-model"></span>
+                  <span class="agent-context-branch"></span>
+                </div>
+                <div class="slash-menu" role="listbox" hidden></div>
+              </form>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+    <button
+      id="themeToggle"
+      class="icon-button theme-toggle"
+      type="button"
+      aria-pressed="false"
+      aria-label="Switch to dark mode"
+      title="Switch to dark mode"
+    >
+      <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2" />
+        <path d="M12 20v2" />
+        <path d="m4.93 4.93 1.41 1.41" />
+        <path d="m17.66 17.66 1.41 1.41" />
+        <path d="M2 12h2" />
+        <path d="M20 12h2" />
+        <path d="m6.34 17.66-1.41 1.41" />
+        <path d="m19.07 4.93-1.41 1.41" />
+      </svg>
+      <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20.1 14.3A8 8 0 0 1 9.7 3.9 8.5 8.5 0 1 0 20.1 14.3Z" />
+      </svg>
+    </button>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

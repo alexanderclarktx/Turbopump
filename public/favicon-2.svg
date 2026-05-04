@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Blue-black orb surrounded by flame">
+  <defs>
+    <radialGradient id="orbSurface" cx="28" cy="45" r="18" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#66e8ff" />
+      <stop offset="0.22" stop-color="#17489a" />
+      <stop offset="0.58" stop-color="#061838" />
+      <stop offset="0.86" stop-color="#010611" />
+      <stop offset="1" stop-color="#000105" />
+    </radialGradient>
+    <radialGradient id="orbHighlight" cx="28" cy="46" r="9" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d7fbff" stop-opacity="0.72" />
+      <stop offset="0.36" stop-color="#7ee9ff" stop-opacity="0.24" />
+      <stop offset="1" stop-color="#7ee9ff" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="orbRim" cx="32" cy="51" r="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0.62" stop-color="#081233" stop-opacity="0" />
+      <stop offset="0.84" stop-color="#020712" stop-opacity="0.65" />
+      <stop offset="1" stop-color="#000000" stop-opacity="0.9" />
+    </radialGradient>
+    <linearGradient id="outerFlame" x1="18" y1="5" x2="49" y2="61" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff0a8" />
+      <stop offset="0.22" stop-color="#ff9b22" />
+      <stop offset="0.5" stop-color="#ff351c" />
+      <stop offset="0.78" stop-color="#b00012" />
+      <stop offset="1" stop-color="#3a0008" />
+    </linearGradient>
+  </defs>
+
+  <path
+    d="M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z"
+    fill="url(#outerFlame)"
+  >
+    <animate
+      attributeName="d"
+      values="
+        M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z;
+        M30 4C35 14 27 20 29 28C28 23 25 19 20 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 36 23 30 4Z;
+        M36 4C39 14 31 20 29 28C30 23 27 19 24 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 42 23 36 4Z;
+        M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z"
+      dur="1.8s"
+      repeatCount="indefinite"
+    />
+  </path>
+  <path
+    d="M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z"
+    fill="#3a0008"
+    opacity="0.46"
+    transform="translate(32 62) scale(0.8 0.78) translate(-32 -62)"
+  >
+    <animate
+      attributeName="d"
+      values="
+        M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z;
+        M30 4C35 14 27 20 29 28C28 23 25 19 20 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 36 23 30 4Z;
+        M36 4C39 14 31 20 29 28C30 23 27 19 24 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 42 23 36 4Z;
+        M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z"
+      dur="1.8s"
+      repeatCount="indefinite"
+    />
+  </path>
+
+  <circle cx="32" cy="51" r="11" fill="url(#orbSurface)" />
+  <!-- <circle cx="32" cy="51" r="11" fill="url(#orbRim)" /> -->
+  <!-- <ellipse cx="28" cy="46" rx="4.7" ry="3.2" fill="url(#orbHighlight)" transform="rotate(-28 28 46)" /> -->
+  <path
+    d="M21 51C21 45 26 40 32 40C38 40 43 45 43 51C43 57 38 62 32 62C26 62 21 57 21 51Z"
+    fill="none"
+    stroke="#7df0ff"
+    stroke-opacity="0.22"
+    stroke-width="1.2"
+  />
+</svg>

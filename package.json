@@ -1,0 +1,18 @@
+{
+  "name": "turbopump",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "check": "bun build src/server.ts --target=bun --outfile=/tmp/turbopump-server.js",
+    "test": "bun test"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0"
+  }
+}
