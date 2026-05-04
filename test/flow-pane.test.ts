@@ -277,7 +277,8 @@ describe("Turbopump pane markup", () => {
   });
 
   test("uses the Linear ticket id as the default flow branch name", () => {
-    expect(server).toContain('const branch = `flow/${safeSlug(issueId)}`;');
+    expect(server).toContain('const branch = `turbo/${safeSlug(issueId)}`;');
+    expect(server).not.toContain('const branch = `flow/${safeSlug(issueId)}`;');
     expect(server).not.toContain('const branch = `flow/${safeSlug(issueId)}-${flowId.slice(0, 8)}`;');
   });
 

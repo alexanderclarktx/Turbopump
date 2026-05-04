@@ -589,7 +589,7 @@ function createCheckout(flowId: string, issueId: string) {
   ensureRepoCheckout(repoUrl);
   cpSync(repoCheckoutDir, target, { recursive: true, force: false, errorOnExist: true });
   const baseSha = runGit(["rev-parse", "HEAD"], target);
-  const branch = `flow/${safeSlug(issueId)}`;
+  const branch = `turbo/${safeSlug(issueId)}`;
   runGit(["checkout", "-b", branch], target);
   return { target, branch, baseSha };
 }
