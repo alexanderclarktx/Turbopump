@@ -175,6 +175,22 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("#refreshLinearTickets:hover,\n#resetAgentDeveloperInstructions:hover");
   });
 
+  test("refreshes cached Linear descriptions and comments from the ticket refresh button", () => {
+    expect(app).toContain("async function loadLinearTickets(options = {})");
+    expect(app).toContain("if (options.refreshDetails) state.linearDetails.clear();");
+    expect(app).toContain(
+      'els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));',
+    );
+    expect(app).toContain('const data = await api(`/api/linear/issues/${encodeURIComponent(identifier)}`);');
+    expect(server).toContain("comments(first: 50)");
+    expect(server).toContain("description");
+  });
+
+  test("renders Linear comments oldest to newest", () => {
+    expect(app).toContain("const comments = [...(issue.comments?.nodes || [])].sort(");
+    expect(app).toContain("new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()");
+  });
+
   test("uses higher contrast border tokens for subtle element outlines", () => {
     expect(css).toContain("--line: #c4ccd7;");
     expect(css).toContain("--line-strong: #9aa6b7;");
@@ -370,6 +386,19 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".ticket-flow-corner");
     expect(css).not.toContain(".ticket-card.in-flow {\n  border-color:");
     expect(css).not.toContain(".ticket-card.in-flow:hover");
+  });
+
+  test("grows the ticket favicon smoothly while the agent is in a turn", () => {
+    expect(app).toContain("function ticketAgentWorking(ticket)");
+    expect(app).toContain('flow.agentStatus === "running"');
+    expect(app).toContain('card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));');
+    expect(app).toContain("function updateTicketCardState(card)");
+    expect(app).toContain("renderTickets();\n    renderFlowPane();");
+    expect(css).toContain("width 180ms ease");
+    expect(css).toContain("height 180ms ease");
+    expect(css).toContain(".ticket-card.agent-turn-active .ticket-flow-mark");
+    expect(css).toContain("width: 25.2px;");
+    expect(css).toContain("height: 25.2px;");
   });
 
   test("shows last updated copy instead of assigned ticket count", () => {

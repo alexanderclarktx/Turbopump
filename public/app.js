@@ -513,7 +513,7 @@ function updateLinearState(linear) {
     : "Add a Linear API key in settings to load assigned tickets.";
 }
 
-async function loadLinearTickets() {
+async function loadLinearTickets(options = {}) {
   try {
     els.ticketState.textContent = "Loading assigned tickets.";
     const data = await api("/api/linear/issues");
@@ -521,6 +521,7 @@ async function loadLinearTickets() {
     state.linearViewerName = data.viewer?.name || state.linearViewerName;
     state.linearTickets = data.issues || [];
     state.linearTicketsLoaded = true;
+    if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
     els.ticketState.textContent = formatLastUpdated();
     els.linearState.textContent = `Linear connected: ${data.viewer.name}`;
@@ -564,7 +565,7 @@ function renderTickets() {
 
   if (els.ticketGrid.dataset.ticketSignature === signature) {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
-      card.classList.toggle("active", card.dataset.issue === state.selectedLinearIssueId);
+      updateTicketCardState(card);
     }
     return;
   }
@@ -748,15 +749,31 @@ async function moveTicketToLinearStatus(issueId, group) {
   }
 }
 
+function ticketAgentWorking(ticket) {
+  const flow = flowForTicket(ticket);
+  return Boolean(
+    repoUrlConfigured() &&
+      flow &&
+      (flow.agentStatus === "running" ||
+        (flow.id === state.selectedFlowId && (state.messageSubmitting || state.interruptSubmitting))),
+  );
+}
+
+function updateTicketCardState(card) {
+  const ticket = state.linearTickets.find((item) => item.identifier === card.dataset.issue);
+  card.classList.toggle("active", card.dataset.issue === state.selectedLinearIssueId);
+  card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+}
+
 function renderTicketCard(ticket) {
   const card = document.createElement("article");
   card.className = "ticket-card";
   card.classList.toggle("in-flow", Boolean(ticket.flowId));
-  card.classList.toggle("active", ticket.identifier === state.selectedLinearIssueId);
   card.tabIndex = 0;
   card.role = "button";
   card.draggable = true;
   card.dataset.issue = ticket.identifier;
+  updateTicketCardState(card);
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
   const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : "";
   card.innerHTML = `
@@ -901,7 +918,9 @@ function renderLinearDetail(context) {
     url: context.issueUrl,
   };
   const labels = issue.labels?.nodes || [];
-  const comments = issue.comments?.nodes || [];
+  const comments = [...(issue.comments?.nodes || [])].sort(
+    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+  );
   const meta = [
     issue.project?.name,
     issue.assignee?.name ? `Assignee: ${issue.assignee.name}` : "",
@@ -1492,7 +1511,7 @@ els.linearKeyForm.addEventListener("submit", async (event) => {
   }
 });
 
-els.refreshLinearTickets.addEventListener("click", loadLinearTickets);
+els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));
 
 els.flowPane.querySelector(".flow-resizer").addEventListener("pointerdown", startFlowSplitResize);
 els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) => {
@@ -1506,11 +1525,13 @@ els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async (
   const selected = selectedFlow();
   if (selected?.agentStatus === "running") {
     state.interruptSubmitting = true;
+    renderTickets();
     renderFlowPane();
     try {
       await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
     } finally {
       state.interruptSubmitting = false;
+      renderTickets();
       renderFlowPane();
     }
   }
@@ -1578,6 +1599,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   state.messageSubmitting = true;
   input.value = "";
   hideSlashMenu();
+  renderTickets();
   renderFlowPane();
   try {
     const flow = await ensureSelectedFlow();
@@ -1588,6 +1610,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     });
   } finally {
     state.messageSubmitting = false;
+    renderTickets();
     renderFlowPane();
   }
 });

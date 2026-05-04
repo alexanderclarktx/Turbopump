@@ -808,6 +808,14 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   width: 18px;
   height: 18px;
   pointer-events: none;
+  transition:
+    width 180ms ease,
+    height 180ms ease;
+}
+
+.ticket-card.agent-turn-active .ticket-flow-mark {
+  width: 25.2px;
+  height: 25.2px;
 }
 
 .ticket-flow-corner {
