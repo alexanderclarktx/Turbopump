@@ -25,6 +25,7 @@ type Flow = {
   linearStatus: string;
   checkoutPath: string;
   branchName: string;
+  prUrl: string;
   baseSha: string;
   agentStatus: string;
   agentModel: string;
@@ -99,9 +100,10 @@ const defaultAgentDeveloperInstructions = [
   "",
   "Flow stages are: planning -> working -> reviewing -> validating -> done.",
   "",
-  "Update your stage when appropriate by POSTing JSON to:",
-  "{stageApiUrl}",
-  'Example body: {"stage":"reviewing"}',
+  "Update flow metadata when appropriate by POSTing JSON to:",
+  "{flowMetaApiUrl}",
+  'Example body: {"stage":"reviewing","prUrl":"https://github.com/org/repo/pull/123"}',
+  'Each field in the body is optional.',
   "",
   "Flow ID: {flowId}",
   "Linear issue: {linearIssueId}",
@@ -143,6 +145,7 @@ db.exec(`
     linearStatus text not null default '',
     checkoutPath text not null,
     branchName text not null,
+    prUrl text not null default '',
     baseSha text not null default '',
     agentStatus text not null default 'idle',
     agentModel text not null default '',
@@ -169,6 +172,7 @@ tryMigration("alter table flows add column agentReasoningEffort text not null de
 tryMigration("alter table flows add column agentServiceTier text not null default ''");
 tryMigration("alter table flows add column agentContextTokensUsed integer not null default 0");
 tryMigration("alter table flows add column agentContextWindow integer not null default 0");
+tryMigration("alter table flows add column prUrl text not null default ''");
 tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWindow > 0 and agentContextTokensUsed > agentContextWindow");
 
 const clients = new Set<ServerWebSocket>();
@@ -321,6 +325,33 @@ function assertStage(stage: string): asserts stage is Stage {
 
 function normalizeStage(stage: string) {
   return stage.trim().toLowerCase().replaceAll("-", "_");
+}
+
+function normalizePrUrl(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === null) return "";
+  if (typeof value !== "string") throw new Error("prUrl must be a string.");
+  const prUrl = value.trim();
+  if (!prUrl) return "";
+  try {
+    const parsed = new URL(prUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Unsupported protocol.");
+  } catch {
+    throw new Error("prUrl must be an http(s) URL.");
+  }
+  return prUrl;
+}
+
+function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow> {
+  const fields: Partial<Flow> = {};
+  if ("stage" in body) {
+    if (typeof body.stage !== "string") throw new Error("stage must be a string.");
+    const stage = normalizeStage(body.stage);
+    assertStage(stage);
+    fields.stage = stage;
+  }
+  if ("prUrl" in body) fields.prUrl = normalizePrUrl(body.prUrl);
+  return fields;
 }
 
 function updateFlow(id: string, fields: Partial<Flow>) {
@@ -660,7 +691,9 @@ function agentTemplateContext(flow: Flow) {
     linearIssueId: flow.linearIssueId,
     title: flow.title,
     stage: flow.stage,
+    prUrl: flow.prUrl,
     checkoutPath: flow.checkoutPath,
+    flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/meta`,
     stageApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/stage`,
   };
 }
@@ -1641,12 +1674,21 @@ async function handleApi(request: Request, url: URL) {
       return json(getDiff(flow));
     }
 
-    if (parts[3] === "stage" && request.method === "POST") {
-      const body = await readJson<{ stage: string }>(request);
-      const stage = normalizeStage(body.stage);
-      assertStage(stage);
-      updateFlow(id, { stage });
-      insertLog(id, "flow", `Stage changed to ${stage}\n`);
+    if ((parts[3] === "meta" || parts[3] === "stage") && request.method === "POST") {
+      let fields: Partial<Flow>;
+      try {
+        fields = flowMetaUpdate(await readJson<Record<string, unknown>>(request));
+      } catch (error) {
+        return json({ error: String(error) }, { status: 400 });
+      }
+      if (Object.keys(fields).length === 0) {
+        return json({ error: "No supported flow metadata fields provided." }, { status: 400 });
+      }
+      updateFlow(id, fields);
+      if (fields.stage) insertLog(id, "flow", `Stage changed to ${fields.stage}\n`);
+      if (fields.prUrl !== undefined) {
+        insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
+      }
       return json({ ok: true, flow: getFlow(id) });
     }
 

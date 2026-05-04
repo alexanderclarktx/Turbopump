@@ -155,6 +155,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function getStoredSetting(key: string)");
     expect(server).toContain('const stored = getStoredSetting("agentDeveloperInstructions");');
     expect(server).toContain("if (stored !== null) return stored;");
+    expect(server).not.toContain("legacyAgentDeveloperInstructions");
     expect(server).toContain('setSetting("agentDeveloperInstructions", defaultAgentDeveloperInstructions);');
     expect(server).toContain('agents: {\n        developerInstructions: getAgentDeveloperInstructionsTemplate(),');
     expect(server).toContain("defaultDeveloperInstructions: defaultAgentDeveloperInstructions,");
@@ -163,7 +164,11 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain('setSetting("agentStartPrompt"');
     expect(server).not.toContain("buildAgentPrompt");
     expect(server).toContain("Flow stages are: planning -> working -> reviewing -> validating -> done.");
+    expect(server).toContain("flowMetaApiUrl");
+    expect(server).toContain('Example body: {"stage":"reviewing","prUrl":"https://github.com/org/repo/pull/123"}');
+    expect(server).toContain("Each field in the body is optional.");
     expect(server).toContain("stage: flow.stage,");
+    expect(server).toContain("prUrl: flow.prUrl,");
   });
 
   test("keeps refresh buttons visually quiet", () => {
@@ -513,7 +518,7 @@ describe("Turbopump pane markup", () => {
     expect(html).toContain('class="agent-context" aria-label="Current flow context" hidden');
     expect(html).toContain('class="agent-context-window"');
     expect(html).toContain('class="agent-context-model"');
-    expect(html).toContain('class="agent-context-branch"');
+    expect(html).toContain('<a class="agent-context-branch"></a>');
     expect(html).not.toContain('class="agent-context-phase"');
     expect(app).toContain("function agentModelLabel(flow)");
     expect(app).toContain("function agentContextWindowLabel(flow)");
@@ -525,7 +530,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function renderAgentContext(flow)");
     expect(app).toContain('context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);');
     expect(app).toContain('context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);');
-    expect(app).toContain('context.querySelector(".agent-context-branch").textContent = flow?.branchName || "";');
+    expect(app).toContain('const branch = context.querySelector(".agent-context-branch");');
+    expect(app).toContain('branch.textContent = flow?.branchName || "";');
+    expect(app).toContain("if (flow?.prUrl) {");
+    expect(app).toContain("branch.href = flow.prUrl;");
+    expect(app).toContain('branch.removeAttribute("href");');
     expect(app).not.toContain('context.querySelector(".agent-context-phase")');
     expect(app).toContain("const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : \"\";");
     expect(app).not.toContain("titleCase");
@@ -539,17 +548,23 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain('content: "branch ";');
     expect(css).not.toContain(".agent-context-phase");
     expect(css).not.toContain('content: "phase ";');
+    expect(css).toContain("--link: #2563eb;");
+    expect(css).toContain("--link: #60a5fa;");
+    expect(css).toContain(".agent-context a[href] {\n  color: var(--link);\n}");
+    expect(css).not.toContain(".agent-context a[href]:hover");
     expect(css).toContain("border-left: 1px solid var(--line-strong);");
     expect(server).toContain("agentModel text not null default ''");
     expect(server).toContain("agentReasoningEffort text not null default ''");
     expect(server).toContain("agentServiceTier text not null default ''");
     expect(server).toContain("agentContextTokensUsed integer not null default 0");
     expect(server).toContain("agentContextWindow integer not null default 0");
+    expect(server).toContain("prUrl text not null default ''");
     expect(server).toContain("tryMigration(\"alter table flows add column agentModel text not null default ''\");");
     expect(server).toContain("tryMigration(\"alter table flows add column agentReasoningEffort text not null default ''\");");
     expect(server).toContain("tryMigration(\"alter table flows add column agentServiceTier text not null default ''\");");
     expect(server).toContain("tryMigration(\"alter table flows add column agentContextTokensUsed integer not null default 0\");");
     expect(server).toContain("tryMigration(\"alter table flows add column agentContextWindow integer not null default 0\");");
+    expect(server).toContain("tryMigration(\"alter table flows add column prUrl text not null default ''\");");
     expect(server).toContain("tryMigration(\"update flows set agentContextTokensUsed = 0 where agentContextWindow > 0 and agentContextTokensUsed > agentContextWindow\");");
     expect(server).toContain("function codexThreadMetadata(payload:");
     expect(server).toContain("function codexTokenUsageMetadata(params: Record<string, unknown>): Partial<Flow>");
@@ -570,7 +585,17 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('insertLog(flowId, "agent:status", `could not read checkout branch: ${String(error)}`);');
     expect(server).toContain("...checkoutBranchUpdate(runtime.flowId),");
     expect(server).toContain('agentStatus: turn?.status === "failed" ? "failed" : "idle",');
-    expect(app).toContain('context.querySelector(".agent-context-branch").textContent = flow?.branchName || "";');
+    expect(app).toContain('branch.textContent = flow?.branchName || "";');
+  });
+
+  test("lets agents update flow metadata including PR URL without changing stage", () => {
+    expect(server).toContain('if ((parts[3] === "meta" || parts[3] === "stage") && request.method === "POST")');
+    expect(server).toContain("function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow>");
+    expect(server).toContain('if ("stage" in body) {');
+    expect(server).toContain('if ("prUrl" in body) fields.prUrl = normalizePrUrl(body.prUrl);');
+    expect(server).toContain('return json({ error: "No supported flow metadata fields provided." }, { status: 400 });');
+    expect(server).toContain('if (fields.stage) insertLog(id, "flow", `Stage changed to ${fields.stage}\\n`);');
+    expect(server).toContain('fields.prUrl ? `PR set to ${fields.prUrl}\\n` : "PR cleared\\n"');
   });
 
   test("interrupts active agent turns instead of killing the app server", () => {

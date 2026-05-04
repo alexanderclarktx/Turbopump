@@ -454,10 +454,22 @@ function agentContextWindowLabel(flow) {
 
 function renderAgentContext(flow) {
   const context = els.flowPane.querySelector(".agent-context");
+  const branch = context.querySelector(".agent-context-branch");
   context.hidden = !flow;
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
   context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
-  context.querySelector(".agent-context-branch").textContent = flow?.branchName || "";
+  branch.textContent = flow?.branchName || "";
+  if (flow?.prUrl) {
+    branch.href = flow.prUrl;
+    branch.target = "_blank";
+    branch.rel = "noreferrer";
+    branch.title = flow.prUrl;
+  } else {
+    branch.removeAttribute("href");
+    branch.removeAttribute("target");
+    branch.removeAttribute("rel");
+    branch.removeAttribute("title");
+  }
 }
 
 function appendLogEntry(log) {

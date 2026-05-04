@@ -6,6 +6,7 @@
   --muted: #646b75;
   --line: #c4ccd7;
   --line-strong: #9aa6b7;
+  --link: #2563eb;
   --accent: #0f766e;
   --accent-ink: #ffffff;
   --danger: #b42318;
@@ -22,6 +23,7 @@ body.theme-dark {
   --muted: #9aa3af;
   --line: #3d4754;
   --line-strong: #5a6675;
+  --link: #60a5fa;
   --accent: #2dd4bf;
   --accent-ink: #06201d;
   --danger: #f87171;
@@ -1648,12 +1650,22 @@ body.flow-resizing {
   user-select: none;
 }
 
-.agent-context span {
+.agent-context span,
+.agent-context a {
   min-width: 0;
   max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-context a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.agent-context a[href] {
+  color: var(--link);
 }
 
 .agent-context-model,
