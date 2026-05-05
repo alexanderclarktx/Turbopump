@@ -1127,6 +1127,32 @@ function parseTraceGroup(log) {
   }
 }
 
+function isRuntimeDisappearedLog(log) {
+  return log.source === "agent:error" && String(log.message || "").trim() === "agent runtime disappeared while status was running";
+}
+
+function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
+  const existingKeys = new Set(existingRanges.map((range) => range.key));
+  const ranges = [];
+  let latestUserLog = null;
+  for (const log of logs) {
+    if (log.source === "user") {
+      latestUserLog = log;
+      continue;
+    }
+    if (!latestUserLog || !isRuntimeDisappearedLog(log)) continue;
+    const afterId = Number(latestUserLog.id);
+    const beforeId = Number(log.id);
+    const key = `${afterId}:${beforeId}`;
+    if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
+    const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+    if (!count) continue;
+    ranges.push({ afterId, beforeId, count, key });
+    existingKeys.add(key);
+  }
+  return ranges;
+}
+
 function traceRangeForLog(log, ranges) {
   return ranges.find((range) => log.id > range.afterId && log.id < range.beforeId) || null;
 }
@@ -1166,10 +1192,14 @@ function isHiddenTerminalLog(log) {
 
 function terminalGroups(logs) {
   const groups = [];
-  const traceRanges = logs.map((log) => parseTraceGroup(log)).filter(Boolean);
+  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
+  const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
+  const traceRanges = [
+    ...persistedTraceRanges,
+    ...syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges),
+  ];
   const traceGroups = new Map();
-  for (const rawLog of logs) {
-    const log = normalizeTerminalLog(rawLog);
+  for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
     if (isHiddenTerminalLog(log)) continue;
     const traceRange = traceRangeForLog(log, traceRanges);
@@ -1218,7 +1248,7 @@ function appendTerminalBlock(fragment, group) {
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
 
-  if (group.source === "agent:tool") {
+  if (group.source === "agent:tool" || group.source === "agent:tool-result") {
     block.classList.add("terminal-entry-command");
     const row = document.createElement("div");
     row.className = "terminal-command-line";

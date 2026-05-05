@@ -392,7 +392,8 @@ function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   const statusAge = flowStatusAgeMs(flow, nowMs);
   if (!runtime) {
     if (statusAge < agentRuntimeStartGraceMs) return flow;
-    insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
+    const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
+    createTurnTraceGroup(flow.id, errorLogId);
     updateFlow(flow.id, { agentStatus: "failed" });
     return getFlow(flow.id) ?? flow;
   }
@@ -897,6 +898,26 @@ function isAgentMessageSource(source: string) {
   return source === "agent:message" || source === "agent";
 }
 
+function createTurnTraceGroup(flowId: string, beforeId: number) {
+  const prompt = latestUserLogStmt.get(flowId) as { id: number } | null;
+  if (!prompt) return;
+  if (beforeId <= prompt.id) return;
+
+  const logs = (logsAfterStmt.all(flowId, prompt.id) as LogRow[]).filter((log) => log.id < beforeId);
+  const traceCount = logs.length;
+  if (!traceCount) return;
+
+  insertLog(
+    flowId,
+    "agent:trace-group",
+    JSON.stringify({
+      afterId: prompt.id,
+      beforeId,
+      count: traceCount,
+    }),
+  );
+}
+
 function createCompletedTurnTraceGroup(flowId: string) {
   const prompt = latestUserLogStmt.get(flowId) as { id: number } | null;
   if (!prompt) return;
@@ -919,18 +940,7 @@ function createCompletedTurnTraceGroup(flowId: string) {
   if (finalMessageStartIndex <= 0) return;
 
   const beforeId = logs[finalMessageStartIndex].id;
-  const traceCount = logs.filter((log) => log.id > prompt.id && log.id < beforeId).length;
-  if (!traceCount) return;
-
-  insertLog(
-    flowId,
-    "agent:trace-group",
-    JSON.stringify({
-      afterId: prompt.id,
-      beforeId,
-      count: traceCount,
-    }),
-  );
+  createTurnTraceGroup(flowId, beforeId);
 }
 
 function checkoutBranchUpdate(flowId: string): Partial<Flow> {

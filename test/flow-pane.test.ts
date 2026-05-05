@@ -709,16 +709,19 @@ describe("Turbopump pane markup", () => {
   });
 
   test("renders command execution logs as a single shell prompt line", () => {
-    expect(app).toContain('if (group.source === "agent:tool")');
+    expect(app).toContain('if (group.source === "agent:tool" || group.source === "agent:tool-result")');
     expect(app).toContain('block.classList.add("terminal-entry-command");');
     expect(app).toContain('row.className = "terminal-command-line";');
     expect(app).toContain("marker.textContent = meta.marker;");
     expect(app).toContain("row.replaceChildren(marker, body);");
     expect(app).toContain("block.replaceChildren(row);");
     expect(app).toContain("renderInlineMarkdown(formatTerminalMessage(group.source, group.message)");
+    expect(app).not.toContain('time.className = "terminal-entry-time";\n    block.classList.add("terminal-entry-command");');
     expect(app).not.toContain('renderInlineMarkdown(`$ ${formatTerminalMessage(group.source, group.message)}`');
     expect(css).toContain(".terminal-command-line {\n  display: flex;");
+    expect(css).toContain(".terminal-command-line {\n  display: flex;\n  align-items: baseline;\n  gap: 7px;\n  min-width: 0;\n  font-size: 10px;");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;");
+    expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;\n  font-size: 10px;");
   });
 
   test("drains paginated logs on refresh", () => {
@@ -749,12 +752,18 @@ describe("Turbopump pane markup", () => {
 
   test("collapses completed-turn traces between the prompt and final message", () => {
     expect(server).toContain('insertLog(\n    flowId,\n    "agent:trace-group",');
+    expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string)");
     expect(server).toContain("const prompt = latestUserLogStmt.get(flowId)");
     expect(server).toContain("const beforeId = logs[finalMessageStartIndex].id;");
     expect(server).toContain("createCompletedTurnTraceGroup(runtime.flowId);");
+    expect(server).toContain('const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
+    expect(server).toContain("createTurnTraceGroup(flow.id, errorLogId);");
     expect(app).toContain('"agent:trace-group": { label: "trace"');
     expect(app).toContain("function parseTraceGroup(log)");
+    expect(app).toContain("function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges)");
+    expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
+    expect(app).toContain("...syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
     expect(app).toContain('message: "",');
     expect(app).not.toContain('event${traceRange.count === 1 ? "" : "s"}');
