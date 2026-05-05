@@ -268,6 +268,15 @@ function hideSlashMenu() {
   menu.replaceChildren();
 }
 
+function resizeMessageInput() {
+  const input = els.flowPane.querySelector(".message-input");
+  const terminal = els.flowPane.querySelector(".terminal");
+  const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
+  input.style.height = "auto";
+  input.style.height = `${input.scrollHeight}px`;
+  if (shouldFollowLatest) scrollTerminalToLatest(terminal);
+}
+
 function renderSlashMenu() {
   const input = els.flowPane.querySelector(".message-input");
   const menu = els.flowPane.querySelector(".slash-menu");
@@ -308,6 +317,7 @@ function selectSlashCommand(index = state.slashCommandIndex) {
   const command = matches[index];
   if (!command) return false;
   input.value = command.name;
+  resizeMessageInput();
   if (slashCommandHasExpansions(command.name)) {
     state.slashCommandIndex = 0;
     renderSlashMenu();
@@ -1156,6 +1166,7 @@ function renderFlowPane() {
   agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;
   els.flowPane.querySelector(".message-input").disabled =
     state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
+  resizeMessageInput();
 
   renderLinearDetail({ issueId, title, issueUrl, ticket, flow });
   applyFlowSplitSize();
@@ -2117,6 +2128,7 @@ els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async (
 
 els.flowPane.querySelector(".message-input").addEventListener("input", () => {
   state.slashCommandIndex = 0;
+  resizeMessageInput();
   renderSlashMenu();
 });
 
@@ -2186,7 +2198,10 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
       event.preventDefault();
       const command = matches[state.slashCommandIndex];
       if (!command) return;
-      if (input.value.trim() !== command.name) input.value = command.name;
+      if (input.value.trim() !== command.name) {
+        input.value = command.name;
+        resizeMessageInput();
+      }
       if (slashCommandHasExpansions(command.name)) {
         state.slashCommandIndex = 0;
         renderSlashMenu();
@@ -2226,6 +2241,7 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   if (!command) return;
   event.preventDefault();
   els.flowPane.querySelector(".message-input").value = command;
+  resizeMessageInput();
   if (slashCommandHasExpansions(command)) {
     state.slashCommandIndex = 0;
     renderSlashMenu();
@@ -2245,6 +2261,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
   state.messageSubmitting = true;
   input.value = "";
+  resizeMessageInput();
   hideSlashMenu();
   renderTickets();
   renderFlowPane();

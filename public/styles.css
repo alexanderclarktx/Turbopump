@@ -1981,10 +1981,10 @@ body.flow-resizing {
 .message-input {
   min-width: 0;
   min-height: 36px;
-  max-height: 96px;
+  max-height: min(220px, 30vh);
   resize: none;
   line-height: 1.35;
-  overflow: auto;
+  overflow-y: auto;
 }
 
 .agent-context {
