@@ -61,6 +61,9 @@ const state = {
   slashCommandIndex: 0,
   messageSubmitting: false,
   interruptSubmitting: false,
+  pendingAgentImages: [],
+  agentImageUploading: false,
+  agentImageDragDepth: 0,
   agentWorkingPollFlowId: "",
   agentWorkingPollTimer: 0,
   agentWorkingPollInFlight: false,
@@ -192,12 +195,15 @@ function setLinearStatusCollapsed(status, collapsed) {
 }
 
 async function api(path, options = {}) {
+  const headers = options.body instanceof FormData
+    ? options.headers || {}
+    : {
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      };
   const response = await fetch(path, {
     ...options,
-    headers: {
-      "content-type": "application/json",
-      ...(options.headers || {}),
-    },
+    headers,
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || response.statusText);
@@ -1093,6 +1099,7 @@ function renderFlowPane() {
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
   renderAgentContext(flow);
+  renderAgentImageContext();
   if (!issueId) {
     stopAgentWorkingPoll();
     return;
@@ -1100,7 +1107,8 @@ function renderFlowPane() {
 
   const agentInterrupt = els.flowPane.querySelector(".agent-interrupt");
   agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;
-  els.flowPane.querySelector(".message-input").disabled = state.messageSubmitting || !agentEnabled || (!flow && !ticket);
+  els.flowPane.querySelector(".message-input").disabled =
+    state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
 
   renderLinearDetail({ issueId, title, issueUrl, ticket, flow });
   applyFlowSplitSize();
@@ -1114,6 +1122,72 @@ function renderFlowPane() {
     terminal.textContent = "No agent session yet.";
   }
   void loadLinearDetail(issueId);
+}
+
+function renderAgentImageContext() {
+  const container = els.flowPane.querySelector(".agent-image-context");
+  if (!container) return;
+  const images = state.pendingAgentImages;
+  container.hidden = !images.length && !state.agentImageUploading;
+  const uploading = state.agentImageUploading ? '<span class="agent-image-chip pending">uploading...</span>' : "";
+  container.innerHTML = `${images
+    .map(
+      (image, index) => `
+        <span class="agent-image-chip" title="${escapeAttribute(image.path)}">
+          <span>${escapeHtml(image.name || image.relativePath || "image")}</span>
+          <button type="button" aria-label="Remove image" data-index="${index}">×</button>
+        </span>
+      `,
+    )
+    .join("")}${uploading}`;
+}
+
+function agentMessageWithImages(message) {
+  if (!state.pendingAgentImages.length) return message;
+  const attachments = state.pendingAgentImages
+    .map((image) => `- ${image.path}${image.relativePath ? ` (${image.relativePath})` : ""}`)
+    .join("\n");
+  return `${message}\n\nAttached images:\n${attachments}`;
+}
+
+function droppedImageFiles(event) {
+  const files = [...(event.dataTransfer?.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (files.length) return files;
+  return [...(event.dataTransfer?.items || [])]
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
+function eventHasDraggedFiles(event) {
+  const types = [...(event.dataTransfer?.types || [])];
+  if (types.includes("Files")) return true;
+  return [...(event.dataTransfer?.items || [])].some((item) => item.kind === "file");
+}
+
+function setAgentImageDragActive(active) {
+  document.body.classList.toggle("agent-image-drag-active", active);
+  els.flowPane.querySelector(".message-input").classList.toggle("drag-over", active);
+}
+
+async function uploadAgentImages(files) {
+  if (!files.length || state.agentImageUploading) return;
+  state.agentImageUploading = true;
+  renderFlowPane();
+  try {
+    const flow = await ensureSelectedFlow();
+    if (!flow) return;
+    const body = new FormData();
+    for (const file of files) body.append("images", file, file.name);
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/context-images`, {
+      method: "POST",
+      body,
+    });
+    state.pendingAgentImages.push(...(data.images || []));
+  } finally {
+    state.agentImageUploading = false;
+    renderFlowPane();
+  }
 }
 
 function renderLinearDetail(context) {
@@ -1999,6 +2073,48 @@ els.flowPane.querySelector(".message-input").addEventListener("input", () => {
   renderSlashMenu();
 });
 
+els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-index]");
+  if (!button) return;
+  state.pendingAgentImages.splice(Number(button.dataset.index), 1);
+  renderFlowPane();
+});
+
+document.addEventListener("dragenter", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.agentImageDragDepth += 1;
+  setAgentImageDragActive(true);
+}, true);
+
+document.addEventListener("dragover", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  event.dataTransfer.dropEffect = "copy";
+  setAgentImageDragActive(true);
+}, true);
+
+document.addEventListener("dragleave", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!document.documentElement.contains(event.relatedTarget)) state.agentImageDragDepth = 0;
+  else state.agentImageDragDepth = Math.max(0, state.agentImageDragDepth - 1);
+  if (!state.agentImageDragDepth) setAgentImageDragActive(false);
+}, true);
+
+document.addEventListener("drop", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const files = droppedImageFiles(event);
+  state.agentImageDragDepth = 0;
+  setAgentImageDragActive(false);
+  if (files.length) void uploadAgentImages(files);
+}, true);
+
 els.flowPane.querySelector(".message-input").addEventListener("keydown", (event) => {
   const input = event.currentTarget;
   const menu = els.flowPane.querySelector(".slash-menu");
@@ -2052,7 +2168,8 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   const input = els.flowPane.querySelector(".message-input");
   if (input.disabled) return;
   const message = input.value.trim();
-  if (!message) return;
+  if (!message && !state.pendingAgentImages.length) return;
+  const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
   state.messageSubmitting = true;
   input.value = "";
   hideSlashMenu();
@@ -2063,8 +2180,9 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     if (!flow) return;
     await api(`/api/flows/${flow.id}/message`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message: agentMessage }),
     });
+    state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
     renderTickets();

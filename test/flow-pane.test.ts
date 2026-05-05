@@ -165,7 +165,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('setSetting("agentDeveloperInstructions"');
     expect(server).not.toContain('setSetting("agentStartPrompt"');
     expect(server).not.toContain("buildAgentPrompt");
-    expect(server).toContain("Flow stages are: planning -> working -> reviewing -> validating -> done.");
+    expect(server).toContain("Flow stages are: planning -> working -> reviewing -> done.");
     expect(server).toContain("flowMetaApiUrl");
     expect(server).toContain('Example body: {"stage":"reviewing","prUrl":"https://github.com/org/repo/pull/123"}');
     expect(server).toContain("Each field in the body is optional.");
@@ -307,7 +307,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('agentPanel.classList.toggle("disabled", !agentEnabled);');
     expect(app).toContain("agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;");
     expect(app).toContain(
-      'els.flowPane.querySelector(".message-input").disabled = state.messageSubmitting || !agentEnabled || (!flow && !ticket);',
+      'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
     );
     expect(app).toContain("renderFlowPane();\n});");
     expect(css).toContain(".agent-disabled-message");
@@ -316,8 +316,8 @@ describe("Turbopump pane markup", () => {
   });
 
   test("uses planning as the first flow stage everywhere except migration", () => {
-    expect(server).toContain('type Stage = "planning" | "working" | "reviewing" | "validating" | "done";');
-    expect(server).toContain('const stages: Stage[] = ["planning", "working", "reviewing", "validating", "done"];');
+    expect(server).toContain('type Stage = "planning" | "working" | "reviewing" | "done";');
+    expect(server).toContain('const stages: Stage[] = ["planning", "working", "reviewing", "done"];');
     expect(server).toContain('tryMigration("update flows set stage = \'planning\' where stage = \'not_started\'");');
     expect(server).not.toContain('stage: message && flow.stage === "planning" ? "working" : flow.stage');
     expect(server).toContain('"planning",');
@@ -659,6 +659,8 @@ describe("Turbopump pane markup", () => {
     expect(html).not.toContain('class="agent-start icon-button"');
     expect(html).toContain('class="agent-interrupt icon-button"');
     expect(html).toContain('aria-label="Pause agent"');
+    expect(html).toContain('class="agent-image-context" aria-label="Attached image context" hidden');
+    expect(html).not.toContain('class="agent-image-drop-overlay"');
     expect(html).toContain('class="slash-menu" role="listbox" hidden');
     expect(html).not.toContain('class="agent-working" aria-live="polite" hidden');
     expect(html).not.toContain("<span>working</span>");
@@ -682,8 +684,17 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (state.interruptSubmitting) return;");
     expect(app).toContain("state.interruptSubmitting = true;");
     expect(app).toContain(
-      'els.flowPane.querySelector(".message-input").disabled = state.messageSubmitting || !agentEnabled || (!flow && !ticket);',
+      'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
     );
+    expect(app).toContain("async function uploadAgentImages(files)");
+    expect(app).toContain("function eventHasDraggedFiles(event)");
+    expect(app).toContain("function setAgentImageDragActive(active)");
+    expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flow.id)}/context-images`,');
+    expect(app).toContain("function agentMessageWithImages(message)");
+    expect(app).toContain('document.addEventListener("drop"');
+    expect(css).not.toContain(".agent-image-drop-overlay");
+    expect(server).toContain("async function saveFlowContextImages(flow: Flow, formData: FormData)");
+    expect(server).toContain('parts[3] === "context-images" && request.method === "POST"');
     expect(app).toContain("if (state.messageSubmitting) return;");
     expect(app).toContain("state.messageSubmitting = true;");
     expect(app).toContain("const flow = await ensureSelectedFlow();");
@@ -910,6 +921,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('sessionStartSource,');
     expect(server).toContain('insertLog(flow.id, "agent:status", "context cleared")');
     expect(server).toContain('insertLog(flow.id, "agent:status", "compact requested")');
+    expect(server).toContain('updateFlow(flow.id, { agentStatus: "running" });');
+    expect(app).toContain("const agentRunning = flow?.agentStatus === \"running\";");
+    expect(app).toContain("state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);");
   });
 
   test("supports fast slash command as a toggle", () => {

@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 
 type Stage = "planning" | "working" | "reviewing" | "done";
 type ThreadStartSource = "startup" | "clear";
@@ -46,6 +46,13 @@ type LogRow = {
   source: string;
   message: string;
   createdAt: string;
+};
+
+type UploadedImage = {
+  name: string;
+  type: string;
+  size: number;
+  arrayBuffer: () => Promise<ArrayBuffer>;
 };
 
 type LinearIssue = {
@@ -113,8 +120,9 @@ const defaultAgentDeveloperInstructions = [
   "Current stage: {stage}",
   "Checkout path: {checkoutPath}",
   "",
-  "coding guidelines:",
-  "- pr names should be short and minimally capitalized"
+  "working guidelines:",
+  "- pr names should be short and minimally capitalized",
+  "- don't set the flow phase to done unless told to"
 ].join("\n");
 
 mkdirSync(dataDir, { recursive: true });
@@ -422,6 +430,46 @@ function deleteCheckout(name: string) {
   const stats = statSync(target);
   if (!stats.isDirectory()) throw new Error("Checkout is not a directory.");
   rmSync(target, { recursive: true, force: true });
+}
+
+function safeImageExtension(file: UploadedImage) {
+  const fromName = extname(file.name).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg"].includes(fromName)) return fromName;
+  if (file.type === "image/png") return ".png";
+  if (file.type === "image/jpeg") return ".jpg";
+  if (file.type === "image/gif") return ".gif";
+  if (file.type === "image/webp") return ".webp";
+  if (file.type === "image/avif") return ".avif";
+  if (file.type === "image/svg+xml") return ".svg";
+  return "";
+}
+
+async function saveFlowContextImages(flow: Flow, formData: FormData) {
+  const values = formData.getAll("images");
+  const files = values.filter((value): value is UploadedImage => {
+    return typeof value === "object" && value !== null && "arrayBuffer" in value && "type" in value && "name" in value;
+  });
+  if (!files.length) throw new Error("No images provided.");
+  const contextDir = join(flow.checkoutPath, ".flow", "context");
+  mkdirSync(contextDir, { recursive: true });
+
+  const images = [];
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) throw new Error("Only image files can be attached.");
+    const extension = safeImageExtension(file);
+    if (!extension) throw new Error("Unsupported image type.");
+    const name = `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${crypto.randomUUID()}${extension}`;
+    const path = join(contextDir, name);
+    writeFileSync(path, Buffer.from(await file.arrayBuffer()));
+    images.push({
+      name: file.name,
+      path,
+      relativePath: `.flow/context/${name}`,
+      type: file.type,
+      size: file.size,
+    });
+  }
+  return images;
 }
 
 function assertStage(stage: string): asserts stage is Stage {
@@ -1825,6 +1873,15 @@ async function handleApi(request: Request, url: URL) {
         return json({ ok: true, ids });
       } catch (error) {
         return json({ error: String(error) }, { status: 400 });
+      }
+    }
+
+    if (parts[3] === "context-images" && request.method === "POST") {
+      try {
+        const images = await saveFlowContextImages(repairFlowCheckoutPath(flow), await request.formData());
+        return json({ ok: true, images });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
       }
     }
 

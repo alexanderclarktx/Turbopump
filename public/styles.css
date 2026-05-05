@@ -9,6 +9,7 @@
   --link: #2563eb;
   --accent: #0f766e;
   --accent-ink: #ffffff;
+  --drop-accent: #d4a106;
   --danger: #b42318;
   --terminal: #fbfcfe;
   --terminal-ink: #1f2937;
@@ -26,6 +27,7 @@ body.theme-dark {
   --link: #60a5fa;
   --accent: #2dd4bf;
   --accent-ink: #06201d;
+  --drop-accent: #eab308;
   --danger: #f87171;
   --terminal: #101418;
   --terminal-ink: #d1d5db;
@@ -1848,6 +1850,9 @@ body.flow-resizing {
   position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "images images images"
+    "interrupt input context";
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -1855,6 +1860,78 @@ body.flow-resizing {
   border-top: 1px solid var(--line);
   background: var(--panel);
   z-index: 1;
+}
+
+.message-input.drag-over {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--drop-accent) 36%, transparent),
+    0 0 18px color-mix(in srgb, var(--drop-accent) 42%, transparent);
+}
+
+.agent-image-context {
+  grid-area: images;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-image-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  min-height: 22px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-muted);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.agent-image-chip span {
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-image-chip button {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.agent-image-chip button:hover,
+.agent-image-chip button:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+.agent-image-chip.pending {
+  color: var(--muted);
+}
+
+.agent-interrupt {
+  grid-area: interrupt;
+}
+
+.message-input {
+  grid-area: input;
+}
+
+.agent-context {
+  grid-area: context;
 }
 
 .agent-interrupt:disabled {
