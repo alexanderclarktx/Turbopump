@@ -14,7 +14,7 @@ import {
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
-type Stage = "planning" | "working" | "reviewing" | "validating" | "done";
+type Stage = "planning" | "working" | "reviewing" | "done";
 type ThreadStartSource = "startup" | "clear";
 type ServiceTier = "fast" | "flex";
 
@@ -75,7 +75,7 @@ type LinearIssue = {
   };
 };
 
-const stages: Stage[] = ["planning", "working", "reviewing", "validating", "done"];
+const stages: Stage[] = ["planning", "working", "reviewing", "done"];
 const rootDir = process.cwd();
 const agentHeartbeatSweepIntervalMs = 5000;
 const agentRuntimeStartGraceMs = 30000;
@@ -100,7 +100,7 @@ const defaultAgentDeveloperInstructions = [
   "",
   "In the planning stage, do not edit files. Focus on establishing task clarity.",
   "",
-  "Flow stages are: planning -> working -> reviewing -> validating -> done.",
+  "Flow stages are: planning -> working -> reviewing -> done.",
   "",
   "Update flow metadata when appropriate by POSTing JSON to:",
   "{flowMetaApiUrl}",
@@ -111,7 +111,10 @@ const defaultAgentDeveloperInstructions = [
   "Linear issue: {linearIssueId}",
   "Issue title: {title}",
   "Current stage: {stage}",
-  "Checkout path: {checkoutPath}"
+  "Checkout path: {checkoutPath}",
+  "",
+  "coding guidelines:",
+  "- pr names should be short and minimally capitalized"
 ].join("\n");
 
 mkdirSync(dataDir, { recursive: true });
