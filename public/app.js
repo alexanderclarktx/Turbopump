@@ -40,6 +40,9 @@ function clampFlowSplitSize(value) {
 const state = {
   stages: [],
   flows: [],
+  checkouts: [],
+  checkoutsLoaded: false,
+  checkoutsLoading: false,
   linearTickets: [],
   linearTicketsLoaded: false,
   linearViewer: null,
@@ -64,6 +67,7 @@ const state = {
   draggingLinearIssueId: "",
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
+  deletingCheckoutNames: new Set(),
 };
 
 const els = {
@@ -79,6 +83,7 @@ const els = {
   refreshLinearTickets: document.querySelector("#refreshLinearTickets"),
   linearState: document.querySelector("#linearState"),
   envEditor: document.querySelector("#envEditor"),
+  checkoutList: document.querySelector("#checkoutList"),
   ticketState: document.querySelector("#ticketState"),
   ticketGrid: document.querySelector("#ticketGrid"),
   flowPane: document.querySelector("#flowPane"),
@@ -137,6 +142,26 @@ function renderLinearPriorityIcon(priority) {
           )
           .join("")}
       </svg>
+    </span>
+  `;
+}
+
+function linearStatusIconKind(status) {
+  const key = linearStatusKey(status);
+  if (key === "canceled" || key === "cancelled") return "canceled";
+  if (key === "done" || key === "completed") return "completed";
+  if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "reviewing";
+  if (key === "in-eng" || key === "working" || key === "started") return "started";
+  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "ready";
+  return "unstarted";
+}
+
+function renderLinearStatusIcon(status) {
+  const label = status || "No status";
+  const kind = linearStatusIconKind(label);
+  return `
+    <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
+      <img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />
     </span>
   `;
 }
@@ -330,6 +355,7 @@ function setSettingsCollapsed(collapsed) {
     els.settingsPane.removeAttribute("tabindex");
     els.settingsPane.removeAttribute("title");
     els.settingsPane.removeAttribute("role");
+    void ensureCheckoutsLoaded();
   }
 }
 
@@ -426,6 +452,7 @@ async function bootstrap() {
 }
 
 function render() {
+  renderCheckouts();
   renderTickets();
   renderFlowPane();
 }
@@ -433,6 +460,153 @@ function render() {
 function setFlows(flows) {
   state.flows = flows || [];
   syncLinearTicketsWithFlows();
+}
+
+function setCheckouts(checkouts) {
+  state.checkouts = [...(checkouts || [])].sort(compareCheckouts);
+}
+
+function compareCheckouts(a, b) {
+  const aTime = Date.parse(a.lastPromptAt || a.createdAt || 0);
+  const bTime = Date.parse(b.lastPromptAt || b.createdAt || 0);
+  return bTime - aTime || String(a.name || "").localeCompare(String(b.name || ""));
+}
+
+function formatCheckoutTimestamp(value) {
+  if (!value) return "no prompts";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+async function loadCheckouts() {
+  if (state.checkoutsLoading) return;
+  state.checkoutsLoading = true;
+  renderCheckouts();
+  try {
+    const data = await api("/api/checkouts");
+    setCheckouts(data.checkouts);
+    state.checkoutsLoaded = true;
+  } finally {
+    state.checkoutsLoading = false;
+    renderCheckouts();
+  }
+}
+
+async function ensureCheckoutsLoaded() {
+  if (state.settingsCollapsed || state.checkoutsLoaded || state.checkoutsLoading) return;
+  await loadCheckouts();
+}
+
+async function deleteCheckout(name) {
+  if (!name) return;
+  await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
+  state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
+  renderCheckouts();
+}
+
+function renderCheckoutCard(checkout) {
+  const card = document.createElement("article");
+  card.className = "checkout-card";
+  card.dataset.checkoutName = checkout.name || "";
+
+  const title = document.createElement("div");
+  title.className = "checkout-card-title";
+
+  const ticketName = document.createElement("span");
+  ticketName.className = "checkout-ticket-name";
+  ticketName.textContent = checkout.ticketName || checkout.name || "Unknown checkout";
+
+  const ticketId = document.createElement("span");
+  ticketId.className = "checkout-ticket-id";
+  ticketId.textContent = checkout.ticketId || checkout.name || "";
+
+  title.replaceChildren(ticketName);
+
+  const meta = document.createElement("dl");
+  meta.className = "checkout-meta";
+  const fields = [
+    ["Linear", renderLinearStatusIcon(checkout.linearStatus)],
+    ["Phase", checkout.flowPhase || "No flow"],
+    ["Last prompt", formatCheckoutTimestamp(checkout.lastPromptAt)],
+  ];
+  for (const [label, value] of fields) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    if (label === "Linear") detail.innerHTML = value;
+    else detail.textContent = value;
+    meta.append(term, detail);
+  }
+
+  const button = document.createElement("button");
+  button.className = "checkout-delete";
+  button.type = "button";
+  button.title = "Delete checkout";
+  button.setAttribute("aria-label", `Delete checkout ${checkout.name}`);
+  button.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M6 6l1 15h10l1-15" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  `;
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    state.deletingCheckoutNames.add(checkout.name);
+    renderCheckouts();
+    try {
+      await deleteCheckout(checkout.name);
+    } catch (error) {
+      state.deletingCheckoutNames.delete(checkout.name);
+      renderCheckouts();
+      alert(error.message);
+    }
+  });
+
+  if (state.deletingCheckoutNames.has(checkout.name)) {
+    const spinner = document.createElement("span");
+    spinner.className = "checkout-spinner";
+    spinner.setAttribute("aria-label", `Deleting checkout ${checkout.name}`);
+    spinner.setAttribute("role", "status");
+    card.replaceChildren(title, ticketId, meta, spinner);
+  } else {
+    card.replaceChildren(title, ticketId, meta, button);
+  }
+  return card;
+}
+
+function renderCheckouts() {
+  if (!els.checkoutList) return;
+  if (state.checkoutsLoading) {
+    const loading = document.createElement("p");
+    loading.className = "note";
+    loading.textContent = "Loading checkouts.";
+    els.checkoutList.replaceChildren(loading);
+    return;
+  }
+  if (!state.checkoutsLoaded) {
+    const pending = document.createElement("p");
+    pending.className = "note";
+    pending.textContent = "Open settings to load checkout directories.";
+    els.checkoutList.replaceChildren(pending);
+    return;
+  }
+  if (!state.checkouts.length) {
+    const empty = document.createElement("p");
+    empty.className = "note";
+    empty.textContent = "No checkout directories.";
+    els.checkoutList.replaceChildren(empty);
+    return;
+  }
+  els.checkoutList.replaceChildren(...state.checkouts.map((checkout) => renderCheckoutCard(checkout)));
 }
 
 function agentModelLabel(flow) {
@@ -539,6 +713,7 @@ async function loadLinearTickets(options = {}) {
     els.ticketState.textContent = formatLastUpdated();
     els.linearState.textContent = `Linear connected: ${data.viewer.name}`;
     els.linearState.classList.add("live");
+    if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
     renderTickets();
     renderFlowPane();
   } catch (error) {
@@ -1340,6 +1515,7 @@ function appendTerminalTraceGroup(fragment, group) {
   const meta = logMeta(group.source);
   const details = document.createElement("details");
   details.className = "terminal-trace-group";
+  details._traceChildren = group.children || [];
 
   const summary = document.createElement("summary");
   summary.className = "terminal-entry-header terminal-trace-summary";
@@ -1361,9 +1537,23 @@ function appendTerminalTraceGroup(fragment, group) {
     second: "2-digit",
   });
 
+  summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleTerminalTraceGroup(details);
+  });
+
+  summary.replaceChildren(marker, label, time);
+  details.replaceChildren(summary);
+  fragment.appendChild(details);
+}
+
+function materializeTerminalTraceGroup(details) {
+  if (details._traceBody) return details._traceBody;
+
   const body = document.createElement("div");
   body.className = "terminal-trace-body";
-  for (const child of group.children || []) appendTerminalBlock(body, child);
+  for (const child of details._traceChildren || []) appendTerminalBlock(body, child);
+
   const children = Array.from(body.children);
   const lastIndex = Math.max(0, children.length - 1);
   children.forEach((child, index) => {
@@ -1371,14 +1561,9 @@ function appendTerminalTraceGroup(fragment, group) {
     child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);
   });
 
-  summary.addEventListener("click", (event) => {
-    event.preventDefault();
-    toggleTerminalTraceGroup(details);
-  });
-
-  summary.replaceChildren(marker, label, time);
-  details.replaceChildren(summary, body);
-  fragment.appendChild(details);
+  details._traceBody = body;
+  details.appendChild(body);
+  return body;
 }
 
 function toggleTerminalTraceGroup(details) {
@@ -1386,6 +1571,7 @@ function toggleTerminalTraceGroup(details) {
   const shouldOpen = isClosing || !details.open;
   if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
   details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
+  if (shouldOpen) materializeTerminalTraceGroup(details);
   details.open = true;
   details.classList.add("terminal-trace-animating", shouldOpen ? "terminal-trace-opening" : "terminal-trace-closing");
 
@@ -1571,6 +1757,11 @@ function connectWs() {
       setFlows(message.payload);
       render();
       await loadAllLogs();
+    }
+    if (message.event === "checkouts") {
+      setCheckouts(message.payload);
+      state.checkoutsLoaded = true;
+      renderCheckouts();
     }
     if (message.event === "log") {
       const { id, flowId, source, message: chunk, createdAt } = message.payload;

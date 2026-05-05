@@ -5,6 +5,8 @@ const app = await Bun.file("public/app.js").text();
 const css = await Bun.file("public/styles.css").text();
 const server = await Bun.file("src/server.ts").text();
 const markdown = await Bun.file("public/linear-markdown.js").text();
+const readyStatusIcon = await Bun.file("public/status-icons/ready.svg").text();
+const completedStatusIcon = await Bun.file("public/status-icons/completed.svg").text();
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
@@ -169,6 +171,51 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("Each field in the body is optional.");
     expect(server).toContain("stage: flow.stage,");
     expect(server).toContain("prUrl: flow.prUrl,");
+  });
+
+  test("shows checkout cleanup cards in Settings without deleting traces", () => {
+    expect(html).toContain('<section class="checkout-settings">');
+    expect(html).toContain("<h2>Checkouts</h2>");
+    expect(html).toContain('id="checkoutList"');
+    expect(app).toContain("checkouts: []");
+    expect(app).toContain("checkoutsLoaded: false");
+    expect(app).toContain("checkoutsLoading: false");
+    expect(app).toContain("checkoutList: document.querySelector");
+    expect(app).toContain("function renderCheckouts()");
+    expect(app).toContain("function renderCheckoutCard(checkout)");
+    expect(app).toContain("function ensureCheckoutsLoaded()");
+    expect(app).toContain("void ensureCheckoutsLoaded();");
+    expect(app).toContain("state.checkoutsLoading = true;");
+    expect(app).toContain("function renderLinearStatusIcon(status)");
+    expect(app).toContain('<img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />');
+    expect(app).toContain('["Linear", renderLinearStatusIcon(checkout.linearStatus)]');
+    expect(app).toContain("function deleteCheckout(name)");
+    expect(app).toContain("Date.parse(a.lastPromptAt || a.createdAt || 0)");
+    expect(app).toContain("deletingCheckoutNames: new Set()");
+    expect(app).toContain('spinner.className = "checkout-spinner";');
+    expect(app).toContain('await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });');
+    expect(app).toContain('if (message.event === "checkouts")');
+    expect(css).toContain(".checkout-list");
+    expect(css).toContain(".linear-status-icon");
+    expect(css).toContain(".linear-status-icon img");
+    expect(readyStatusIcon).toContain('<circle cx="10" cy="10" r="8" fill="#f2c200" />');
+    expect(readyStatusIcon).toContain('<circle cx="10" cy="10" r="5.4" fill="#ffffff" />');
+    expect(completedStatusIcon).toContain('<circle cx="10" cy="10" r="8" fill="#2563eb" />');
+    expect(completedStatusIcon).toContain('stroke="#ffffff"');
+    expect(css).toContain(".checkout-card:hover .checkout-delete");
+    expect(css).toContain(".checkout-spinner");
+    expect(css).toContain("@keyframes checkout-spinner");
+    expect(css).toContain("pointer-events: none;");
+    expect(server).toContain("function listCheckouts()");
+    expect(server).toContain("Date.parse(a.lastPromptAt || a.createdAt || \"\")");
+    expect(server).toContain("async function refreshCheckoutLinearStatuses()");
+    expect(server).toContain("await refreshCheckoutLinearStatuses();");
+    expect(server).toContain("latestPromptTimestamp(flow.id)");
+    expect(server).toContain('url.pathname === "/api/checkouts"');
+    expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
+    expect(server).toContain("function deleteCheckout(name: string)");
+    expect(server).toContain("rmSync(target, { recursive: true, force: true });");
+    expect(server).not.toContain("delete from logs");
   });
 
   test("keeps refresh buttons visually quiet", () => {
@@ -784,6 +831,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("...runtimeDisappearedTraceRanges,");
     expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
+    expect(app).toContain("details._traceChildren = group.children || [];");
+    expect(app).toContain("details.replaceChildren(summary);");
+    expect(app).toContain("function materializeTerminalTraceGroup(details)");
+    expect(app).toContain("if (shouldOpen) materializeTerminalTraceGroup(details);");
     expect(app).toContain('message: "",');
     expect(app).not.toContain('event${traceRange.count === 1 ? "" : "s"}');
     expect(app).not.toContain('message: `${traceRange.count || 0} trace event');

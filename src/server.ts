@@ -5,8 +5,10 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -220,6 +222,9 @@ const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? o
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
+const latestPromptTimestampStmt = db.query(
+  "select createdAt from logs where flowId = ? and source = 'user' order by id desc limit 1",
+);
 
 function now() {
   return new Date().toISOString();
@@ -318,6 +323,85 @@ function getFlowByIssue(identifier: string) {
 
 function listFlows() {
   return allFlowsStmt.all() as Flow[];
+}
+
+function checkoutNameFromPath(path: string) {
+  return basename(resolve(path));
+}
+
+function checkoutFlowMap() {
+  const map = new Map<string, Flow>();
+  for (const flow of listFlows()) {
+    if (!flow.checkoutPath) continue;
+    map.set(checkoutNameFromPath(flow.checkoutPath), flow);
+  }
+  return map;
+}
+
+function latestPromptTimestamp(flowId: string) {
+  const row = latestPromptTimestampStmt.get(flowId) as { createdAt: string } | null;
+  return row?.createdAt ?? "";
+}
+
+function listCheckouts() {
+  const flowsByCheckout = checkoutFlowMap();
+  return readdirSync(checkoutDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const path = join(checkoutDir, entry.name);
+      const stats = statSync(path);
+      const flow = flowsByCheckout.get(entry.name) ?? null;
+      const createdAtMs = stats.birthtimeMs || stats.ctimeMs || stats.mtimeMs;
+      return {
+        name: entry.name,
+        path,
+        createdAt: new Date(createdAtMs).toISOString(),
+        updatedAt: stats.mtime.toISOString(),
+        ticketId: flow?.linearIssueId ?? entry.name.match(/[a-z]+-\d+/i)?.[0]?.toUpperCase() ?? "",
+        ticketName: flow?.title ?? "",
+        linearStatus: flow?.linearStatus ?? "",
+        flowPhase: flow?.stage ?? "",
+        lastPromptAt: flow ? latestPromptTimestamp(flow.id) : "",
+      };
+    })
+    .sort((a, b) => {
+      const aTime = Date.parse(a.lastPromptAt || a.createdAt || "");
+      const bTime = Date.parse(b.lastPromptAt || b.createdAt || "");
+      return bTime - aTime || a.name.localeCompare(b.name);
+    });
+}
+
+async function refreshCheckoutLinearStatuses() {
+  if (!linearAuthHeader()) return;
+  const flowsByCheckout = checkoutFlowMap();
+  const checkoutNames = new Set(
+    readdirSync(checkoutDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name),
+  );
+  const flows = [...flowsByCheckout.entries()]
+    .filter(([name]) => checkoutNames.has(name))
+    .map(([, flow]) => flow);
+  await Promise.allSettled(flows.map((flow) => syncLinearStatus(flow)));
+}
+
+function checkoutPathForName(name: string) {
+  const safeName = basename(name);
+  if (!safeName || safeName !== name || safeName === "." || safeName === "..") {
+    throw new Error("Invalid checkout name.");
+  }
+  const target = resolve(checkoutDir, safeName);
+  const checkoutRoot = resolve(checkoutDir);
+  if (!target.startsWith(`${checkoutRoot}/`)) throw new Error("Invalid checkout path.");
+  return target;
+}
+
+function deleteCheckout(name: string) {
+  const target = checkoutPathForName(name);
+  if (!existsSync(target)) throw new Error("Checkout not found.");
+  const stats = statSync(target);
+  if (!stats.isDirectory()) throw new Error("Checkout is not a directory.");
+  rmSync(target, { recursive: true, force: true });
 }
 
 function assertStage(stage: string): asserts stage is Stage {
@@ -1560,6 +1644,21 @@ async function handleApi(request: Request, url: URL) {
     });
   }
 
+  if (url.pathname === "/api/checkouts" && request.method === "GET") {
+    await refreshCheckoutLinearStatuses();
+    return json({ checkouts: listCheckouts() });
+  }
+
+  if (parts[0] === "api" && parts[1] === "checkouts" && parts[2] && request.method === "DELETE") {
+    try {
+      deleteCheckout(decodeURIComponent(parts[2]));
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+    }
+    broadcast("checkouts", listCheckouts());
+    return json({ ok: true, checkouts: listCheckouts() });
+  }
+
   if (url.pathname === "/api/repo" && request.method === "POST") {
     const body = await readJson<{
       repoUrl: string;
@@ -1629,7 +1728,10 @@ async function handleApi(request: Request, url: URL) {
   if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && parts[4] === "status" && request.method === "POST") {
     const body = await readJson<{ issueId?: string; stateId?: string }>(request);
     const result = await updateLinearIssueStatus(decodeURIComponent(parts[3]), body.issueId || "", body.stateId || "");
-    if (result.flow) broadcast("flows", listFlows());
+    if (result.flow) {
+      broadcast("flows", listFlows());
+      broadcast("checkouts", listCheckouts());
+    }
     return json({ ok: true, ...result });
   }
 
@@ -1670,6 +1772,7 @@ async function handleApi(request: Request, url: URL) {
       await syncLinearStatus(flow);
     }
     broadcast("flows", listFlows());
+    broadcast("checkouts", listCheckouts());
     return json({ ok: true, flow: getFlow(id) });
   }
 
@@ -1755,6 +1858,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "linear-sync" && request.method === "POST") {
       await syncLinearStatus(flow);
       broadcast("flows", listFlows());
+      broadcast("checkouts", listCheckouts());
       return json({ ok: true, flow: getFlow(id) });
     }
   }
