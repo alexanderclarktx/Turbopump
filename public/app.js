@@ -1132,6 +1132,10 @@ function isRuntimeDisappearedLog(log) {
   return log.source === "agent:error" && String(log.message || "").trim() === "agent runtime disappeared while status was running";
 }
 
+function isTurnCompletedLog(log) {
+  return log.source === "agent:status" && /^turn completed\b/.test(String(log.message || "").trim());
+}
+
 function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
@@ -1150,6 +1154,34 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
     if (!count) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
+  }
+  return ranges;
+}
+
+function syntheticSteerTraceRanges(logs, existingRanges) {
+  const existingKeys = new Set(existingRanges.map((range) => range.key));
+  const ranges = [];
+  let latestUserLog = null;
+  let sawTurnCompletedSinceUser = false;
+  for (const log of logs) {
+    if (log.source === "user") {
+      if (latestUserLog && !sawTurnCompletedSinceUser) {
+        const afterId = Number(latestUserLog.id);
+        const beforeId = Number(log.id);
+        const key = `${afterId}:${beforeId}`;
+        if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
+          const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+          if (count) {
+            ranges.push({ afterId, beforeId, count, key });
+            existingKeys.add(key);
+          }
+        }
+      }
+      latestUserLog = log;
+      sawTurnCompletedSinceUser = false;
+      continue;
+    }
+    if (latestUserLog && isTurnCompletedLog(log)) sawTurnCompletedSinceUser = true;
   }
   return ranges;
 }
@@ -1195,9 +1227,11 @@ function terminalGroups(logs) {
   const groups = [];
   const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
   const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
+  const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
   const traceRanges = [
     ...persistedTraceRanges,
-    ...syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges),
+    ...runtimeDisappearedTraceRanges,
+    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),
   ];
   const traceGroups = new Map();
   for (const log of normalizedLogs) {

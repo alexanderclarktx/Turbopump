@@ -1510,6 +1510,13 @@ body.flow-resizing {
   font-size: 10px;
 }
 
+.terminal-trace-body .terminal-entry-assistant,
+.terminal-trace-body .terminal-entry-assistant .terminal-entry-time,
+.terminal-entry-output,
+.terminal-entry-error {
+  font-size: 10px;
+}
+
 .terminal-entry-output .terminal-entry-header {
   color: #94a3b8;
 }

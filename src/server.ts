@@ -213,6 +213,9 @@ const insertLogStmt = db.query(`
   insert into logs (flowId, source, message, createdAt) values (?, ?, ?, ?)
 `);
 const latestUserLogStmt = db.query("select id from logs where flowId = ? and source = 'user' order by id desc limit 1");
+const latestUserLogBeforeStmt = db.query(
+  "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
+);
 const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
@@ -898,12 +901,10 @@ function isAgentMessageSource(source: string) {
   return source === "agent:message" || source === "agent";
 }
 
-function createTurnTraceGroup(flowId: string, beforeId: number) {
-  const prompt = latestUserLogStmt.get(flowId) as { id: number } | null;
-  if (!prompt) return;
-  if (beforeId <= prompt.id) return;
+function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
+  if (beforeId <= promptId) return;
 
-  const logs = (logsAfterStmt.all(flowId, prompt.id) as LogRow[]).filter((log) => log.id < beforeId);
+  const logs = (logsAfterStmt.all(flowId, promptId) as LogRow[]).filter((log) => log.id < beforeId);
   const traceCount = logs.length;
   if (!traceCount) return;
 
@@ -911,11 +912,17 @@ function createTurnTraceGroup(flowId: string, beforeId: number) {
     flowId,
     "agent:trace-group",
     JSON.stringify({
-      afterId: prompt.id,
+      afterId: promptId,
       beforeId,
       count: traceCount,
     }),
   );
+}
+
+function createTurnTraceGroup(flowId: string, beforeId: number) {
+  const prompt = latestUserLogBeforeStmt.get(flowId, beforeId) as { id: number } | null;
+  if (!prompt) return;
+  createTraceGroupAfterPrompt(flowId, prompt.id, beforeId);
 }
 
 function createCompletedTurnTraceGroup(flowId: string) {
@@ -1283,9 +1290,12 @@ async function startAgent(flow: Flow, userMessage = "") {
   const updated = getFlow(flow.id);
   if (!updated) throw new Error("Flow disappeared while starting agent.");
 
-  if (message) insertLog(flow.id, "user", `${userMessage}\n`);
+  const existingRuntime = agentProcesses.get(flow.id);
+  const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);
+  const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\n`) : 0;
+  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
   try {
-    const runtime = agentProcesses.get(flow.id) ?? (await startCodexAppServer(updated));
+    const runtime = existingRuntime ?? (await startCodexAppServer(updated));
     if (!message) return;
     await sendAgentTurn(runtime, updated, userMessage);
   } catch (error) {

@@ -722,6 +722,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".terminal-command-line {\n  display: flex;\n  align-items: baseline;\n  gap: 7px;\n  min-width: 0;\n  font-size: 10px;");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;\n  font-size: 10px;");
+    expect(css).toContain(".terminal-trace-body .terminal-entry-assistant,\n.terminal-trace-body .terminal-entry-assistant .terminal-entry-time,\n.terminal-entry-output,\n.terminal-entry-error {\n  font-size: 10px;");
   });
 
   test("drains paginated logs on refresh", () => {
@@ -762,18 +763,26 @@ describe("Turbopump pane markup", () => {
 
   test("collapses completed-turn traces between the prompt and final message", () => {
     expect(server).toContain('insertLog(\n    flowId,\n    "agent:trace-group",');
+    expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
+    expect(server).toContain("function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number)");
     expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string)");
-    expect(server).toContain("const prompt = latestUserLogStmt.get(flowId)");
+    expect(server).toContain("const prompt = latestUserLogBeforeStmt.get(flowId, beforeId)");
     expect(server).toContain("const beforeId = logs[finalMessageStartIndex].id;");
     expect(server).toContain("createCompletedTurnTraceGroup(runtime.flowId);");
+    expect(server).toContain("const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);");
+    expect(server).toContain("if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);");
     expect(server).toContain('const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
     expect(server).toContain("createTurnTraceGroup(flow.id, errorLogId);");
     expect(app).toContain('"agent:trace-group": { label: "trace"');
     expect(app).toContain("function parseTraceGroup(log)");
     expect(app).toContain("function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges)");
+    expect(app).toContain("function syntheticSteerTraceRanges(logs, existingRanges)");
+    expect(app).toContain("function isTurnCompletedLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
-    expect(app).toContain("...syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges),");
+    expect(app).toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
+    expect(app).toContain("...runtimeDisappearedTraceRanges,");
+    expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
     expect(app).toContain('message: "",');
     expect(app).not.toContain('event${traceRange.count === 1 ? "" : "s"}');
@@ -806,10 +815,10 @@ describe("Turbopump pane markup", () => {
   });
 
   test("logs the user prompt before starting a new Codex runtime", () => {
-    const promptLog = 'insertLog(flow.id, "user", `${userMessage}\\n`);';
+    const promptLog = 'const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\\n`) : 0;';
     expect(server).toContain(promptLog);
     expect(server.indexOf(promptLog)).toBeLessThan(
-      server.indexOf("const runtime = agentProcesses.get(flow.id) ?? (await startCodexAppServer(updated));"),
+      server.indexOf("const runtime = existingRuntime ?? (await startCodexAppServer(updated));"),
     );
   });
 
