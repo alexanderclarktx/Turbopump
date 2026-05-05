@@ -60,6 +60,7 @@ const state = {
   agentWorkingPollFlowId: "",
   agentWorkingPollTimer: 0,
   agentWorkingPollInFlight: false,
+  terminalFollowPaused: false,
   draggingLinearIssueId: "",
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
@@ -1329,10 +1330,59 @@ function appendTerminalTraceGroup(fragment, group) {
   const body = document.createElement("div");
   body.className = "terminal-trace-body";
   for (const child of group.children || []) appendTerminalBlock(body, child);
+  const children = Array.from(body.children);
+  const lastIndex = Math.max(0, children.length - 1);
+  children.forEach((child, index) => {
+    child.style.setProperty("--trace-open-delay", `${traceFoldDelay(index)}ms`);
+    child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);
+  });
+
+  summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleTerminalTraceGroup(details);
+  });
 
   summary.replaceChildren(marker, label, time);
   details.replaceChildren(summary, body);
   fragment.appendChild(details);
+}
+
+function toggleTerminalTraceGroup(details) {
+  const isClosing = details.classList.contains("terminal-trace-closing");
+  const shouldOpen = isClosing || !details.open;
+  if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
+  details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
+  details.open = true;
+  details.classList.add("terminal-trace-animating", shouldOpen ? "terminal-trace-opening" : "terminal-trace-closing");
+
+  const itemCount = details.querySelectorAll(":scope > .terminal-trace-body > *").length;
+  const longestDelay = traceFoldDelay(Math.max(0, itemCount - 1));
+  const duration = shouldOpen ? Math.max(110, 125 + longestDelay) : Math.max(55, 63 + longestDelay / 2);
+  details._traceToggleTimer = window.setTimeout(() => {
+    if (!shouldOpen) details.open = false;
+    details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
+    details._traceToggleTimer = 0;
+  }, duration);
+}
+
+function traceFoldDelay(index) {
+  return Math.round(Math.log1p(Math.max(0, index) * 1.6) * 30);
+}
+
+function terminalDistanceFromBottom(terminal) {
+  return terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;
+}
+
+function terminalAtLatest(terminal) {
+  return terminalDistanceFromBottom(terminal) <= 12;
+}
+
+function pauseTerminalFollow() {
+  state.terminalFollowPaused = true;
+}
+
+function resumeTerminalFollow() {
+  state.terminalFollowPaused = false;
 }
 
 function scrollTerminalToLatest(terminal) {
@@ -1425,6 +1475,17 @@ function appendTerminalWorkingBlock(fragment) {
 function renderLogs(id, options = {}) {
   if (id !== state.selectedFlowId) return;
   const terminal = els.flowPane.querySelector(".terminal");
+  if (
+    terminal._flowLogFlowId === id &&
+    terminal._flowLogSignature &&
+    !options.force &&
+    !options.scrollToLatest &&
+    (state.terminalFollowPaused || !terminalAtLatest(terminal))
+  ) {
+    terminal._flowLogPending = id;
+    return;
+  }
+
   const logs = state.logs.get(id) || [];
   const groups = terminalGroups(logs);
   const flow = state.flows.find((item) => item.id === id) || null;
@@ -1436,14 +1497,14 @@ function renderLogs(id, options = {}) {
     return;
   }
 
-  const distanceFromBottom = terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;
-  const atLatest = options.scrollToLatest || distanceFromBottom <= 12;
+  const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
   if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
+  terminal._flowLogPending = "";
   if (atLatest) scrollTerminalToLatest(terminal);
 }
 
@@ -1578,6 +1639,31 @@ els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) 
   event.preventDefault();
   setFlowSplitSize(state.flowSplitSize + (event.key === "ArrowDown" ? 5 : -5));
 });
+
+els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
+  const terminal = event.currentTarget;
+  if (terminalAtLatest(terminal)) resumeTerminalFollow();
+  const pendingFlowId = terminal._flowLogPending;
+  if (!pendingFlowId || !terminalAtLatest(terminal)) return;
+  terminal._flowLogPending = "";
+  renderLogs(pendingFlowId, { scrollToLatest: true });
+});
+
+els.flowPane.querySelector(".terminal").addEventListener(
+  "wheel",
+  (event) => {
+    if (event.deltaY < 0) pauseTerminalFollow();
+  },
+  { passive: true },
+);
+
+els.flowPane.querySelector(".terminal").addEventListener(
+  "touchmove",
+  () => {
+    if (!terminalAtLatest(els.flowPane.querySelector(".terminal"))) pauseTerminalFollow();
+  },
+  { passive: true },
+);
 
 els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async () => {
   if (state.interruptSubmitting) return;

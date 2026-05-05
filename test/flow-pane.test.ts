@@ -743,7 +743,17 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("terminal.scrollTop = terminal.scrollHeight;");
     expect(app).toContain('hour: "numeric"');
     expect(css).toContain(".terminal-entry-time {\n  margin-left: auto;\n  color: #94a3b8;\n  font-size: 11px;");
-    expect(app).toContain("const distanceFromBottom = terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;");
+    expect(app).toContain("function terminalDistanceFromBottom(terminal)");
+    expect(app).toContain("return terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;");
+    expect(app).toContain("function terminalAtLatest(terminal)");
+    expect(app).toContain("terminalFollowPaused: false");
+    expect(app).toContain("function pauseTerminalFollow()");
+    expect(app).toContain("function resumeTerminalFollow()");
+    expect(app).toContain("state.terminalFollowPaused || !terminalAtLatest(terminal)");
+    expect(app).toContain('els.flowPane.querySelector(".terminal").addEventListener(\n  "wheel"');
+    expect(app).toContain("terminal._flowLogPending = id;");
+    expect(app).toContain("terminal._flowLogPending = \"\";");
+    expect(app).toContain('els.flowPane.querySelector(".terminal").addEventListener("scroll"');
     expect(app).toContain("for (const group of groups) appendTerminalBlock(fragment, group);");
     expect(app).not.toContain("[...groups].reverse()");
     expect(app).not.toContain("activeFlowTab");
@@ -769,11 +779,22 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('event${traceRange.count === 1 ? "" : "s"}');
     expect(app).not.toContain('message: `${traceRange.count || 0} trace event');
     expect(app).toContain('details.className = "terminal-trace-group";');
-    expect(app).toContain("summary.replaceChildren(marker, label, time);");
+    expect(app).toContain('child.style.setProperty("--trace-open-delay", `${traceFoldDelay(index)}ms`);');
+    expect(app).toContain('child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);');
+    expect(app).toContain("function traceFoldDelay(index)");
+    expect(app).toContain("Math.log1p(Math.max(0, index) * 1.6) * 30");
+    expect(app).toContain('event.preventDefault();');
+    expect(app).toContain("toggleTerminalTraceGroup(details);");
+    expect(app).toContain("function toggleTerminalTraceGroup(details)");
     expect(app).toContain('body.className = "terminal-trace-body";');
     expect(css).toContain(".terminal-trace-group");
+    expect(css).toContain("user-select: none;");
     expect(css).toContain(".terminal-trace-group:not([open]) > .terminal-trace-summary .terminal-entry-time");
     expect(css).toContain(".terminal-trace-body");
+    expect(css).toContain(".terminal-trace-opening > .terminal-trace-body > *");
+    expect(css).toContain("animation-delay: var(--trace-open-delay, 0ms);");
+    expect(css).toContain(".terminal-trace-closing > .terminal-trace-body > *");
+    expect(css).toContain("animation-delay: var(--trace-close-delay, 0ms);");
   });
 
   test("repaints agent logs after navigating through a ticket without a flow", () => {

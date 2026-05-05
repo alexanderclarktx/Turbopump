@@ -1421,6 +1421,8 @@ body.flow-resizing {
 .terminal-trace-group summary {
   cursor: pointer;
   list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .terminal-trace-group summary::-webkit-details-marker {
@@ -1543,6 +1545,52 @@ body.flow-resizing {
   gap: 8px;
   min-width: 0;
   padding: 8px 0 2px 23px;
+}
+
+.terminal-trace-body > * {
+  transform-origin: top;
+}
+
+.terminal-trace-opening > .terminal-trace-body > * {
+  animation: terminal-trace-fold-in 110ms ease-out both;
+  animation-delay: var(--trace-open-delay, 0ms);
+}
+
+.terminal-trace-closing > .terminal-trace-body > * {
+  animation: terminal-trace-fold-out 55ms ease-in both;
+  animation-delay: var(--trace-close-delay, 0ms);
+}
+
+@keyframes terminal-trace-fold-in {
+  from {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transform: translateY(-4px) scaleY(0.92);
+  }
+
+  to {
+    max-height: 900px;
+    opacity: 1;
+    overflow: hidden;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+@keyframes terminal-trace-fold-out {
+  from {
+    max-height: 900px;
+    opacity: 1;
+    overflow: hidden;
+    transform: translateY(0) scaleY(1);
+  }
+
+  to {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transform: translateY(-4px) scaleY(0.92);
+  }
 }
 
 .terminal-entry-user .terminal-entry-marker,
@@ -1756,5 +1804,11 @@ body.flow-resizing {
   .settings-header h2,
   .settings-content {
     transition: none;
+  }
+
+  .terminal-trace-opening > .terminal-trace-body > *,
+  .terminal-trace-closing > .terminal-trace-body > * {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
   }
 }
