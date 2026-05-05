@@ -470,6 +470,15 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain('[data-collapsed="true"] .ticket-status-group-body');
   });
 
+  test("sorts Linear tickets within each status by agent session and priority", () => {
+    expect(app).toContain("function ticketHasAgentSession(ticket)");
+    expect(app).toContain("function linearPrioritySortRank(priority)");
+    expect(app).toContain("function compareLinearTickets(a, b)");
+    expect(app).toContain("Number(ticketHasAgentSession(b)) - Number(ticketHasAgentSession(a))");
+    expect(app).toContain("linearPrioritySortRank(a.priority) - linearPrioritySortRank(b.priority)");
+    expect(app).toContain("return [...tickets].sort(compareLinearTickets);");
+  });
+
   test("lets ticket cards move between Linear status groups with drag and drop", () => {
     expect(app).toContain("draggingLinearIssueId");
     expect(app).toContain("function linearStatusId(ticket)");

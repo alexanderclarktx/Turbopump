@@ -590,8 +590,25 @@ function renderTickets() {
   els.ticketGrid.replaceChildren(...nodes);
 }
 
+function ticketHasAgentSession(ticket) {
+  return Boolean(ticket.flowId);
+}
+
+function linearPrioritySortRank(priority) {
+  const value = Number(priority);
+  if (value >= 1 && value <= 4) return value;
+  return 5;
+}
+
+function compareLinearTickets(a, b) {
+  return (
+    Number(ticketHasAgentSession(b)) - Number(ticketHasAgentSession(a)) ||
+    linearPrioritySortRank(a.priority) - linearPrioritySortRank(b.priority)
+  );
+}
+
 function sortedLinearTickets(tickets) {
-  return [...tickets].sort((a, b) => Number(Boolean(b.flowId)) - Number(Boolean(a.flowId)));
+  return [...tickets].sort(compareLinearTickets);
 }
 
 function groupedTicketsByLinearStatus(tickets) {
