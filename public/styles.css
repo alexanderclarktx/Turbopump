@@ -511,6 +511,16 @@ body.theme-dark .terminal-entry-thinking .terminal-entry-body {
   color: var(--muted);
 }
 
+body.theme-dark .terminal-output-delete {
+  color: var(--muted);
+}
+
+body.theme-dark .terminal-output-delete:hover,
+body.theme-dark .terminal-output-delete:focus-visible {
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
 body.theme-dark .terminal-entry-assistant .terminal-entry-marker,
 body.theme-dark .terminal-entry-assistant .terminal-entry-label,
 body.theme-dark .agent-working {
@@ -1651,6 +1661,10 @@ body.flow-resizing {
   color: #0f172a;
 }
 
+.terminal-entry {
+  position: relative;
+}
+
 .terminal-command-line {
   display: flex;
   align-items: baseline;
@@ -1680,6 +1694,55 @@ body.flow-resizing {
 .terminal-entry-output .terminal-entry-label,
 .terminal-entry-output .terminal-entry-body {
   color: #64748b;
+}
+
+.terminal-output-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  line-height: 1;
+  color: #94a3b8;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
+}
+
+.terminal-output-delete svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.terminal-entry-output:hover > .terminal-output-delete,
+.terminal-entry-output:focus-within > .terminal-output-delete {
+  opacity: 1;
+}
+
+.terminal-output-delete:hover,
+.terminal-output-delete:focus-visible {
+  color: #64748b;
+  background: #f1f5f9;
+}
+
+.terminal-output-delete:disabled {
+  pointer-events: none;
+  opacity: 0.45;
 }
 
 .terminal-entry-toolResult .terminal-entry-marker,

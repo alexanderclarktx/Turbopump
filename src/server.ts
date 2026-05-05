@@ -214,6 +214,8 @@ const setSettingStmt = db.query(`
 const insertLogStmt = db.query(`
   insert into logs (flowId, source, message, createdAt) values (?, ?, ?, ?)
 `);
+const logByIdStmt = db.query("select * from logs where id = ?");
+const deleteLogByIdStmt = db.query("delete from logs where id = ?");
 const latestUserLogStmt = db.query("select id from logs where flowId = ? and source = 'user' order by id desc limit 1");
 const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
@@ -311,6 +313,21 @@ function insertLog(flowId: string, source: string, message: string) {
   const id = Number(result.lastInsertRowid ?? 0);
   broadcast("log", { id, flowId, source, message, createdAt });
   return id;
+}
+
+function deleteOutputLogs(flowId: string, ids: number[]) {
+  const uniqueIds = [...new Set(ids.map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (!uniqueIds.length) throw new Error("No log ids provided.");
+
+  const rows = uniqueIds.map((id) => logByIdStmt.get(id) as LogRow | null);
+  const allowedSources = new Set(["agent:output", "agent:cmd"]);
+  if (rows.some((row) => !row || row.flowId !== flowId || !allowedSources.has(row.source))) {
+    throw new Error("Only output logs for this flow can be deleted.");
+  }
+
+  for (const id of uniqueIds) deleteLogByIdStmt.run(id);
+  broadcast("logs-deleted", { flowId, ids: uniqueIds });
+  return uniqueIds;
 }
 
 function getFlow(id: string) {
@@ -1791,6 +1808,21 @@ async function handleApi(request: Request, url: URL) {
         .query("select * from logs where flowId = ? and id > ? order by id asc limit 1000")
         .all(id, after);
       return json({ logs });
+    }
+
+    if (parts[3] === "logs" && request.method === "DELETE") {
+      let payload: { ids?: unknown };
+      try {
+        payload = await readJson<{ ids?: unknown }>(request);
+      } catch (error) {
+        return json({ error: String(error) }, { status: 400 });
+      }
+      try {
+        const ids = deleteOutputLogs(id, Array.isArray(payload.ids) ? payload.ids.map(Number) : []);
+        return json({ ok: true, ids });
+      } catch (error) {
+        return json({ error: String(error) }, { status: 400 });
+      }
     }
 
     if (parts[3] === "diff" && request.method === "GET") {

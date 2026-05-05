@@ -53,6 +53,7 @@ const state = {
   linearDetails: new Map(),
   logs: new Map(),
   lastLogId: new Map(),
+  openTraceGroups: new Map(),
   settingsCollapsed: true,
   theme: initialTheme(),
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
@@ -68,6 +69,7 @@ const state = {
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
   deletingCheckoutNames: new Set(),
+  deletingOutputLogIds: new Set(),
 };
 
 const els = {
@@ -1370,10 +1372,13 @@ function appendTerminalGroup(groups, log) {
   if (previous && previous.source === log.source && isStreamingSource(log.source)) {
     previous.message += log.message;
     previous.lastAt = log.createdAt;
+    previous.logIds.push(log.id);
     return previous;
   }
   const group = {
     id: log.id,
+    logIds: [log.id],
+    flowId: log.flowId,
     source: log.source,
     message: log.message,
     createdAt: log.createdAt,
@@ -1418,6 +1423,8 @@ function terminalGroups(logs) {
       if (!traceGroup) {
         traceGroup = {
           id: log.id,
+          traceKey: traceRange.key,
+          flowId: log.flowId,
           source: "agent:trace-group",
           message: "",
           createdAt: log.createdAt,
@@ -1490,14 +1497,17 @@ function appendTerminalBlock(fragment, group) {
   label.className = "terminal-entry-label";
   label.textContent = meta.label;
 
-  const time = document.createElement("time");
-  time.className = "terminal-entry-time";
-  time.dateTime = group.createdAt;
-  time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  let time = null;
+  if (meta.tone !== "output") {
+    time = document.createElement("time");
+    time.className = "terminal-entry-time";
+    time.dateTime = group.createdAt;
+    time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
 
   const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
   body.className = "terminal-entry-body";
@@ -1506,15 +1516,65 @@ function appendTerminalBlock(fragment, group) {
     ? renderLinearMarkdown(message, "", { images: false, links: true })
     : renderInlineMarkdown(message, { images: false, links: false });
 
-  header.replaceChildren(marker, label, time);
+  header.replaceChildren(marker, label, ...(time ? [time] : []));
   block.replaceChildren(header, body);
+  if (meta.tone === "output") block.appendChild(renderOutputDeleteButton(group));
   fragment.appendChild(block);
+}
+
+function renderOutputDeleteButton(group) {
+  const ids = group.logIds || [group.id];
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "terminal-output-delete";
+  button.setAttribute("aria-label", "Delete output message");
+  button.title = "Delete output message";
+  button.disabled = ids.some((id) => state.deletingOutputLogIds.has(id));
+  button.innerHTML = `
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4.5 4.5l7 7m0-7l-7 7" />
+    </svg>
+  `;
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await deleteOutputLogGroup(group.flowId, ids);
+  });
+  return button;
+}
+
+function removeLogEntries(flowId, ids) {
+  const idSet = new Set(ids.map(Number));
+  state.logs.set(
+    flowId,
+    (state.logs.get(flowId) || []).filter((log) => !idSet.has(Number(log.id))),
+  );
+}
+
+async function deleteOutputLogGroup(flowId, ids) {
+  if (!flowId || !ids?.length || ids.some((id) => state.deletingOutputLogIds.has(id))) return;
+  for (const id of ids) state.deletingOutputLogIds.add(id);
+  renderLogs(flowId, { force: true });
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flowId)}/logs`, {
+      method: "DELETE",
+      body: JSON.stringify({ ids }),
+    });
+    removeLogEntries(flowId, data.ids || ids);
+    renderLogs(flowId, { force: true });
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    for (const id of ids) state.deletingOutputLogIds.delete(id);
+    renderLogs(flowId, { force: true });
+  }
 }
 
 function appendTerminalTraceGroup(fragment, group) {
   const meta = logMeta(group.source);
   const details = document.createElement("details");
   details.className = "terminal-trace-group";
+  details.dataset.traceKey = group.traceKey || "";
   details._traceChildren = group.children || [];
 
   const summary = document.createElement("summary");
@@ -1544,7 +1604,29 @@ function appendTerminalTraceGroup(fragment, group) {
 
   summary.replaceChildren(marker, label, time);
   details.replaceChildren(summary);
+  if (isTerminalTraceGroupOpen(group)) {
+    materializeTerminalTraceGroup(details);
+    details.open = true;
+  }
   fragment.appendChild(details);
+}
+
+function openTraceGroupKeys(flowId) {
+  if (!state.openTraceGroups.has(flowId)) state.openTraceGroups.set(flowId, new Set());
+  return state.openTraceGroups.get(flowId);
+}
+
+function isTerminalTraceGroupOpen(group) {
+  return Boolean(group.flowId && group.traceKey && state.openTraceGroups.get(group.flowId)?.has(group.traceKey));
+}
+
+function setTerminalTraceGroupOpen(details, open) {
+  const flowId = state.selectedFlowId;
+  const traceKey = details.dataset.traceKey || "";
+  if (!flowId || !traceKey) return;
+  const openKeys = openTraceGroupKeys(flowId);
+  if (open) openKeys.add(traceKey);
+  else openKeys.delete(traceKey);
 }
 
 function materializeTerminalTraceGroup(details) {
@@ -1572,6 +1654,7 @@ function toggleTerminalTraceGroup(details) {
   if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
   details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
   if (shouldOpen) materializeTerminalTraceGroup(details);
+  setTerminalTraceGroupOpen(details, shouldOpen);
   details.open = true;
   details.classList.add("terminal-trace-animating", shouldOpen ? "terminal-trace-opening" : "terminal-trace-closing");
 
@@ -1773,6 +1856,10 @@ function connectWs() {
         createdAt,
       });
       renderLogs(flowId);
+    }
+    if (message.event === "logs-deleted") {
+      removeLogEntries(message.payload.flowId, message.payload.ids || []);
+      renderLogs(message.payload.flowId, { force: true });
     }
   });
   ws.addEventListener("close", () => setTimeout(connectWs, 1000));

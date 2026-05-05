@@ -215,7 +215,6 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
     expect(server).toContain("function deleteCheckout(name: string)");
     expect(server).toContain("rmSync(target, { recursive: true, force: true });");
-    expect(server).not.toContain("delete from logs");
   });
 
   test("keeps refresh buttons visually quiet", () => {
@@ -764,8 +763,19 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("block.replaceChildren(row);");
     expect(app).toContain("renderInlineMarkdown(formatTerminalMessage(group.source, group.message)");
     expect(app).not.toContain('time.className = "terminal-entry-time";\n    block.classList.add("terminal-entry-command");');
+    expect(app).toContain('if (meta.tone !== "output") {');
+    expect(app).toContain('if (meta.tone === "output") block.appendChild(renderOutputDeleteButton(group));');
+    expect(app).toContain("function renderOutputDeleteButton(group)");
+    expect(app).toContain("function deleteOutputLogGroup(flowId, ids)");
+    expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flowId)}/logs`, {');
+    expect(app).toContain('if (message.event === "logs-deleted")');
+    expect(server).toContain('const allowedSources = new Set(["agent:output", "agent:cmd"]);');
+    expect(server).toContain('broadcast("logs-deleted", { flowId, ids: uniqueIds });');
+    expect(server).toContain('if (parts[3] === "logs" && request.method === "DELETE")');
     expect(app).not.toContain('renderInlineMarkdown(`$ ${formatTerminalMessage(group.source, group.message)}`');
     expect(css).toContain(".terminal-command-line {\n  display: flex;");
+    expect(css).toContain(".terminal-output-delete");
+    expect(css).toContain(".terminal-entry-output:hover > .terminal-output-delete");
     expect(css).toContain(".terminal-command-line {\n  display: flex;\n  align-items: baseline;\n  gap: 7px;\n  min-width: 0;\n  font-size: 10px;");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;\n  font-size: 10px;");
@@ -831,7 +841,14 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("...runtimeDisappearedTraceRanges,");
     expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
+    expect(app).toContain("openTraceGroups: new Map()");
+    expect(app).toContain("traceKey: traceRange.key,");
+    expect(app).toContain("flowId: log.flowId,");
+    expect(app).toContain('details.dataset.traceKey = group.traceKey || "";');
     expect(app).toContain("details._traceChildren = group.children || [];");
+    expect(app).toContain("if (isTerminalTraceGroupOpen(group)) {");
+    expect(app).toContain("function setTerminalTraceGroupOpen(details, open)");
+    expect(app).toContain("setTerminalTraceGroupOpen(details, shouldOpen);");
     expect(app).toContain("details.replaceChildren(summary);");
     expect(app).toContain("function materializeTerminalTraceGroup(details)");
     expect(app).toContain("if (shouldOpen) materializeTerminalTraceGroup(details);");
