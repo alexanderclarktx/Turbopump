@@ -5,15 +5,18 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 
-type Stage = "planning" | "working" | "reviewing" | "validating" | "done";
+type Stage = "planning" | "working" | "reviewing" | "done";
 type ThreadStartSource = "startup" | "clear";
+type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "fast" | "flex";
 
 type Flow = {
@@ -46,6 +49,13 @@ type LogRow = {
   createdAt: string;
 };
 
+type UploadedImage = {
+  name: string;
+  type: string;
+  size: number;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+};
+
 type LinearIssue = {
   id: string;
   identifier: string;
@@ -73,7 +83,7 @@ type LinearIssue = {
   };
 };
 
-const stages: Stage[] = ["planning", "working", "reviewing", "validating", "done"];
+const stages: Stage[] = ["planning", "working", "reviewing", "done"];
 const rootDir = process.cwd();
 const agentHeartbeatSweepIntervalMs = 5000;
 const agentRuntimeStartGraceMs = 30000;
@@ -91,6 +101,8 @@ const port = Number(process.env.PORT ?? 3999);
 const apiBaseUrl = `http://localhost:${port}`;
 const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
+const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
+const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
 const defaultAgentDeveloperInstructions = [
   "You are running inside Turbopump, a local coding-agent workflow system.",
   "",
@@ -98,7 +110,7 @@ const defaultAgentDeveloperInstructions = [
   "",
   "In the planning stage, do not edit files. Focus on establishing task clarity.",
   "",
-  "Flow stages are: planning -> working -> reviewing -> validating -> done.",
+  "Flow stages are: planning -> working -> reviewing -> done.",
   "",
   "Update flow metadata when appropriate by POSTing JSON to:",
   "{flowMetaApiUrl}",
@@ -109,7 +121,11 @@ const defaultAgentDeveloperInstructions = [
   "Linear issue: {linearIssueId}",
   "Issue title: {title}",
   "Current stage: {stage}",
-  "Checkout path: {checkoutPath}"
+  "Checkout path: {checkoutPath}",
+  "",
+  "working guidelines:",
+  "- pr names should be short and minimally capitalized",
+  "- don't set the flow phase to done unless told to"
 ].join("\n");
 
 mkdirSync(dataDir, { recursive: true });
@@ -212,11 +228,19 @@ const setSettingStmt = db.query(`
 const insertLogStmt = db.query(`
   insert into logs (flowId, source, message, createdAt) values (?, ?, ?, ?)
 `);
+const logByIdStmt = db.query("select * from logs where id = ?");
+const deleteLogByIdStmt = db.query("delete from logs where id = ?");
 const latestUserLogStmt = db.query("select id from logs where flowId = ? and source = 'user' order by id desc limit 1");
+const latestUserLogBeforeStmt = db.query(
+  "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
+);
 const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
+const latestPromptTimestampStmt = db.query(
+  "select createdAt from logs where flowId = ? and source = 'user' order by id desc limit 1",
+);
 
 function now() {
   return new Date().toISOString();
@@ -305,6 +329,21 @@ function insertLog(flowId: string, source: string, message: string) {
   return id;
 }
 
+function deleteOutputLogs(flowId: string, ids: number[]) {
+  const uniqueIds = [...new Set(ids.map((id) => Number(id)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (!uniqueIds.length) throw new Error("No log ids provided.");
+
+  const rows = uniqueIds.map((id) => logByIdStmt.get(id) as LogRow | null);
+  const allowedSources = new Set(["agent:output", "agent:cmd"]);
+  if (rows.some((row) => !row || row.flowId !== flowId || !allowedSources.has(row.source))) {
+    throw new Error("Only output logs for this flow can be deleted.");
+  }
+
+  for (const id of uniqueIds) deleteLogByIdStmt.run(id);
+  broadcast("logs-deleted", { flowId, ids: uniqueIds });
+  return uniqueIds;
+}
+
 function getFlow(id: string) {
   return flowByIdStmt.get(id) as Flow | null;
 }
@@ -315,6 +354,125 @@ function getFlowByIssue(identifier: string) {
 
 function listFlows() {
   return allFlowsStmt.all() as Flow[];
+}
+
+function checkoutNameFromPath(path: string) {
+  return basename(resolve(path));
+}
+
+function checkoutFlowMap() {
+  const map = new Map<string, Flow>();
+  for (const flow of listFlows()) {
+    if (!flow.checkoutPath) continue;
+    map.set(checkoutNameFromPath(flow.checkoutPath), flow);
+  }
+  return map;
+}
+
+function latestPromptTimestamp(flowId: string) {
+  const row = latestPromptTimestampStmt.get(flowId) as { createdAt: string } | null;
+  return row?.createdAt ?? "";
+}
+
+function listCheckouts() {
+  const flowsByCheckout = checkoutFlowMap();
+  return readdirSync(checkoutDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const path = join(checkoutDir, entry.name);
+      const stats = statSync(path);
+      const flow = flowsByCheckout.get(entry.name) ?? null;
+      const createdAtMs = stats.birthtimeMs || stats.ctimeMs || stats.mtimeMs;
+      return {
+        name: entry.name,
+        path,
+        createdAt: new Date(createdAtMs).toISOString(),
+        updatedAt: stats.mtime.toISOString(),
+        ticketId: flow?.linearIssueId ?? entry.name.match(/[a-z]+-\d+/i)?.[0]?.toUpperCase() ?? "",
+        ticketName: flow?.title ?? "",
+        linearStatus: flow?.linearStatus ?? "",
+        flowPhase: flow?.stage ?? "",
+        lastPromptAt: flow ? latestPromptTimestamp(flow.id) : "",
+      };
+    })
+    .sort((a, b) => {
+      const aTime = Date.parse(a.lastPromptAt || a.createdAt || "");
+      const bTime = Date.parse(b.lastPromptAt || b.createdAt || "");
+      return bTime - aTime || a.name.localeCompare(b.name);
+    });
+}
+
+async function refreshCheckoutLinearStatuses() {
+  if (!linearAuthHeader()) return;
+  const flowsByCheckout = checkoutFlowMap();
+  const checkoutNames = new Set(
+    readdirSync(checkoutDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name),
+  );
+  const flows = [...flowsByCheckout.entries()]
+    .filter(([name]) => checkoutNames.has(name))
+    .map(([, flow]) => flow);
+  await Promise.allSettled(flows.map((flow) => syncLinearStatus(flow)));
+}
+
+function checkoutPathForName(name: string) {
+  const safeName = basename(name);
+  if (!safeName || safeName !== name || safeName === "." || safeName === "..") {
+    throw new Error("Invalid checkout name.");
+  }
+  const target = resolve(checkoutDir, safeName);
+  const checkoutRoot = resolve(checkoutDir);
+  if (!target.startsWith(`${checkoutRoot}/`)) throw new Error("Invalid checkout path.");
+  return target;
+}
+
+function deleteCheckout(name: string) {
+  const target = checkoutPathForName(name);
+  if (!existsSync(target)) throw new Error("Checkout not found.");
+  const stats = statSync(target);
+  if (!stats.isDirectory()) throw new Error("Checkout is not a directory.");
+  rmSync(target, { recursive: true, force: true });
+}
+
+function safeImageExtension(file: UploadedImage) {
+  const fromName = extname(file.name).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg"].includes(fromName)) return fromName;
+  if (file.type === "image/png") return ".png";
+  if (file.type === "image/jpeg") return ".jpg";
+  if (file.type === "image/gif") return ".gif";
+  if (file.type === "image/webp") return ".webp";
+  if (file.type === "image/avif") return ".avif";
+  if (file.type === "image/svg+xml") return ".svg";
+  return "";
+}
+
+async function saveFlowContextImages(flow: Flow, formData: FormData) {
+  const values = formData.getAll("images");
+  const files = values.filter((value): value is UploadedImage => {
+    return typeof value === "object" && value !== null && "arrayBuffer" in value && "type" in value && "name" in value;
+  });
+  if (!files.length) throw new Error("No images provided.");
+  const contextDir = join(flow.checkoutPath, ".flow", "context");
+  mkdirSync(contextDir, { recursive: true });
+
+  const images = [];
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) throw new Error("Only image files can be attached.");
+    const extension = safeImageExtension(file);
+    if (!extension) throw new Error("Unsupported image type.");
+    const name = `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${crypto.randomUUID()}${extension}`;
+    const path = join(contextDir, name);
+    writeFileSync(path, Buffer.from(await file.arrayBuffer()));
+    images.push({
+      name: file.name,
+      path,
+      relativePath: `.flow/context/${name}`,
+      type: file.type,
+      size: file.size,
+    });
+  }
+  return images;
 }
 
 function assertStage(stage: string): asserts stage is Stage {
@@ -392,7 +550,8 @@ function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   const statusAge = flowStatusAgeMs(flow, nowMs);
   if (!runtime) {
     if (statusAge < agentRuntimeStartGraceMs) return flow;
-    insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
+    const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
+    createTurnTraceGroup(flow.id, errorLogId);
     updateFlow(flow.id, { agentStatus: "failed" });
     return getFlow(flow.id) ?? flow;
   }
@@ -719,6 +878,9 @@ function flowDeveloperInstructions(flow: Flow) {
 function codexThreadOverrides(flow: Flow) {
   return {
     ...(flow.agentModel ? { model: flow.agentModel } : {}),
+    ...(reasoningEfforts.has(flow.agentReasoningEffort as ReasoningEffort)
+      ? { reasoningEffort: flow.agentReasoningEffort as ReasoningEffort }
+      : {}),
     ...(serviceTiers.has(flow.agentServiceTier as ServiceTier)
       ? { serviceTier: flow.agentServiceTier as ServiceTier }
       : {}),
@@ -732,6 +894,9 @@ function codexTurnOverrides(flow: Flow) {
 function configuredAgentMetadata(flow: Flow): Partial<Flow> {
   return {
     ...(flow.agentModel ? { agentModel: flow.agentModel } : {}),
+    ...(reasoningEfforts.has(flow.agentReasoningEffort as ReasoningEffort)
+      ? { agentReasoningEffort: flow.agentReasoningEffort }
+      : {}),
     ...(serviceTiers.has(flow.agentServiceTier as ServiceTier) ? { agentServiceTier: flow.agentServiceTier } : {}),
   };
 }
@@ -897,6 +1062,30 @@ function isAgentMessageSource(source: string) {
   return source === "agent:message" || source === "agent";
 }
 
+function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
+  if (beforeId <= promptId) return;
+
+  const logs = (logsAfterStmt.all(flowId, promptId) as LogRow[]).filter((log) => log.id < beforeId);
+  const traceCount = logs.length;
+  if (!traceCount) return;
+
+  insertLog(
+    flowId,
+    "agent:trace-group",
+    JSON.stringify({
+      afterId: promptId,
+      beforeId,
+      count: traceCount,
+    }),
+  );
+}
+
+function createTurnTraceGroup(flowId: string, beforeId: number) {
+  const prompt = latestUserLogBeforeStmt.get(flowId, beforeId) as { id: number } | null;
+  if (!prompt) return;
+  createTraceGroupAfterPrompt(flowId, prompt.id, beforeId);
+}
+
 function createCompletedTurnTraceGroup(flowId: string) {
   const prompt = latestUserLogStmt.get(flowId) as { id: number } | null;
   if (!prompt) return;
@@ -919,18 +1108,7 @@ function createCompletedTurnTraceGroup(flowId: string) {
   if (finalMessageStartIndex <= 0) return;
 
   const beforeId = logs[finalMessageStartIndex].id;
-  const traceCount = logs.filter((log) => log.id > prompt.id && log.id < beforeId).length;
-  if (!traceCount) return;
-
-  insertLog(
-    flowId,
-    "agent:trace-group",
-    JSON.stringify({
-      afterId: prompt.id,
-      beforeId,
-      count: traceCount,
-    }),
-  );
+  createTurnTraceGroup(flowId, beforeId);
 }
 
 function checkoutBranchUpdate(flowId: string): Partial<Flow> {
@@ -1208,6 +1386,13 @@ function parseSlashCommand(message: string) {
   return command.toLowerCase();
 }
 
+function slashCommandArgs(message: string) {
+  const trimmed = message.trim();
+  const firstSpace = trimmed.search(/\s/);
+  if (firstSpace === -1) return "";
+  return trimmed.slice(firstSpace).trim();
+}
+
 async function ensureCodexRuntime(flow: Flow) {
   return agentProcesses.get(flow.id) ?? (await startCodexAppServer(flow));
 }
@@ -1250,6 +1435,20 @@ async function handleSlashCommand(flow: Flow, message: string) {
     insertLog(flow.id, "agent:status", serviceTier ? "fast mode enabled" : "fast mode disabled");
     return true;
   }
+  if (command === "/effort") {
+    const reasoningEffort = slashCommandArgs(message).toLowerCase() as ReasoningEffort;
+    if (!reasoningEfforts.has(reasoningEffort)) throw new Error("Usage: /effort high|medium|low|xhigh");
+    updateFlow(flow.id, { agentReasoningEffort: reasoningEffort });
+    insertLog(flow.id, "agent:status", `reasoning effort set to ${reasoningEffort}`);
+    return true;
+  }
+  if (command === "/model") {
+    const model = slashCommandArgs(message).toLowerCase();
+    if (!agentModels.has(model)) throw new Error("Usage: /model gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2");
+    updateFlow(flow.id, { agentModel: model });
+    insertLog(flow.id, "agent:status", `model set to ${model}`);
+    return true;
+  }
 
   const runtime = await ensureCodexRuntime(flow);
   if (command === "/clear") {
@@ -1273,9 +1472,12 @@ async function startAgent(flow: Flow, userMessage = "") {
   const updated = getFlow(flow.id);
   if (!updated) throw new Error("Flow disappeared while starting agent.");
 
-  if (message) insertLog(flow.id, "user", `${userMessage}\n`);
+  const existingRuntime = agentProcesses.get(flow.id);
+  const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);
+  const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\n`) : 0;
+  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
   try {
-    const runtime = agentProcesses.get(flow.id) ?? (await startCodexAppServer(updated));
+    const runtime = existingRuntime ?? (await startCodexAppServer(updated));
     if (!message) return;
     await sendAgentTurn(runtime, updated, userMessage);
   } catch (error) {
@@ -1540,6 +1742,21 @@ async function handleApi(request: Request, url: URL) {
     });
   }
 
+  if (url.pathname === "/api/checkouts" && request.method === "GET") {
+    await refreshCheckoutLinearStatuses();
+    return json({ checkouts: listCheckouts() });
+  }
+
+  if (parts[0] === "api" && parts[1] === "checkouts" && parts[2] && request.method === "DELETE") {
+    try {
+      deleteCheckout(decodeURIComponent(parts[2]));
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+    }
+    broadcast("checkouts", listCheckouts());
+    return json({ ok: true, checkouts: listCheckouts() });
+  }
+
   if (url.pathname === "/api/repo" && request.method === "POST") {
     const body = await readJson<{
       repoUrl: string;
@@ -1609,7 +1826,10 @@ async function handleApi(request: Request, url: URL) {
   if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && parts[4] === "status" && request.method === "POST") {
     const body = await readJson<{ issueId?: string; stateId?: string }>(request);
     const result = await updateLinearIssueStatus(decodeURIComponent(parts[3]), body.issueId || "", body.stateId || "");
-    if (result.flow) broadcast("flows", listFlows());
+    if (result.flow) {
+      broadcast("flows", listFlows());
+      broadcast("checkouts", listCheckouts());
+    }
     return json({ ok: true, ...result });
   }
 
@@ -1650,6 +1870,7 @@ async function handleApi(request: Request, url: URL) {
       await syncLinearStatus(flow);
     }
     broadcast("flows", listFlows());
+    broadcast("checkouts", listCheckouts());
     return json({ ok: true, flow: getFlow(id) });
   }
 
@@ -1668,6 +1889,30 @@ async function handleApi(request: Request, url: URL) {
         .query("select * from logs where flowId = ? and id > ? order by id asc limit 1000")
         .all(id, after);
       return json({ logs });
+    }
+
+    if (parts[3] === "logs" && request.method === "DELETE") {
+      let payload: { ids?: unknown };
+      try {
+        payload = await readJson<{ ids?: unknown }>(request);
+      } catch (error) {
+        return json({ error: String(error) }, { status: 400 });
+      }
+      try {
+        const ids = deleteOutputLogs(id, Array.isArray(payload.ids) ? payload.ids.map(Number) : []);
+        return json({ ok: true, ids });
+      } catch (error) {
+        return json({ error: String(error) }, { status: 400 });
+      }
+    }
+
+    if (parts[3] === "context-images" && request.method === "POST") {
+      try {
+        const images = await saveFlowContextImages(repairFlowCheckoutPath(flow), await request.formData());
+        return json({ ok: true, images });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+      }
     }
 
     if (parts[3] === "diff" && request.method === "GET") {
@@ -1735,6 +1980,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "linear-sync" && request.method === "POST") {
       await syncLinearStatus(flow);
       broadcast("flows", listFlows());
+      broadcast("checkouts", listCheckouts());
       return json({ ok: true, flow: getFlow(id) });
     }
   }

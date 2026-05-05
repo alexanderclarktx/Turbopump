@@ -5,6 +5,8 @@ const app = await Bun.file("public/app.js").text();
 const css = await Bun.file("public/styles.css").text();
 const server = await Bun.file("src/server.ts").text();
 const markdown = await Bun.file("public/linear-markdown.js").text();
+const readyStatusIcon = await Bun.file("public/status-icons/ready.svg").text();
+const completedStatusIcon = await Bun.file("public/status-icons/completed.svg").text();
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
@@ -163,12 +165,56 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('setSetting("agentDeveloperInstructions"');
     expect(server).not.toContain('setSetting("agentStartPrompt"');
     expect(server).not.toContain("buildAgentPrompt");
-    expect(server).toContain("Flow stages are: planning -> working -> reviewing -> validating -> done.");
+    expect(server).toContain("Flow stages are: planning -> working -> reviewing -> done.");
     expect(server).toContain("flowMetaApiUrl");
     expect(server).toContain('Example body: {"stage":"reviewing","prUrl":"https://github.com/org/repo/pull/123"}');
     expect(server).toContain("Each field in the body is optional.");
     expect(server).toContain("stage: flow.stage,");
     expect(server).toContain("prUrl: flow.prUrl,");
+  });
+
+  test("shows checkout cleanup cards in Settings without deleting traces", () => {
+    expect(html).toContain('<section class="checkout-settings">');
+    expect(html).toContain("<h2>Checkouts</h2>");
+    expect(html).toContain('id="checkoutList"');
+    expect(app).toContain("checkouts: []");
+    expect(app).toContain("checkoutsLoaded: false");
+    expect(app).toContain("checkoutsLoading: false");
+    expect(app).toContain("checkoutList: document.querySelector");
+    expect(app).toContain("function renderCheckouts()");
+    expect(app).toContain("function renderCheckoutCard(checkout)");
+    expect(app).toContain("function ensureCheckoutsLoaded()");
+    expect(app).toContain("void ensureCheckoutsLoaded();");
+    expect(app).toContain("state.checkoutsLoading = true;");
+    expect(app).toContain("function renderLinearStatusIcon(status)");
+    expect(app).toContain('<img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />');
+    expect(app).toContain('["Linear", renderLinearStatusIcon(checkout.linearStatus)]');
+    expect(app).toContain("function deleteCheckout(name)");
+    expect(app).toContain("Date.parse(a.lastPromptAt || a.createdAt || 0)");
+    expect(app).toContain("deletingCheckoutNames: new Set()");
+    expect(app).toContain('spinner.className = "checkout-spinner";');
+    expect(app).toContain('await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });');
+    expect(app).toContain('if (message.event === "checkouts")');
+    expect(css).toContain(".checkout-list");
+    expect(css).toContain(".linear-status-icon");
+    expect(css).toContain(".linear-status-icon img");
+    expect(readyStatusIcon).toContain('<circle cx="10" cy="10" r="8" fill="#f2c200" />');
+    expect(readyStatusIcon).toContain('<circle cx="10" cy="10" r="5.4" fill="#ffffff" />');
+    expect(completedStatusIcon).toContain('<circle cx="10" cy="10" r="8" fill="#2563eb" />');
+    expect(completedStatusIcon).toContain('stroke="#ffffff"');
+    expect(css).toContain(".checkout-card:hover .checkout-delete");
+    expect(css).toContain(".checkout-spinner");
+    expect(css).toContain("@keyframes checkout-spinner");
+    expect(css).toContain("pointer-events: none;");
+    expect(server).toContain("function listCheckouts()");
+    expect(server).toContain("Date.parse(a.lastPromptAt || a.createdAt || \"\")");
+    expect(server).toContain("async function refreshCheckoutLinearStatuses()");
+    expect(server).toContain("await refreshCheckoutLinearStatuses();");
+    expect(server).toContain("latestPromptTimestamp(flow.id)");
+    expect(server).toContain('url.pathname === "/api/checkouts"');
+    expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
+    expect(server).toContain("function deleteCheckout(name: string)");
+    expect(server).toContain("rmSync(target, { recursive: true, force: true });");
   });
 
   test("keeps refresh buttons visually quiet", () => {
@@ -261,7 +307,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('agentPanel.classList.toggle("disabled", !agentEnabled);');
     expect(app).toContain("agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;");
     expect(app).toContain(
-      'els.flowPane.querySelector(".message-input").disabled = state.messageSubmitting || !agentEnabled || (!flow && !ticket);',
+      'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
     );
     expect(app).toContain("renderFlowPane();\n});");
     expect(css).toContain(".agent-disabled-message");
@@ -270,8 +316,8 @@ describe("Turbopump pane markup", () => {
   });
 
   test("uses planning as the first flow stage everywhere except migration", () => {
-    expect(server).toContain('type Stage = "planning" | "working" | "reviewing" | "validating" | "done";');
-    expect(server).toContain('const stages: Stage[] = ["planning", "working", "reviewing", "validating", "done"];');
+    expect(server).toContain('type Stage = "planning" | "working" | "reviewing" | "done";');
+    expect(server).toContain('const stages: Stage[] = ["planning", "working", "reviewing", "done"];');
     expect(server).toContain('tryMigration("update flows set stage = \'planning\' where stage = \'not_started\'");');
     expect(server).not.toContain('stage: message && flow.stage === "planning" ? "working" : flow.stage');
     expect(server).toContain('"planning",');
@@ -470,6 +516,15 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain('[data-collapsed="true"] .ticket-status-group-body');
   });
 
+  test("sorts Linear tickets within each status by agent session and priority", () => {
+    expect(app).toContain("function ticketHasAgentSession(ticket)");
+    expect(app).toContain("function linearPrioritySortRank(priority)");
+    expect(app).toContain("function compareLinearTickets(a, b)");
+    expect(app).toContain("Number(ticketHasAgentSession(b)) - Number(ticketHasAgentSession(a))");
+    expect(app).toContain("linearPrioritySortRank(a.priority) - linearPrioritySortRank(b.priority)");
+    expect(app).toContain("return [...tickets].sort(compareLinearTickets);");
+  });
+
   test("lets ticket cards move between Linear status groups with drag and drop", () => {
     expect(app).toContain("draggingLinearIssueId");
     expect(app).toContain("function linearStatusId(ticket)");
@@ -604,6 +659,8 @@ describe("Turbopump pane markup", () => {
     expect(html).not.toContain('class="agent-start icon-button"');
     expect(html).toContain('class="agent-interrupt icon-button"');
     expect(html).toContain('aria-label="Pause agent"');
+    expect(html).toContain('class="agent-image-context" aria-label="Attached image context" hidden');
+    expect(html).not.toContain('class="agent-image-drop-overlay"');
     expect(html).toContain('class="slash-menu" role="listbox" hidden');
     expect(html).not.toContain('class="agent-working" aria-live="polite" hidden');
     expect(html).not.toContain("<span>working</span>");
@@ -627,8 +684,17 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (state.interruptSubmitting) return;");
     expect(app).toContain("state.interruptSubmitting = true;");
     expect(app).toContain(
-      'els.flowPane.querySelector(".message-input").disabled = state.messageSubmitting || !agentEnabled || (!flow && !ticket);',
+      'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
     );
+    expect(app).toContain("async function uploadAgentImages(files)");
+    expect(app).toContain("function eventHasDraggedFiles(event)");
+    expect(app).toContain("function setAgentImageDragActive(active)");
+    expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flow.id)}/context-images`,');
+    expect(app).toContain("function agentMessageWithImages(message)");
+    expect(app).toContain('document.addEventListener("drop"');
+    expect(css).not.toContain(".agent-image-drop-overlay");
+    expect(server).toContain("async function saveFlowContextImages(flow: Flow, formData: FormData)");
+    expect(server).toContain('parts[3] === "context-images" && request.method === "POST"');
     expect(app).toContain("if (state.messageSubmitting) return;");
     expect(app).toContain("state.messageSubmitting = true;");
     expect(app).toContain("const flow = await ensureSelectedFlow();");
@@ -650,9 +716,14 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain("padding: 0 14px 6px;");
     expect(css).toContain("@keyframes agent-working-dot");
     expect(css).toContain(".message-input {\n  min-width: 0;\n  min-height: 36px;");
+    expect(css).toContain("max-height: min(220px, 30vh);");
     expect(css).toContain("resize: none;");
+    expect(css).toContain("overflow-y: auto;");
     expect(css).toContain("bottom: calc(100% - 4px);");
     expect(css).toContain(".slash-menu");
+    expect(css).toContain("grid-template-columns: minmax(128px, max-content) minmax(0, 1fr);");
+    expect(css).toContain(".slash-command-name {\n  min-width: 0;");
+    expect(css).toContain("white-space: nowrap;");
     expect(css).toContain(".agent-interrupt:disabled");
     expect(css).not.toContain(".agent-start svg");
     expect(server).toContain('"turn/interrupt"');
@@ -700,16 +771,31 @@ describe("Turbopump pane markup", () => {
   });
 
   test("renders command execution logs as a single shell prompt line", () => {
-    expect(app).toContain('if (group.source === "agent:tool")');
+    expect(app).toContain('if (group.source === "agent:tool" || group.source === "agent:tool-result")');
     expect(app).toContain('block.classList.add("terminal-entry-command");');
     expect(app).toContain('row.className = "terminal-command-line";');
     expect(app).toContain("marker.textContent = meta.marker;");
     expect(app).toContain("row.replaceChildren(marker, body);");
     expect(app).toContain("block.replaceChildren(row);");
     expect(app).toContain("renderInlineMarkdown(formatTerminalMessage(group.source, group.message)");
+    expect(app).not.toContain('time.className = "terminal-entry-time";\n    block.classList.add("terminal-entry-command");');
+    expect(app).toContain('if (meta.tone !== "output") {');
+    expect(app).toContain('if (meta.tone === "output") block.appendChild(renderOutputDeleteButton(group));');
+    expect(app).toContain("function renderOutputDeleteButton(group)");
+    expect(app).toContain("function deleteOutputLogGroup(flowId, ids)");
+    expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flowId)}/logs`, {');
+    expect(app).toContain('if (message.event === "logs-deleted")');
+    expect(server).toContain('const allowedSources = new Set(["agent:output", "agent:cmd"]);');
+    expect(server).toContain('broadcast("logs-deleted", { flowId, ids: uniqueIds });');
+    expect(server).toContain('if (parts[3] === "logs" && request.method === "DELETE")');
     expect(app).not.toContain('renderInlineMarkdown(`$ ${formatTerminalMessage(group.source, group.message)}`');
     expect(css).toContain(".terminal-command-line {\n  display: flex;");
+    expect(css).toContain(".terminal-output-delete");
+    expect(css).toContain(".terminal-entry-output:hover > .terminal-output-delete");
+    expect(css).toContain(".terminal-command-line {\n  display: flex;\n  align-items: baseline;\n  gap: 7px;\n  min-width: 0;\n  font-size: 10px;");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;");
+    expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;\n  font-size: 10px;");
+    expect(css).toContain(".terminal-trace-body .terminal-entry-assistant,\n.terminal-trace-body .terminal-entry-assistant .terminal-entry-time,\n.terminal-entry-output,\n.terminal-entry-error {\n  font-size: 10px;");
   });
 
   test("drains paginated logs on refresh", () => {
@@ -731,7 +817,17 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("terminal.scrollTop = terminal.scrollHeight;");
     expect(app).toContain('hour: "numeric"');
     expect(css).toContain(".terminal-entry-time {\n  margin-left: auto;\n  color: #94a3b8;\n  font-size: 11px;");
-    expect(app).toContain("const distanceFromBottom = terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;");
+    expect(app).toContain("function terminalDistanceFromBottom(terminal)");
+    expect(app).toContain("return terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;");
+    expect(app).toContain("function terminalAtLatest(terminal)");
+    expect(app).toContain("terminalFollowPaused: false");
+    expect(app).toContain("function pauseTerminalFollow()");
+    expect(app).toContain("function resumeTerminalFollow()");
+    expect(app).toContain("state.terminalFollowPaused || !terminalAtLatest(terminal)");
+    expect(app).toContain('els.flowPane.querySelector(".terminal").addEventListener(\n  "wheel"');
+    expect(app).toContain("terminal._flowLogPending = id;");
+    expect(app).toContain("terminal._flowLogPending = \"\";");
+    expect(app).toContain('els.flowPane.querySelector(".terminal").addEventListener("scroll"');
     expect(app).toContain("for (const group of groups) appendTerminalBlock(fragment, group);");
     expect(app).not.toContain("[...groups].reverse()");
     expect(app).not.toContain("activeFlowTab");
@@ -740,22 +836,58 @@ describe("Turbopump pane markup", () => {
 
   test("collapses completed-turn traces between the prompt and final message", () => {
     expect(server).toContain('insertLog(\n    flowId,\n    "agent:trace-group",');
+    expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
+    expect(server).toContain("function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number)");
+    expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string)");
-    expect(server).toContain("const prompt = latestUserLogStmt.get(flowId)");
+    expect(server).toContain("const prompt = latestUserLogBeforeStmt.get(flowId, beforeId)");
     expect(server).toContain("const beforeId = logs[finalMessageStartIndex].id;");
     expect(server).toContain("createCompletedTurnTraceGroup(runtime.flowId);");
+    expect(server).toContain("const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);");
+    expect(server).toContain("if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);");
+    expect(server).toContain('const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
+    expect(server).toContain("createTurnTraceGroup(flow.id, errorLogId);");
     expect(app).toContain('"agent:trace-group": { label: "trace"');
     expect(app).toContain("function parseTraceGroup(log)");
+    expect(app).toContain("function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges)");
+    expect(app).toContain("function syntheticSteerTraceRanges(logs, existingRanges)");
+    expect(app).toContain("function isTurnCompletedLog(log)");
+    expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
+    expect(app).toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
+    expect(app).toContain("...runtimeDisappearedTraceRanges,");
+    expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
+    expect(app).toContain("openTraceGroups: new Map()");
+    expect(app).toContain("traceKey: traceRange.key,");
+    expect(app).toContain("flowId: log.flowId,");
+    expect(app).toContain('details.dataset.traceKey = group.traceKey || "";');
+    expect(app).toContain("details._traceChildren = group.children || [];");
+    expect(app).toContain("if (isTerminalTraceGroupOpen(group)) {");
+    expect(app).toContain("function setTerminalTraceGroupOpen(details, open)");
+    expect(app).toContain("setTerminalTraceGroupOpen(details, shouldOpen);");
+    expect(app).toContain("details.replaceChildren(summary);");
+    expect(app).toContain("function materializeTerminalTraceGroup(details)");
+    expect(app).toContain("if (shouldOpen) materializeTerminalTraceGroup(details);");
     expect(app).toContain('message: "",');
     expect(app).not.toContain('event${traceRange.count === 1 ? "" : "s"}');
     expect(app).not.toContain('message: `${traceRange.count || 0} trace event');
     expect(app).toContain('details.className = "terminal-trace-group";');
-    expect(app).toContain("summary.replaceChildren(marker, label, time);");
+    expect(app).toContain('child.style.setProperty("--trace-open-delay", `${traceFoldDelay(index)}ms`);');
+    expect(app).toContain('child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);');
+    expect(app).toContain("function traceFoldDelay(index)");
+    expect(app).toContain("Math.log1p(Math.max(0, index) * 1.6) * 30");
+    expect(app).toContain('event.preventDefault();');
+    expect(app).toContain("toggleTerminalTraceGroup(details);");
+    expect(app).toContain("function toggleTerminalTraceGroup(details)");
     expect(app).toContain('body.className = "terminal-trace-body";');
     expect(css).toContain(".terminal-trace-group");
+    expect(css).toContain("user-select: none;");
     expect(css).toContain(".terminal-trace-group:not([open]) > .terminal-trace-summary .terminal-entry-time");
     expect(css).toContain(".terminal-trace-body");
+    expect(css).toContain(".terminal-trace-opening > .terminal-trace-body > *");
+    expect(css).toContain("animation-delay: var(--trace-open-delay, 0ms);");
+    expect(css).toContain(".terminal-trace-closing > .terminal-trace-body > *");
+    expect(css).toContain("animation-delay: var(--trace-close-delay, 0ms);");
   });
 
   test("repaints agent logs after navigating through a ticket without a flow", () => {
@@ -767,10 +899,10 @@ describe("Turbopump pane markup", () => {
   });
 
   test("logs the user prompt before starting a new Codex runtime", () => {
-    const promptLog = 'insertLog(flow.id, "user", `${userMessage}\\n`);';
+    const promptLog = 'const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\\n`) : 0;';
     expect(server).toContain(promptLog);
     expect(server.indexOf(promptLog)).toBeLessThan(
-      server.indexOf("const runtime = agentProcesses.get(flow.id) ?? (await startCodexAppServer(updated));"),
+      server.indexOf("const runtime = existingRuntime ?? (await startCodexAppServer(updated));"),
     );
   });
 
@@ -778,15 +910,35 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('const SLASH_COMMANDS = [');
     expect(app).toContain('name: "/clear"');
     expect(app).toContain('name: "/compact"');
+    expect(app).toContain('name: "/effort"');
     expect(app).toContain('name: "/fast"');
-    expect(app).not.toContain('name: "/model"');
+    expect(app).toContain('name: "/model"');
+    expect(app).toContain('"/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({');
+    expect(app).toContain('"/model": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"].map((model) => ({');
+    expect(app).toContain('description: "",');
+    expect(app).toContain("function slashCommandExpansionMatches(query)");
+    expect(app).toContain("function slashCommandHasExpansions(commandName)");
+    expect(app).toContain("function validSlashCommand(value)");
+    expect(app).toContain("if (expansions.length) return expansions;");
     expect(app).toContain("function renderSlashMenu()");
     expect(app).toContain("function selectSlashCommand");
-    expect(app).toContain('if (!query.startsWith("/") || /\\s/.test(query.slice(1))) return [];');
+    expect(app).toContain("function resizeMessageInput()");
+    expect(app).toContain('const terminal = els.flowPane.querySelector(".terminal");');
+    expect(app).toContain("const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);");
+    expect(app).toContain('input.style.height = "auto";');
+    expect(app).toContain("input.style.height = `${input.scrollHeight}px`;");
+    expect(app).toContain("if (shouldFollowLatest) scrollTerminalToLatest(terminal);");
+    expect(app).toContain('if (!query.startsWith("/")) return [];');
+    expect(app).toContain(".sort((a, b) => a.name.localeCompare(b.name))");
+    expect(app).not.toContain("SLASH_COMMAND_EXPANSIONS[command] = sortSlashCommands(expansions);");
     expect(app).toContain('els.flowPane.querySelector(".message-input").addEventListener("keydown"');
     expect(app).toContain('if (event.key === "Enter" && !event.shiftKey && !event.isComposing)');
     expect(app).toContain("input.form?.requestSubmit();");
-    expect(app).toContain('event.key === "Enter" && !event.shiftKey && input.value.trim() !== matches[state.slashCommandIndex]?.name');
+    expect(app).toContain("resizeMessageInput();");
+    expect(app).toContain("if (input.value.trim() !== command.name) {");
+    expect(app).toContain("if (slashCommandHasExpansions(command.name))");
+    expect(app).toContain('if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;');
+    expect(app).toContain('els.flowPane.querySelector(".slash-menu").addEventListener("mouseover"');
     expect(app).toContain('els.flowPane.querySelector(".slash-menu").addEventListener("mousedown"');
     expect(server).toContain("function parseSlashCommand(message: string)");
     expect(server).toContain('"thread/compact/start"');
@@ -794,21 +946,26 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('sessionStartSource,');
     expect(server).toContain('insertLog(flow.id, "agent:status", "context cleared")');
     expect(server).toContain('insertLog(flow.id, "agent:status", "compact requested")');
+    expect(server).toContain('updateFlow(flow.id, { agentStatus: "running" });');
+    expect(app).toContain("const agentRunning = flow?.agentStatus === \"running\";");
+    expect(app).toContain("state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);");
   });
 
   test("supports fast slash command as a toggle", () => {
-    expect(server).not.toContain('type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";');
+    expect(server).toContain('type ReasoningEffort = "low" | "medium" | "high" | "xhigh";');
     expect(server).toContain('type ServiceTier = "fast" | "flex";');
-    expect(server).not.toContain("const reasoningEfforts = new Set<ReasoningEffort>");
+    expect(server).toContain("const reasoningEfforts = new Set<ReasoningEffort>");
     expect(server).toContain("const serviceTiers = new Set<ServiceTier>");
     expect(server).toContain("function codexThreadOverrides(flow: Flow)");
     expect(server).toContain("function codexTurnOverrides(flow: Flow)");
     expect(server).toContain("function configuredAgentMetadata(flow: Flow): Partial<Flow>");
     expect(server).toContain("...codexThreadOverrides(flow),");
     expect(server).toContain("...codexTurnOverrides(flow),");
-    expect(server).not.toContain("function slashCommandArgs(message: string)");
-    expect(server).not.toContain('if (command === "/model")');
-    expect(server).not.toContain("/model <model>");
+    expect(server).toContain("function slashCommandArgs(message: string)");
+    expect(server).toContain('if (command === "/effort")');
+    expect(server).toContain('if (command === "/model")');
+    expect(server).toContain('updateFlow(flow.id, { agentReasoningEffort: reasoningEffort });');
+    expect(server).toContain('updateFlow(flow.id, { agentModel: model });');
     expect(server).toContain('if (command === "/fast")');
     expect(server).toContain('const serviceTier = flow.agentServiceTier === "fast" ? "" : "fast";');
     expect(server).toContain("updateFlow(flow.id, { agentServiceTier: serviceTier });");

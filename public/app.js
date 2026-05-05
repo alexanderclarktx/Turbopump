@@ -9,8 +9,48 @@ const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
 const SLASH_COMMANDS = [
   { name: "/clear", description: "Start a fresh Codex thread for this flow" },
   { name: "/compact", description: "Compact the current Codex thread context" },
+  { name: "/effort", description: "Set Codex reasoning effort" },
   { name: "/fast", description: "Toggle fast mode for this flow" },
+  { name: "/model", description: "Set the Codex model for this flow" },
 ];
+const SLASH_COMMAND_EXPANSIONS = {
+  "/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({
+    name: `/effort ${effort}`,
+    description: "",
+  })),
+  "/model": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"].map((model) => ({
+    name: `/model ${model}`,
+    description: "",
+  })),
+};
+
+function sortSlashCommands(commands) {
+  return [...commands].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function slashCommandExpansionMatches(query) {
+  const exactExpansions = SLASH_COMMAND_EXPANSIONS[query];
+  if (exactExpansions) return exactExpansions;
+  const [command, ...args] = query.split(/\s+/);
+  if (!args.length) return [];
+  const expansions = SLASH_COMMAND_EXPANSIONS[command] || [];
+  return expansions.filter((item) => item.name.startsWith(query));
+}
+
+function slashCommandHasExpansions(commandName) {
+  return Boolean(SLASH_COMMAND_EXPANSIONS[commandName]);
+}
+
+function validSlashCommand(value) {
+  const commandName = value.trim();
+  if (slashCommandHasExpansions(commandName)) return false;
+  if (SORTED_SLASH_COMMANDS.some((command) => command.name === commandName)) return true;
+  return Object.values(SLASH_COMMAND_EXPANSIONS).some((expansions) =>
+    expansions.some((command) => command.name === commandName),
+  );
+}
+
+const SORTED_SLASH_COMMANDS = sortSlashCommands(SLASH_COMMANDS);
 
 function initialCollapsedLinearStatuses() {
   const raw = localStorage.getItem(COLLAPSED_LINEAR_STATUSES_KEY);
@@ -40,6 +80,9 @@ function clampFlowSplitSize(value) {
 const state = {
   stages: [],
   flows: [],
+  checkouts: [],
+  checkoutsLoaded: false,
+  checkoutsLoading: false,
   linearTickets: [],
   linearTicketsLoaded: false,
   linearViewer: null,
@@ -50,6 +93,7 @@ const state = {
   linearDetails: new Map(),
   logs: new Map(),
   lastLogId: new Map(),
+  openTraceGroups: new Map(),
   settingsCollapsed: true,
   theme: initialTheme(),
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
@@ -57,12 +101,18 @@ const state = {
   slashCommandIndex: 0,
   messageSubmitting: false,
   interruptSubmitting: false,
+  pendingAgentImages: [],
+  agentImageUploading: false,
+  agentImageDragDepth: 0,
   agentWorkingPollFlowId: "",
   agentWorkingPollTimer: 0,
   agentWorkingPollInFlight: false,
+  terminalFollowPaused: false,
   draggingLinearIssueId: "",
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
+  deletingCheckoutNames: new Set(),
+  deletingOutputLogIds: new Set(),
 };
 
 const els = {
@@ -78,6 +128,7 @@ const els = {
   refreshLinearTickets: document.querySelector("#refreshLinearTickets"),
   linearState: document.querySelector("#linearState"),
   envEditor: document.querySelector("#envEditor"),
+  checkoutList: document.querySelector("#checkoutList"),
   ticketState: document.querySelector("#ticketState"),
   ticketGrid: document.querySelector("#ticketGrid"),
   flowPane: document.querySelector("#flowPane"),
@@ -140,6 +191,26 @@ function renderLinearPriorityIcon(priority) {
   `;
 }
 
+function linearStatusIconKind(status) {
+  const key = linearStatusKey(status);
+  if (key === "canceled" || key === "cancelled") return "canceled";
+  if (key === "done" || key === "completed") return "completed";
+  if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "reviewing";
+  if (key === "in-eng" || key === "working" || key === "started") return "started";
+  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "ready";
+  return "unstarted";
+}
+
+function renderLinearStatusIcon(status) {
+  const label = status || "No status";
+  const kind = linearStatusIconKind(label);
+  return `
+    <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
+      <img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />
+    </span>
+  `;
+}
+
 function linearStatusKey(status) {
   return status.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "no-status";
 }
@@ -164,12 +235,15 @@ function setLinearStatusCollapsed(status, collapsed) {
 }
 
 async function api(path, options = {}) {
+  const headers = options.body instanceof FormData
+    ? options.headers || {}
+    : {
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      };
   const response = await fetch(path, {
     ...options,
-    headers: {
-      "content-type": "application/json",
-      ...(options.headers || {}),
-    },
+    headers,
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || response.statusText);
@@ -182,14 +256,25 @@ function toast(message) {
 
 function slashCommandMatches(value) {
   const query = value.trimStart();
-  if (!query.startsWith("/") || /\s/.test(query.slice(1))) return [];
-  return SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
+  if (!query.startsWith("/")) return [];
+  const expansions = slashCommandExpansionMatches(query);
+  if (expansions.length) return expansions;
+  return SORTED_SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
 }
 
 function hideSlashMenu() {
   const menu = els.flowPane.querySelector(".slash-menu");
   menu.hidden = true;
   menu.replaceChildren();
+}
+
+function resizeMessageInput() {
+  const input = els.flowPane.querySelector(".message-input");
+  const terminal = els.flowPane.querySelector(".terminal");
+  const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
+  input.style.height = "auto";
+  input.style.height = `${input.scrollHeight}px`;
+  if (shouldFollowLatest) scrollTerminalToLatest(terminal);
 }
 
 function renderSlashMenu() {
@@ -232,7 +317,13 @@ function selectSlashCommand(index = state.slashCommandIndex) {
   const command = matches[index];
   if (!command) return false;
   input.value = command.name;
-  hideSlashMenu();
+  resizeMessageInput();
+  if (slashCommandHasExpansions(command.name)) {
+    state.slashCommandIndex = 0;
+    renderSlashMenu();
+  } else {
+    hideSlashMenu();
+  }
   input.focus();
   return true;
 }
@@ -329,6 +420,7 @@ function setSettingsCollapsed(collapsed) {
     els.settingsPane.removeAttribute("tabindex");
     els.settingsPane.removeAttribute("title");
     els.settingsPane.removeAttribute("role");
+    void ensureCheckoutsLoaded();
   }
 }
 
@@ -425,6 +517,7 @@ async function bootstrap() {
 }
 
 function render() {
+  renderCheckouts();
   renderTickets();
   renderFlowPane();
 }
@@ -432,6 +525,153 @@ function render() {
 function setFlows(flows) {
   state.flows = flows || [];
   syncLinearTicketsWithFlows();
+}
+
+function setCheckouts(checkouts) {
+  state.checkouts = [...(checkouts || [])].sort(compareCheckouts);
+}
+
+function compareCheckouts(a, b) {
+  const aTime = Date.parse(a.lastPromptAt || a.createdAt || 0);
+  const bTime = Date.parse(b.lastPromptAt || b.createdAt || 0);
+  return bTime - aTime || String(a.name || "").localeCompare(String(b.name || ""));
+}
+
+function formatCheckoutTimestamp(value) {
+  if (!value) return "no prompts";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+async function loadCheckouts() {
+  if (state.checkoutsLoading) return;
+  state.checkoutsLoading = true;
+  renderCheckouts();
+  try {
+    const data = await api("/api/checkouts");
+    setCheckouts(data.checkouts);
+    state.checkoutsLoaded = true;
+  } finally {
+    state.checkoutsLoading = false;
+    renderCheckouts();
+  }
+}
+
+async function ensureCheckoutsLoaded() {
+  if (state.settingsCollapsed || state.checkoutsLoaded || state.checkoutsLoading) return;
+  await loadCheckouts();
+}
+
+async function deleteCheckout(name) {
+  if (!name) return;
+  await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
+  state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
+  renderCheckouts();
+}
+
+function renderCheckoutCard(checkout) {
+  const card = document.createElement("article");
+  card.className = "checkout-card";
+  card.dataset.checkoutName = checkout.name || "";
+
+  const title = document.createElement("div");
+  title.className = "checkout-card-title";
+
+  const ticketName = document.createElement("span");
+  ticketName.className = "checkout-ticket-name";
+  ticketName.textContent = checkout.ticketName || checkout.name || "Unknown checkout";
+
+  const ticketId = document.createElement("span");
+  ticketId.className = "checkout-ticket-id";
+  ticketId.textContent = checkout.ticketId || checkout.name || "";
+
+  title.replaceChildren(ticketName);
+
+  const meta = document.createElement("dl");
+  meta.className = "checkout-meta";
+  const fields = [
+    ["Linear", renderLinearStatusIcon(checkout.linearStatus)],
+    ["Phase", checkout.flowPhase || "No flow"],
+    ["Last prompt", formatCheckoutTimestamp(checkout.lastPromptAt)],
+  ];
+  for (const [label, value] of fields) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    if (label === "Linear") detail.innerHTML = value;
+    else detail.textContent = value;
+    meta.append(term, detail);
+  }
+
+  const button = document.createElement("button");
+  button.className = "checkout-delete";
+  button.type = "button";
+  button.title = "Delete checkout";
+  button.setAttribute("aria-label", `Delete checkout ${checkout.name}`);
+  button.innerHTML = `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M6 6l1 15h10l1-15" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  `;
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    state.deletingCheckoutNames.add(checkout.name);
+    renderCheckouts();
+    try {
+      await deleteCheckout(checkout.name);
+    } catch (error) {
+      state.deletingCheckoutNames.delete(checkout.name);
+      renderCheckouts();
+      alert(error.message);
+    }
+  });
+
+  if (state.deletingCheckoutNames.has(checkout.name)) {
+    const spinner = document.createElement("span");
+    spinner.className = "checkout-spinner";
+    spinner.setAttribute("aria-label", `Deleting checkout ${checkout.name}`);
+    spinner.setAttribute("role", "status");
+    card.replaceChildren(title, ticketId, meta, spinner);
+  } else {
+    card.replaceChildren(title, ticketId, meta, button);
+  }
+  return card;
+}
+
+function renderCheckouts() {
+  if (!els.checkoutList) return;
+  if (state.checkoutsLoading) {
+    const loading = document.createElement("p");
+    loading.className = "note";
+    loading.textContent = "Loading checkouts.";
+    els.checkoutList.replaceChildren(loading);
+    return;
+  }
+  if (!state.checkoutsLoaded) {
+    const pending = document.createElement("p");
+    pending.className = "note";
+    pending.textContent = "Open settings to load checkout directories.";
+    els.checkoutList.replaceChildren(pending);
+    return;
+  }
+  if (!state.checkouts.length) {
+    const empty = document.createElement("p");
+    empty.className = "note";
+    empty.textContent = "No checkout directories.";
+    els.checkoutList.replaceChildren(empty);
+    return;
+  }
+  els.checkoutList.replaceChildren(...state.checkouts.map((checkout) => renderCheckoutCard(checkout)));
 }
 
 function agentModelLabel(flow) {
@@ -538,6 +778,7 @@ async function loadLinearTickets(options = {}) {
     els.ticketState.textContent = formatLastUpdated();
     els.linearState.textContent = `Linear connected: ${data.viewer.name}`;
     els.linearState.classList.add("live");
+    if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
     renderTickets();
     renderFlowPane();
   } catch (error) {
@@ -590,8 +831,25 @@ function renderTickets() {
   els.ticketGrid.replaceChildren(...nodes);
 }
 
+function ticketHasAgentSession(ticket) {
+  return Boolean(ticket.flowId);
+}
+
+function linearPrioritySortRank(priority) {
+  const value = Number(priority);
+  if (value >= 1 && value <= 4) return value;
+  return 5;
+}
+
+function compareLinearTickets(a, b) {
+  return (
+    Number(ticketHasAgentSession(b)) - Number(ticketHasAgentSession(a)) ||
+    linearPrioritySortRank(a.priority) - linearPrioritySortRank(b.priority)
+  );
+}
+
 function sortedLinearTickets(tickets) {
-  return [...tickets].sort((a, b) => Number(Boolean(b.flowId)) - Number(Boolean(a.flowId)));
+  return [...tickets].sort(compareLinearTickets);
 }
 
 function groupedTicketsByLinearStatus(tickets) {
@@ -898,6 +1156,7 @@ function renderFlowPane() {
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
   renderAgentContext(flow);
+  renderAgentImageContext();
   if (!issueId) {
     stopAgentWorkingPoll();
     return;
@@ -905,7 +1164,9 @@ function renderFlowPane() {
 
   const agentInterrupt = els.flowPane.querySelector(".agent-interrupt");
   agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;
-  els.flowPane.querySelector(".message-input").disabled = state.messageSubmitting || !agentEnabled || (!flow && !ticket);
+  els.flowPane.querySelector(".message-input").disabled =
+    state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
+  resizeMessageInput();
 
   renderLinearDetail({ issueId, title, issueUrl, ticket, flow });
   applyFlowSplitSize();
@@ -919,6 +1180,72 @@ function renderFlowPane() {
     terminal.textContent = "No agent session yet.";
   }
   void loadLinearDetail(issueId);
+}
+
+function renderAgentImageContext() {
+  const container = els.flowPane.querySelector(".agent-image-context");
+  if (!container) return;
+  const images = state.pendingAgentImages;
+  container.hidden = !images.length && !state.agentImageUploading;
+  const uploading = state.agentImageUploading ? '<span class="agent-image-chip pending">uploading...</span>' : "";
+  container.innerHTML = `${images
+    .map(
+      (image, index) => `
+        <span class="agent-image-chip" title="${escapeAttribute(image.path)}">
+          <span>${escapeHtml(image.name || image.relativePath || "image")}</span>
+          <button type="button" aria-label="Remove image" data-index="${index}">×</button>
+        </span>
+      `,
+    )
+    .join("")}${uploading}`;
+}
+
+function agentMessageWithImages(message) {
+  if (!state.pendingAgentImages.length) return message;
+  const attachments = state.pendingAgentImages
+    .map((image) => `- ${image.path}${image.relativePath ? ` (${image.relativePath})` : ""}`)
+    .join("\n");
+  return `${message}\n\nAttached images:\n${attachments}`;
+}
+
+function droppedImageFiles(event) {
+  const files = [...(event.dataTransfer?.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (files.length) return files;
+  return [...(event.dataTransfer?.items || [])]
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
+function eventHasDraggedFiles(event) {
+  const types = [...(event.dataTransfer?.types || [])];
+  if (types.includes("Files")) return true;
+  return [...(event.dataTransfer?.items || [])].some((item) => item.kind === "file");
+}
+
+function setAgentImageDragActive(active) {
+  document.body.classList.toggle("agent-image-drag-active", active);
+  els.flowPane.querySelector(".message-input").classList.toggle("drag-over", active);
+}
+
+async function uploadAgentImages(files) {
+  if (!files.length || state.agentImageUploading) return;
+  state.agentImageUploading = true;
+  renderFlowPane();
+  try {
+    const flow = await ensureSelectedFlow();
+    if (!flow) return;
+    const body = new FormData();
+    for (const file of files) body.append("images", file, file.name);
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/context-images`, {
+      method: "POST",
+      body,
+    });
+    state.pendingAgentImages.push(...(data.images || []));
+  } finally {
+    state.agentImageUploading = false;
+    renderFlowPane();
+  }
 }
 
 function renderLinearDetail(context) {
@@ -1110,6 +1437,64 @@ function parseTraceGroup(log) {
   }
 }
 
+function isRuntimeDisappearedLog(log) {
+  return log.source === "agent:error" && String(log.message || "").trim() === "agent runtime disappeared while status was running";
+}
+
+function isTurnCompletedLog(log) {
+  return log.source === "agent:status" && /^turn completed\b/.test(String(log.message || "").trim());
+}
+
+function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
+  const existingKeys = new Set(existingRanges.map((range) => range.key));
+  const ranges = [];
+  let latestUserLog = null;
+  for (const log of logs) {
+    if (log.source === "user") {
+      latestUserLog = log;
+      continue;
+    }
+    if (!latestUserLog || !isRuntimeDisappearedLog(log)) continue;
+    const afterId = Number(latestUserLog.id);
+    const beforeId = Number(log.id);
+    const key = `${afterId}:${beforeId}`;
+    if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
+    const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+    if (!count) continue;
+    ranges.push({ afterId, beforeId, count, key });
+    existingKeys.add(key);
+  }
+  return ranges;
+}
+
+function syntheticSteerTraceRanges(logs, existingRanges) {
+  const existingKeys = new Set(existingRanges.map((range) => range.key));
+  const ranges = [];
+  let latestUserLog = null;
+  let sawTurnCompletedSinceUser = false;
+  for (const log of logs) {
+    if (log.source === "user") {
+      if (latestUserLog && !sawTurnCompletedSinceUser) {
+        const afterId = Number(latestUserLog.id);
+        const beforeId = Number(log.id);
+        const key = `${afterId}:${beforeId}`;
+        if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
+          const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+          if (count) {
+            ranges.push({ afterId, beforeId, count, key });
+            existingKeys.add(key);
+          }
+        }
+      }
+      latestUserLog = log;
+      sawTurnCompletedSinceUser = false;
+      continue;
+    }
+    if (latestUserLog && isTurnCompletedLog(log)) sawTurnCompletedSinceUser = true;
+  }
+  return ranges;
+}
+
 function traceRangeForLog(log, ranges) {
   return ranges.find((range) => log.id > range.afterId && log.id < range.beforeId) || null;
 }
@@ -1119,10 +1504,13 @@ function appendTerminalGroup(groups, log) {
   if (previous && previous.source === log.source && isStreamingSource(log.source)) {
     previous.message += log.message;
     previous.lastAt = log.createdAt;
+    previous.logIds.push(log.id);
     return previous;
   }
   const group = {
     id: log.id,
+    logIds: [log.id],
+    flowId: log.flowId,
     source: log.source,
     message: log.message,
     createdAt: log.createdAt,
@@ -1149,10 +1537,16 @@ function isHiddenTerminalLog(log) {
 
 function terminalGroups(logs) {
   const groups = [];
-  const traceRanges = logs.map((log) => parseTraceGroup(log)).filter(Boolean);
+  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
+  const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
+  const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
+  const traceRanges = [
+    ...persistedTraceRanges,
+    ...runtimeDisappearedTraceRanges,
+    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),
+  ];
   const traceGroups = new Map();
-  for (const rawLog of logs) {
-    const log = normalizeTerminalLog(rawLog);
+  for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
     if (isHiddenTerminalLog(log)) continue;
     const traceRange = traceRangeForLog(log, traceRanges);
@@ -1161,6 +1555,8 @@ function terminalGroups(logs) {
       if (!traceGroup) {
         traceGroup = {
           id: log.id,
+          traceKey: traceRange.key,
+          flowId: log.flowId,
           source: "agent:trace-group",
           message: "",
           createdAt: log.createdAt,
@@ -1201,7 +1597,7 @@ function appendTerminalBlock(fragment, group) {
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
 
-  if (group.source === "agent:tool") {
+  if (group.source === "agent:tool" || group.source === "agent:tool-result") {
     block.classList.add("terminal-entry-command");
     const row = document.createElement("div");
     row.className = "terminal-command-line";
@@ -1233,14 +1629,17 @@ function appendTerminalBlock(fragment, group) {
   label.className = "terminal-entry-label";
   label.textContent = meta.label;
 
-  const time = document.createElement("time");
-  time.className = "terminal-entry-time";
-  time.dateTime = group.createdAt;
-  time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  let time = null;
+  if (meta.tone !== "output") {
+    time = document.createElement("time");
+    time.className = "terminal-entry-time";
+    time.dateTime = group.createdAt;
+    time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
 
   const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
   body.className = "terminal-entry-body";
@@ -1249,15 +1648,66 @@ function appendTerminalBlock(fragment, group) {
     ? renderLinearMarkdown(message, "", { images: false, links: true })
     : renderInlineMarkdown(message, { images: false, links: false });
 
-  header.replaceChildren(marker, label, time);
+  header.replaceChildren(marker, label, ...(time ? [time] : []));
   block.replaceChildren(header, body);
+  if (meta.tone === "output") block.appendChild(renderOutputDeleteButton(group));
   fragment.appendChild(block);
+}
+
+function renderOutputDeleteButton(group) {
+  const ids = group.logIds || [group.id];
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "terminal-output-delete";
+  button.setAttribute("aria-label", "Delete output message");
+  button.title = "Delete output message";
+  button.disabled = ids.some((id) => state.deletingOutputLogIds.has(id));
+  button.innerHTML = `
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4.5 4.5l7 7m0-7l-7 7" />
+    </svg>
+  `;
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await deleteOutputLogGroup(group.flowId, ids);
+  });
+  return button;
+}
+
+function removeLogEntries(flowId, ids) {
+  const idSet = new Set(ids.map(Number));
+  state.logs.set(
+    flowId,
+    (state.logs.get(flowId) || []).filter((log) => !idSet.has(Number(log.id))),
+  );
+}
+
+async function deleteOutputLogGroup(flowId, ids) {
+  if (!flowId || !ids?.length || ids.some((id) => state.deletingOutputLogIds.has(id))) return;
+  for (const id of ids) state.deletingOutputLogIds.add(id);
+  renderLogs(flowId, { force: true });
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flowId)}/logs`, {
+      method: "DELETE",
+      body: JSON.stringify({ ids }),
+    });
+    removeLogEntries(flowId, data.ids || ids);
+    renderLogs(flowId, { force: true });
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    for (const id of ids) state.deletingOutputLogIds.delete(id);
+    renderLogs(flowId, { force: true });
+  }
 }
 
 function appendTerminalTraceGroup(fragment, group) {
   const meta = logMeta(group.source);
   const details = document.createElement("details");
   details.className = "terminal-trace-group";
+  details.dataset.traceKey = group.traceKey || "";
+  details._traceChildren = group.children || [];
 
   const summary = document.createElement("summary");
   summary.className = "terminal-entry-header terminal-trace-summary";
@@ -1279,13 +1729,95 @@ function appendTerminalTraceGroup(fragment, group) {
     second: "2-digit",
   });
 
-  const body = document.createElement("div");
-  body.className = "terminal-trace-body";
-  for (const child of group.children || []) appendTerminalBlock(body, child);
+  summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleTerminalTraceGroup(details);
+  });
 
   summary.replaceChildren(marker, label, time);
-  details.replaceChildren(summary, body);
+  details.replaceChildren(summary);
+  if (isTerminalTraceGroupOpen(group)) {
+    materializeTerminalTraceGroup(details);
+    details.open = true;
+  }
   fragment.appendChild(details);
+}
+
+function openTraceGroupKeys(flowId) {
+  if (!state.openTraceGroups.has(flowId)) state.openTraceGroups.set(flowId, new Set());
+  return state.openTraceGroups.get(flowId);
+}
+
+function isTerminalTraceGroupOpen(group) {
+  return Boolean(group.flowId && group.traceKey && state.openTraceGroups.get(group.flowId)?.has(group.traceKey));
+}
+
+function setTerminalTraceGroupOpen(details, open) {
+  const flowId = state.selectedFlowId;
+  const traceKey = details.dataset.traceKey || "";
+  if (!flowId || !traceKey) return;
+  const openKeys = openTraceGroupKeys(flowId);
+  if (open) openKeys.add(traceKey);
+  else openKeys.delete(traceKey);
+}
+
+function materializeTerminalTraceGroup(details) {
+  if (details._traceBody) return details._traceBody;
+
+  const body = document.createElement("div");
+  body.className = "terminal-trace-body";
+  for (const child of details._traceChildren || []) appendTerminalBlock(body, child);
+
+  const children = Array.from(body.children);
+  const lastIndex = Math.max(0, children.length - 1);
+  children.forEach((child, index) => {
+    child.style.setProperty("--trace-open-delay", `${traceFoldDelay(index)}ms`);
+    child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);
+  });
+
+  details._traceBody = body;
+  details.appendChild(body);
+  return body;
+}
+
+function toggleTerminalTraceGroup(details) {
+  const isClosing = details.classList.contains("terminal-trace-closing");
+  const shouldOpen = isClosing || !details.open;
+  if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
+  details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
+  if (shouldOpen) materializeTerminalTraceGroup(details);
+  setTerminalTraceGroupOpen(details, shouldOpen);
+  details.open = true;
+  details.classList.add("terminal-trace-animating", shouldOpen ? "terminal-trace-opening" : "terminal-trace-closing");
+
+  const itemCount = details.querySelectorAll(":scope > .terminal-trace-body > *").length;
+  const longestDelay = traceFoldDelay(Math.max(0, itemCount - 1));
+  const duration = shouldOpen ? Math.max(110, 125 + longestDelay) : Math.max(55, 63 + longestDelay / 2);
+  details._traceToggleTimer = window.setTimeout(() => {
+    if (!shouldOpen) details.open = false;
+    details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
+    details._traceToggleTimer = 0;
+  }, duration);
+}
+
+function traceFoldDelay(index) {
+  return Math.round(Math.log1p(Math.max(0, index) * 1.6) * 30);
+}
+
+function terminalDistanceFromBottom(terminal) {
+  return terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;
+}
+
+function terminalAtLatest(terminal) {
+  return terminalDistanceFromBottom(terminal) <= 12;
+}
+
+function pauseTerminalFollow() {
+  state.terminalFollowPaused = true;
+}
+
+function resumeTerminalFollow() {
+  state.terminalFollowPaused = false;
 }
 
 function scrollTerminalToLatest(terminal) {
@@ -1378,6 +1910,17 @@ function appendTerminalWorkingBlock(fragment) {
 function renderLogs(id, options = {}) {
   if (id !== state.selectedFlowId) return;
   const terminal = els.flowPane.querySelector(".terminal");
+  if (
+    terminal._flowLogFlowId === id &&
+    terminal._flowLogSignature &&
+    !options.force &&
+    !options.scrollToLatest &&
+    (state.terminalFollowPaused || !terminalAtLatest(terminal))
+  ) {
+    terminal._flowLogPending = id;
+    return;
+  }
+
   const logs = state.logs.get(id) || [];
   const groups = terminalGroups(logs);
   const flow = state.flows.find((item) => item.id === id) || null;
@@ -1389,14 +1932,14 @@ function renderLogs(id, options = {}) {
     return;
   }
 
-  const distanceFromBottom = terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;
-  const atLatest = options.scrollToLatest || distanceFromBottom <= 12;
+  const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
   if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
+  terminal._flowLogPending = "";
   if (atLatest) scrollTerminalToLatest(terminal);
 }
 
@@ -1430,6 +1973,11 @@ function connectWs() {
       render();
       await loadAllLogs();
     }
+    if (message.event === "checkouts") {
+      setCheckouts(message.payload);
+      state.checkoutsLoaded = true;
+      renderCheckouts();
+    }
     if (message.event === "log") {
       const { id, flowId, source, message: chunk, createdAt } = message.payload;
       appendLogEntry({
@@ -1440,6 +1988,10 @@ function connectWs() {
         createdAt,
       });
       renderLogs(flowId);
+    }
+    if (message.event === "logs-deleted") {
+      removeLogEntries(message.payload.flowId, message.payload.ids || []);
+      renderLogs(message.payload.flowId, { force: true });
     }
   });
   ws.addEventListener("close", () => setTimeout(connectWs, 1000));
@@ -1532,6 +2084,31 @@ els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) 
   setFlowSplitSize(state.flowSplitSize + (event.key === "ArrowDown" ? 5 : -5));
 });
 
+els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
+  const terminal = event.currentTarget;
+  if (terminalAtLatest(terminal)) resumeTerminalFollow();
+  const pendingFlowId = terminal._flowLogPending;
+  if (!pendingFlowId || !terminalAtLatest(terminal)) return;
+  terminal._flowLogPending = "";
+  renderLogs(pendingFlowId, { scrollToLatest: true });
+});
+
+els.flowPane.querySelector(".terminal").addEventListener(
+  "wheel",
+  (event) => {
+    if (event.deltaY < 0) pauseTerminalFollow();
+  },
+  { passive: true },
+);
+
+els.flowPane.querySelector(".terminal").addEventListener(
+  "touchmove",
+  () => {
+    if (!terminalAtLatest(els.flowPane.querySelector(".terminal"))) pauseTerminalFollow();
+  },
+  { passive: true },
+);
+
 els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async () => {
   if (state.interruptSubmitting) return;
   const selected = selectedFlow();
@@ -1551,8 +2128,51 @@ els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async (
 
 els.flowPane.querySelector(".message-input").addEventListener("input", () => {
   state.slashCommandIndex = 0;
+  resizeMessageInput();
   renderSlashMenu();
 });
+
+els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-index]");
+  if (!button) return;
+  state.pendingAgentImages.splice(Number(button.dataset.index), 1);
+  renderFlowPane();
+});
+
+document.addEventListener("dragenter", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.agentImageDragDepth += 1;
+  setAgentImageDragActive(true);
+}, true);
+
+document.addEventListener("dragover", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  event.dataTransfer.dropEffect = "copy";
+  setAgentImageDragActive(true);
+}, true);
+
+document.addEventListener("dragleave", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!document.documentElement.contains(event.relatedTarget)) state.agentImageDragDepth = 0;
+  else state.agentImageDragDepth = Math.max(0, state.agentImageDragDepth - 1);
+  if (!state.agentImageDragDepth) setAgentImageDragActive(false);
+}, true);
+
+document.addEventListener("drop", (event) => {
+  if (!eventHasDraggedFiles(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const files = droppedImageFiles(event);
+  state.agentImageDragDepth = 0;
+  setAgentImageDragActive(false);
+  if (files.length) void uploadAgentImages(files);
+}, true);
 
 els.flowPane.querySelector(".message-input").addEventListener("keydown", (event) => {
   const input = event.currentTarget;
@@ -1574,9 +2194,22 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
       event.preventDefault();
       selectSlashCommand();
       return;
-    } else if (event.key === "Enter" && !event.shiftKey && input.value.trim() !== matches[state.slashCommandIndex]?.name) {
+    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      selectSlashCommand();
+      const command = matches[state.slashCommandIndex];
+      if (!command) return;
+      if (input.value.trim() !== command.name) {
+        input.value = command.name;
+        resizeMessageInput();
+      }
+      if (slashCommandHasExpansions(command.name)) {
+        state.slashCommandIndex = 0;
+        renderSlashMenu();
+        return;
+      }
+      if (!validSlashCommand(input.value)) return;
+      hideSlashMenu();
+      input.form?.requestSubmit();
       return;
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -1587,9 +2220,20 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
 
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
+    if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;
     hideSlashMenu();
     input.form?.requestSubmit();
   }
+});
+
+els.flowPane.querySelector(".slash-menu").addEventListener("mouseover", (event) => {
+  const button = event.target.closest(".slash-command");
+  if (!button) return;
+  const buttons = [...els.flowPane.querySelectorAll(".slash-command")];
+  const index = buttons.indexOf(button);
+  if (index < 0 || index === state.slashCommandIndex) return;
+  state.slashCommandIndex = index;
+  renderSlashMenu();
 });
 
 els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) => {
@@ -1597,7 +2241,13 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   if (!command) return;
   event.preventDefault();
   els.flowPane.querySelector(".message-input").value = command;
-  hideSlashMenu();
+  resizeMessageInput();
+  if (slashCommandHasExpansions(command)) {
+    state.slashCommandIndex = 0;
+    renderSlashMenu();
+  } else {
+    hideSlashMenu();
+  }
   els.flowPane.querySelector(".message-input").focus();
 });
 
@@ -1607,9 +2257,11 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   const input = els.flowPane.querySelector(".message-input");
   if (input.disabled) return;
   const message = input.value.trim();
-  if (!message) return;
+  if (!message && !state.pendingAgentImages.length) return;
+  const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
   state.messageSubmitting = true;
   input.value = "";
+  resizeMessageInput();
   hideSlashMenu();
   renderTickets();
   renderFlowPane();
@@ -1618,8 +2270,9 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     if (!flow) return;
     await api(`/api/flows/${flow.id}/message`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message: agentMessage }),
     });
+    state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
     renderTickets();
