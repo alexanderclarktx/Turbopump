@@ -16,6 +16,7 @@ import { basename, extname, join, resolve } from "node:path";
 
 type Stage = "planning" | "working" | "reviewing" | "done";
 type ThreadStartSource = "startup" | "clear";
+type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "fast" | "flex";
 
 type Flow = {
@@ -100,6 +101,8 @@ const port = Number(process.env.PORT ?? 3999);
 const apiBaseUrl = `http://localhost:${port}`;
 const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
+const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
+const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
 const defaultAgentDeveloperInstructions = [
   "You are running inside Turbopump, a local coding-agent workflow system.",
   "",
@@ -875,6 +878,9 @@ function flowDeveloperInstructions(flow: Flow) {
 function codexThreadOverrides(flow: Flow) {
   return {
     ...(flow.agentModel ? { model: flow.agentModel } : {}),
+    ...(reasoningEfforts.has(flow.agentReasoningEffort as ReasoningEffort)
+      ? { reasoningEffort: flow.agentReasoningEffort as ReasoningEffort }
+      : {}),
     ...(serviceTiers.has(flow.agentServiceTier as ServiceTier)
       ? { serviceTier: flow.agentServiceTier as ServiceTier }
       : {}),
@@ -888,6 +894,9 @@ function codexTurnOverrides(flow: Flow) {
 function configuredAgentMetadata(flow: Flow): Partial<Flow> {
   return {
     ...(flow.agentModel ? { agentModel: flow.agentModel } : {}),
+    ...(reasoningEfforts.has(flow.agentReasoningEffort as ReasoningEffort)
+      ? { agentReasoningEffort: flow.agentReasoningEffort }
+      : {}),
     ...(serviceTiers.has(flow.agentServiceTier as ServiceTier) ? { agentServiceTier: flow.agentServiceTier } : {}),
   };
 }
@@ -1377,6 +1386,13 @@ function parseSlashCommand(message: string) {
   return command.toLowerCase();
 }
 
+function slashCommandArgs(message: string) {
+  const trimmed = message.trim();
+  const firstSpace = trimmed.search(/\s/);
+  if (firstSpace === -1) return "";
+  return trimmed.slice(firstSpace).trim();
+}
+
 async function ensureCodexRuntime(flow: Flow) {
   return agentProcesses.get(flow.id) ?? (await startCodexAppServer(flow));
 }
@@ -1417,6 +1433,20 @@ async function handleSlashCommand(flow: Flow, message: string) {
     const serviceTier = flow.agentServiceTier === "fast" ? "" : "fast";
     updateFlow(flow.id, { agentServiceTier: serviceTier });
     insertLog(flow.id, "agent:status", serviceTier ? "fast mode enabled" : "fast mode disabled");
+    return true;
+  }
+  if (command === "/effort") {
+    const reasoningEffort = slashCommandArgs(message).toLowerCase() as ReasoningEffort;
+    if (!reasoningEfforts.has(reasoningEffort)) throw new Error("Usage: /effort high|medium|low|xhigh");
+    updateFlow(flow.id, { agentReasoningEffort: reasoningEffort });
+    insertLog(flow.id, "agent:status", `reasoning effort set to ${reasoningEffort}`);
+    return true;
+  }
+  if (command === "/model") {
+    const model = slashCommandArgs(message).toLowerCase();
+    if (!agentModels.has(model)) throw new Error("Usage: /model gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2");
+    updateFlow(flow.id, { agentModel: model });
+    insertLog(flow.id, "agent:status", `model set to ${model}`);
     return true;
   }
 

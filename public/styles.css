@@ -2040,7 +2040,7 @@ body.flow-resizing {
 
 .slash-command {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: minmax(128px, max-content) minmax(0, 1fr);
   gap: 10px;
   width: 100%;
   padding: 9px 11px;
@@ -2058,10 +2058,14 @@ body.flow-resizing {
 }
 
 .slash-command-name {
+  min-width: 0;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .slash-command-description {

@@ -9,8 +9,48 @@ const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
 const SLASH_COMMANDS = [
   { name: "/clear", description: "Start a fresh Codex thread for this flow" },
   { name: "/compact", description: "Compact the current Codex thread context" },
+  { name: "/effort", description: "Set Codex reasoning effort" },
   { name: "/fast", description: "Toggle fast mode for this flow" },
+  { name: "/model", description: "Set the Codex model for this flow" },
 ];
+const SLASH_COMMAND_EXPANSIONS = {
+  "/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({
+    name: `/effort ${effort}`,
+    description: "",
+  })),
+  "/model": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"].map((model) => ({
+    name: `/model ${model}`,
+    description: "",
+  })),
+};
+
+function sortSlashCommands(commands) {
+  return [...commands].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function slashCommandExpansionMatches(query) {
+  const exactExpansions = SLASH_COMMAND_EXPANSIONS[query];
+  if (exactExpansions) return exactExpansions;
+  const [command, ...args] = query.split(/\s+/);
+  if (!args.length) return [];
+  const expansions = SLASH_COMMAND_EXPANSIONS[command] || [];
+  return expansions.filter((item) => item.name.startsWith(query));
+}
+
+function slashCommandHasExpansions(commandName) {
+  return Boolean(SLASH_COMMAND_EXPANSIONS[commandName]);
+}
+
+function validSlashCommand(value) {
+  const commandName = value.trim();
+  if (slashCommandHasExpansions(commandName)) return false;
+  if (SORTED_SLASH_COMMANDS.some((command) => command.name === commandName)) return true;
+  return Object.values(SLASH_COMMAND_EXPANSIONS).some((expansions) =>
+    expansions.some((command) => command.name === commandName),
+  );
+}
+
+const SORTED_SLASH_COMMANDS = sortSlashCommands(SLASH_COMMANDS);
 
 function initialCollapsedLinearStatuses() {
   const raw = localStorage.getItem(COLLAPSED_LINEAR_STATUSES_KEY);
@@ -216,8 +256,10 @@ function toast(message) {
 
 function slashCommandMatches(value) {
   const query = value.trimStart();
-  if (!query.startsWith("/") || /\s/.test(query.slice(1))) return [];
-  return SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
+  if (!query.startsWith("/")) return [];
+  const expansions = slashCommandExpansionMatches(query);
+  if (expansions.length) return expansions;
+  return SORTED_SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
 }
 
 function hideSlashMenu() {
@@ -266,7 +308,12 @@ function selectSlashCommand(index = state.slashCommandIndex) {
   const command = matches[index];
   if (!command) return false;
   input.value = command.name;
-  hideSlashMenu();
+  if (slashCommandHasExpansions(command.name)) {
+    state.slashCommandIndex = 0;
+    renderSlashMenu();
+  } else {
+    hideSlashMenu();
+  }
   input.focus();
   return true;
 }
@@ -2135,9 +2182,19 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
       event.preventDefault();
       selectSlashCommand();
       return;
-    } else if (event.key === "Enter" && !event.shiftKey && input.value.trim() !== matches[state.slashCommandIndex]?.name) {
+    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      selectSlashCommand();
+      const command = matches[state.slashCommandIndex];
+      if (!command) return;
+      if (input.value.trim() !== command.name) input.value = command.name;
+      if (slashCommandHasExpansions(command.name)) {
+        state.slashCommandIndex = 0;
+        renderSlashMenu();
+        return;
+      }
+      if (!validSlashCommand(input.value)) return;
+      hideSlashMenu();
+      input.form?.requestSubmit();
       return;
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -2148,9 +2205,20 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
 
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
+    if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;
     hideSlashMenu();
     input.form?.requestSubmit();
   }
+});
+
+els.flowPane.querySelector(".slash-menu").addEventListener("mouseover", (event) => {
+  const button = event.target.closest(".slash-command");
+  if (!button) return;
+  const buttons = [...els.flowPane.querySelectorAll(".slash-command")];
+  const index = buttons.indexOf(button);
+  if (index < 0 || index === state.slashCommandIndex) return;
+  state.slashCommandIndex = index;
+  renderSlashMenu();
 });
 
 els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) => {
@@ -2158,7 +2226,12 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   if (!command) return;
   event.preventDefault();
   els.flowPane.querySelector(".message-input").value = command;
-  hideSlashMenu();
+  if (slashCommandHasExpansions(command)) {
+    state.slashCommandIndex = 0;
+    renderSlashMenu();
+  } else {
+    hideSlashMenu();
+  }
   els.flowPane.querySelector(".message-input").focus();
 });
 
