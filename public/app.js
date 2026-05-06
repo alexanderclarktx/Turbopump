@@ -107,6 +107,7 @@ const state = {
   agentWorkingPollFlowId: "",
   agentWorkingPollTimer: 0,
   agentWorkingPollInFlight: false,
+  inputMode: "prompt",
   terminalFollowPaused: false,
   draggingLinearIssueId: "",
   suppressTicketClick: false,
@@ -262,10 +263,46 @@ function slashCommandMatches(value) {
   return SORTED_SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
 }
 
+function commandModeCommand(value) {
+  if (state.inputMode !== "command") return null;
+  return value.trim();
+}
+
 function hideSlashMenu() {
   const menu = els.flowPane.querySelector(".slash-menu");
   menu.hidden = true;
   menu.replaceChildren();
+}
+
+function updateMessageInputMode() {
+  const input = els.flowPane.querySelector(".message-input");
+  if (!input) return;
+  const commandMode = state.inputMode === "command";
+  input.classList.toggle("command-mode", commandMode);
+  input.placeholder = commandMode ? "Run a shell command" : "Prompt the agent";
+  updateInputModeButton();
+}
+
+function updateInputModeButton() {
+  const button = els.flowPane.querySelector(".agent-interrupt");
+  if (!button) return;
+  const running = selectedFlow()?.agentStatus === "running";
+  const commandMode = state.inputMode === "command";
+  button.classList.toggle("command-mode", commandMode && !running);
+  button.classList.toggle("prompt-mode", !commandMode && !running);
+  button.classList.toggle("running-mode", running);
+  button.setAttribute("aria-label", running ? "Pause agent" : commandMode ? "Shell mode" : "Prompt mode");
+  button.title = running ? "Pause agent" : commandMode ? "Shell mode" : "Prompt mode";
+  if (running) {
+    button.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9 6v12" />
+        <path d="M15 6v12" />
+      </svg>
+    `;
+  } else {
+    button.textContent = commandMode ? "$" : ">";
+  }
 }
 
 function resizeMessageInput() {
@@ -280,6 +317,10 @@ function resizeMessageInput() {
 function renderSlashMenu() {
   const input = els.flowPane.querySelector(".message-input");
   const menu = els.flowPane.querySelector(".slash-menu");
+  if (state.inputMode === "command") {
+    hideSlashMenu();
+    return;
+  }
   const matches = slashCommandMatches(input.value);
   if (!matches.length) {
     hideSlashMenu();
@@ -1166,6 +1207,7 @@ function renderFlowPane() {
   agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;
   els.flowPane.querySelector(".message-input").disabled =
     state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
+  updateMessageInputMode();
   resizeMessageInput();
 
   renderLinearDetail({ issueId, title, issueUrl, ticket, flow });
@@ -2127,7 +2169,14 @@ els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async (
 });
 
 els.flowPane.querySelector(".message-input").addEventListener("input", () => {
+  const input = els.flowPane.querySelector(".message-input");
+  if (state.inputMode === "prompt" && input.value.trimStart().startsWith("$")) {
+    const dollarIndex = input.value.indexOf("$");
+    state.inputMode = "command";
+    input.value = input.value.slice(dollarIndex + 1).trimStart();
+  }
   state.slashCommandIndex = 0;
+  updateMessageInputMode();
   resizeMessageInput();
   renderSlashMenu();
 });
@@ -2179,6 +2228,19 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
   const menu = els.flowPane.querySelector(".slash-menu");
   const matches = slashCommandMatches(input.value);
 
+  if (event.key === "Tab") {
+    event.preventDefault();
+    return;
+  }
+
+  if (event.key === "Backspace" && state.inputMode === "command" && input.value.length === 0) {
+    event.preventDefault();
+    state.inputMode = "prompt";
+    updateMessageInputMode();
+    renderSlashMenu();
+    return;
+  }
+
   if (!menu.hidden && matches.length) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -2220,6 +2282,7 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
 
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
+    if (commandModeCommand(input.value) !== null && !commandModeCommand(input.value)) return;
     if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;
     hideSlashMenu();
     input.form?.requestSubmit();
@@ -2257,10 +2320,17 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   const input = els.flowPane.querySelector(".message-input");
   if (input.disabled) return;
   const message = input.value.trim();
+  const command = commandModeCommand(input.value);
+  if (command !== null && state.pendingAgentImages.length) {
+    alert("Command mode does not support image attachments.");
+    return;
+  }
+  if (command !== null && !command) return;
   if (!message && !state.pendingAgentImages.length) return;
-  const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
+  const agentMessage = command === null ? agentMessageWithImages(message || "Use the attached image context.") : "";
   state.messageSubmitting = true;
   input.value = "";
+  updateMessageInputMode();
   resizeMessageInput();
   hideSlashMenu();
   renderTickets();
@@ -2268,15 +2338,23 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   try {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
-    await api(`/api/flows/${flow.id}/message`, {
-      method: "POST",
-      body: JSON.stringify({ message: agentMessage }),
-    });
+    if (command === null) {
+      await api(`/api/flows/${flow.id}/message`, {
+        method: "POST",
+        body: JSON.stringify({ message: agentMessage }),
+      });
+    } else {
+      await api(`/api/flows/${flow.id}/command`, {
+        method: "POST",
+        body: JSON.stringify({ command }),
+      });
+    }
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
     renderTickets();
     renderFlowPane();
+    els.flowPane.querySelector(".message-input").focus();
   }
 });
 

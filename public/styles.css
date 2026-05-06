@@ -75,7 +75,7 @@ button {
   background: #fff;
   color: var(--ink);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 18px;
   min-height: 34px;
   padding: 0 10px;
   transition:
@@ -496,6 +496,11 @@ body.theme-dark .terminal-entry-warning .terminal-entry-body {
   color: #fbbf24;
 }
 
+body.theme-dark .agent-interrupt.prompt-mode,
+body.theme-dark .agent-interrupt.prompt-mode:disabled {
+  color: #fbbf24;
+}
+
 body.theme-dark .terminal-entry-user .terminal-entry-body {
   color: var(--terminal-ink);
 }
@@ -526,6 +531,11 @@ body.theme-dark .terminal-output-delete:focus-visible {
 body.theme-dark .terminal-entry-assistant .terminal-entry-marker,
 body.theme-dark .terminal-entry-assistant .terminal-entry-label,
 body.theme-dark .agent-working {
+  color: #c084fc;
+}
+
+body.theme-dark .agent-interrupt.running-mode,
+body.theme-dark .agent-interrupt.running-mode:disabled {
   color: #c084fc;
 }
 
@@ -1923,6 +1933,10 @@ body.flow-resizing {
 
 .agent-interrupt {
   grid-area: interrupt;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1;
 }
 
 .message-input {
@@ -1935,7 +1949,32 @@ body.flow-resizing {
 
 .agent-interrupt:disabled {
   cursor: default;
-  opacity: 0.45;
+  opacity: 1;
+}
+
+.agent-interrupt.prompt-mode,
+.agent-interrupt.command-mode,
+.agent-interrupt.running-mode {
+  border-color: var(--line);
+  background: transparent;
+}
+
+.agent-interrupt.prompt-mode,
+.agent-interrupt.prompt-mode:disabled {
+  color: #b45309;
+}
+
+.agent-interrupt.command-mode {
+  color: #16a34a;
+}
+
+.agent-interrupt.command-mode:disabled {
+  color: #16a34a;
+}
+
+.agent-interrupt.running-mode,
+.agent-interrupt.running-mode:disabled {
+  color: #6d28d9;
 }
 
 .agent-working {
@@ -1985,6 +2024,12 @@ body.flow-resizing {
   resize: none;
   line-height: 1.35;
   overflow-y: auto;
+}
+
+.message-input.command-mode {
+  border-color: #16a34a;
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.25);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .agent-context {

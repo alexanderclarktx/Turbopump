@@ -1487,6 +1487,33 @@ async function startAgent(flow: Flow, userMessage = "") {
   }
 }
 
+async function runShellCommand(flow: Flow, userCommand: string) {
+  flow = repairFlowCheckoutPath(flow);
+  const command = userCommand.trim();
+  if (!command) throw new Error("Type a shell command after $.");
+
+  updateFlow(flow.id, { agentStatus: "running" });
+  insertLog(flow.id, "user", `$ ${command}\n`);
+  insertLog(flow.id, "agent:tool", command);
+
+  const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
+    cwd: flow.checkoutPath,
+    env: runtimeEnv(flow),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const stdoutDone = streamProcessOutput(flow.id, "agent:cmd", proc.stdout);
+  const stderrDone = streamProcessOutput(flow.id, "agent:stderr", proc.stderr);
+
+  const code = await proc.exited;
+  await Promise.all([stdoutDone, stderrDone]);
+  insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : "failed"} exit ${code}`);
+  updateFlow(flow.id, { agentStatus: code === 0 ? "idle" : "failed" });
+  if (code !== 0) throw new Error(`Command exited with code ${code}`);
+}
+
 async function interruptAgent(flowId: string) {
   const runtime = agentProcesses.get(flowId);
   if (!runtime) return;
@@ -1964,6 +1991,12 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "message" && request.method === "POST") {
       const body = await readJson<{ message: string }>(request);
       await startAgent(flow, body.message);
+      return json({ ok: true });
+    }
+
+    if (parts[3] === "command" && request.method === "POST") {
+      const body = await readJson<{ command: string }>(request);
+      await runShellCommand(flow, body.command);
       return json({ ok: true });
     }
 
