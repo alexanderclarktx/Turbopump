@@ -3,6 +3,9 @@ import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js
 const COLLAPSED_LINEAR_STATUSES_KEY = "flow.collapsedLinearStatuses";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
 const THEME_KEY = "flow.theme";
+const PROMPT_HISTORY_KEY = "flow.promptHistory";
+const SHELL_HISTORY_KEY = "flow.shellHistory";
+const MAX_INPUT_HISTORY_ITEMS = 200;
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
 const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
@@ -73,6 +76,15 @@ function initialTheme() {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function initialInputHistory(key) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
 function clampFlowSplitSize(value) {
   return Math.min(100, Math.max(0, value));
 }
@@ -108,6 +120,9 @@ const state = {
   agentWorkingPollTimer: 0,
   agentWorkingPollInFlight: false,
   inputMode: "prompt",
+  promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
+  shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
+  historySearch: null,
   terminalFollowPaused: false,
   draggingLinearIssueId: "",
   suppressTicketClick: false,
@@ -268,6 +283,163 @@ function commandModeCommand(value) {
   return value.trim();
 }
 
+function inputHistoryMode() {
+  return state.inputMode === "command" ? "shell" : "prompt";
+}
+
+function inputHistoryKey(mode = inputHistoryMode()) {
+  return mode === "shell" ? SHELL_HISTORY_KEY : PROMPT_HISTORY_KEY;
+}
+
+function inputHistory(mode = inputHistoryMode()) {
+  return mode === "shell" ? state.shellHistory : state.promptHistory;
+}
+
+function saveInputHistory(mode = inputHistoryMode()) {
+  localStorage.setItem(inputHistoryKey(mode), JSON.stringify(inputHistory(mode)));
+}
+
+function rememberInputHistory(value, mode = inputHistoryMode()) {
+  const item = value.trim();
+  if (!item) return;
+  const history = inputHistory(mode);
+  const existingIndex = history.indexOf(item);
+  if (existingIndex >= 0) history.splice(existingIndex, 1);
+  history.unshift(item);
+  history.splice(MAX_INPUT_HISTORY_ITEMS);
+  saveInputHistory(mode);
+}
+
+function rememberLogHistory(log) {
+  const normalized = normalizeTerminalLog(log);
+  if (normalized.source === "user") rememberInputHistory(normalized.message, "prompt");
+  if (normalized.source === "shell:command") rememberInputHistory(normalized.message, "shell");
+}
+
+function matchingInputHistory(query, mode = inputHistoryMode()) {
+  const needle = query.toLowerCase();
+  return inputHistory(mode).filter((item) => item.toLowerCase().includes(needle));
+}
+
+function applyHistorySearchResult(input) {
+  const search = state.historySearch;
+  if (!search) return false;
+  const result = search.matches[search.index];
+  if (!result) return false;
+  input.value = result;
+  input.setSelectionRange(result.length, result.length);
+  resizeMessageInput();
+  renderSlashMenu();
+  return true;
+}
+
+function renderHistorySearchIndicator() {
+  const indicator = els.flowPane.querySelector(".history-search-indicator");
+  if (!indicator) return;
+  const form = els.flowPane.querySelector(".message-form");
+  const search = state.historySearch;
+  form?.classList.toggle("history-searching", Boolean(search));
+  indicator.setAttribute("aria-hidden", String(!search));
+  if (!search) {
+    indicator.textContent = "";
+    return;
+  }
+  const label = search.mode === "shell" ? "shell" : "prompt";
+  const resultText = search.query && !search.matches.length ? " no match" : "";
+  indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;
+}
+
+function updateHistorySearchMatches(input, query) {
+  const search = state.historySearch;
+  if (!search) return false;
+  search.query = query;
+  search.matches = search.query ? matchingInputHistory(search.query, search.mode) : [];
+  search.index = 0;
+  renderHistorySearchIndicator();
+  if (search.matches.length) {
+    return applyHistorySearchResult(input);
+  }
+  input.value = search.query ? "" : search.draft;
+  input.setSelectionRange(input.value.length, input.value.length);
+  resizeMessageInput();
+  renderSlashMenu();
+  return true;
+}
+
+function cancelHistorySearch() {
+  state.historySearch = null;
+  renderHistorySearchIndicator();
+}
+
+function startOrAdvanceHistorySearch(input) {
+  const mode = inputHistoryMode();
+  if (!state.historySearch || state.historySearch.mode !== mode) {
+    state.historySearch = {
+      mode,
+      query: "",
+      draft: input.value,
+      matches: [],
+      index: 0,
+    };
+  } else if (state.historySearch.matches.length) {
+    state.historySearch.index = Math.min(state.historySearch.index + 1, state.historySearch.matches.length - 1);
+  }
+  renderHistorySearchIndicator();
+  return applyHistorySearchResult(input);
+}
+
+function moveHistorySearchForward(input) {
+  const search = state.historySearch;
+  if (!search || !search.matches.length) return false;
+  search.index = Math.max(search.index - 1, 0);
+  return applyHistorySearchResult(input);
+}
+
+function handleHistorySearchKeydown(event) {
+  const input = event.currentTarget;
+  if (event.ctrlKey && event.key.toLowerCase() === "r" && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    startOrAdvanceHistorySearch(input);
+    return true;
+  }
+  if (!state.historySearch) return false;
+  if (event.ctrlKey && event.key.toLowerCase() === "z" && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    moveHistorySearchForward(input);
+    return true;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    updateHistorySearchMatches(input, state.historySearch.query.slice(0, -1));
+    return true;
+  }
+  if (event.key === "Escape") {
+    cancelHistorySearch();
+    return false;
+  }
+  if (event.key.length === 1) {
+    event.preventDefault();
+    updateHistorySearchMatches(input, state.historySearch.query + event.key);
+    return true;
+  }
+  return false;
+}
+
+function enterCommandModeFromDollarKey(event) {
+  const input = event.currentTarget;
+  if (state.inputMode !== "prompt" || event.key !== "$" || event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (input.value.trim()) return false;
+  event.preventDefault();
+  cancelHistorySearch();
+  state.inputMode = "command";
+  input.value = "";
+  updateMessageInputMode();
+  resizeMessageInput();
+  renderSlashMenu();
+  return true;
+}
+
 function isEditableKeyTarget(target) {
   if (!(target instanceof Element)) return false;
   if (target.closest("input, textarea, select")) return true;
@@ -290,8 +462,37 @@ function focusMessageInputForKey(event) {
   const end = input.selectionEnd ?? input.value.length;
   event.preventDefault();
   input.focus();
+  if (event.key === "$" && state.inputMode === "prompt") {
+    cancelHistorySearch();
+    state.inputMode = "command";
+    input.value = "";
+    updateMessageInputMode();
+    resizeMessageInput();
+    renderSlashMenu();
+    return true;
+  }
   input.setRangeText(event.key, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+}
+
+function handleGlobalHistorySearchKeydown(event) {
+  if (!event.ctrlKey || event.metaKey || event.altKey) return false;
+  const key = event.key.toLowerCase();
+  if (key !== "r" && key !== "z") return false;
+  if (isEditableKeyTarget(event.target)) return false;
+  const input = els.flowPane.querySelector(".message-input");
+  if (!input || input.disabled) return false;
+  if (key === "r") {
+    event.preventDefault();
+    input.focus();
+    startOrAdvanceHistorySearch(input);
+    return true;
+  }
+  if (!state.historySearch) return false;
+  event.preventDefault();
+  input.focus();
+  moveHistorySearchForward(input);
   return true;
 }
 
@@ -793,6 +994,7 @@ function appendLogEntry(log) {
     message: log.message,
     createdAt: log.createdAt || new Date().toISOString(),
   });
+  rememberLogHistory(log);
   state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
   return true;
 }
@@ -2209,8 +2411,10 @@ els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async (
 
 els.flowPane.querySelector(".message-input").addEventListener("input", () => {
   const input = els.flowPane.querySelector(".message-input");
+  cancelHistorySearch();
   if (state.inputMode === "prompt" && input.value.trimStart().startsWith("$")) {
     const dollarIndex = input.value.indexOf("$");
+    cancelHistorySearch();
     state.inputMode = "command";
     input.value = input.value.slice(dollarIndex + 1).trimStart();
   }
@@ -2267,6 +2471,9 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
   const menu = els.flowPane.querySelector(".slash-menu");
   const matches = slashCommandMatches(input.value);
 
+  if (enterCommandModeFromDollarKey(event)) return;
+  if (handleHistorySearchKeydown(event)) return;
+
   if (event.key === "Tab") {
     event.preventDefault();
     return;
@@ -2274,6 +2481,7 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
 
   if (event.key === "Backspace" && state.inputMode === "command" && input.value.length === 0) {
     event.preventDefault();
+    cancelHistorySearch();
     state.inputMode = "prompt";
     updateMessageInputMode();
     renderSlashMenu();
@@ -2360,6 +2568,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   if (input.disabled) return;
   const message = input.value.trim();
   const command = commandModeCommand(input.value);
+  const mode = command === null ? "prompt" : "shell";
   if (command !== null && state.pendingAgentImages.length) {
     alert("Command mode does not support image attachments.");
     return;
@@ -2367,6 +2576,8 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   if (command !== null && !command) return;
   if (!message && !state.pendingAgentImages.length) return;
   const agentMessage = command === null ? agentMessageWithImages(message || "Use the attached image context.") : "";
+  rememberInputHistory(command ?? message, mode);
+  cancelHistorySearch();
   state.messageSubmitting = true;
   input.value = "";
   updateMessageInputMode();
@@ -2404,6 +2615,7 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (handleGlobalHistorySearchKeydown(event)) return;
   if (focusMessageInputForKey(event)) return;
   if (event.key === "Escape") event.preventDefault();
 });

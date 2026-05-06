@@ -661,6 +661,7 @@ describe("Turbopump pane markup", () => {
     expect(html).toContain('aria-label="Pause agent"');
     expect(html).toContain('class="agent-image-context" aria-label="Attached image context" hidden');
     expect(html).not.toContain('class="agent-image-drop-overlay"');
+    expect(html).toContain('class="history-search-indicator" aria-live="polite" aria-hidden="true"');
     expect(html).toContain('class="slash-menu" role="listbox" hidden');
     expect(html).not.toContain('class="agent-working" aria-live="polite" hidden');
     expect(html).not.toContain("<span>working</span>");
@@ -719,6 +720,10 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("max-height: min(220px, 30vh);");
     expect(css).toContain("resize: none;");
     expect(css).toContain("overflow-y: auto;");
+    expect(css).toContain(".history-search-indicator");
+    expect(css).toContain(".message-form.history-searching");
+    expect(css).toContain("max-height 120ms ease");
+    expect(css).toContain(".message-form.history-searching .history-search-indicator");
     expect(css).toContain("bottom: calc(100% - 4px);");
     expect(css).toContain(".slash-menu");
     expect(css).toContain("grid-template-columns: minmax(128px, max-content) minmax(0, 1fr);");
@@ -962,9 +967,59 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (isEditableKeyTarget(event.target)) return false;");
     expect(app).toContain("return Boolean(input && !input.disabled && document.activeElement !== input);");
     expect(app).toContain("function focusMessageInputForKey(event)");
+    expect(app).toContain('if (event.key === "$" && state.inputMode === "prompt")');
     expect(app).toContain("input.setRangeText(event.key, start, end, \"end\");");
     expect(app).toContain('input.dispatchEvent(new Event("input", { bubbles: true }));');
     expect(app).toContain("if (focusMessageInputForKey(event)) return;");
+  });
+
+  test("supports separate reverse search histories for prompts and shell commands", () => {
+    expect(app).toContain('const PROMPT_HISTORY_KEY = "flow.promptHistory";');
+    expect(app).toContain('const SHELL_HISTORY_KEY = "flow.shellHistory";');
+    expect(app).toContain("const MAX_INPUT_HISTORY_ITEMS = 200;");
+    expect(app).toContain("function initialInputHistory(key)");
+    expect(app).toContain("promptHistory: initialInputHistory(PROMPT_HISTORY_KEY)");
+    expect(app).toContain("shellHistory: initialInputHistory(SHELL_HISTORY_KEY)");
+    expect(app).toContain("historySearch: null");
+    expect(app).toContain("function inputHistoryMode()");
+    expect(app).toContain('return state.inputMode === "command" ? "shell" : "prompt";');
+    expect(app).toContain("function rememberInputHistory(value, mode = inputHistoryMode())");
+    expect(app).toContain("function rememberLogHistory(log)");
+    expect(app).toContain('if (normalized.source === "user") rememberInputHistory(normalized.message, "prompt");');
+    expect(app).toContain('if (normalized.source === "shell:command") rememberInputHistory(normalized.message, "shell");');
+    expect(app).toContain("rememberLogHistory(log);");
+    expect(app).toContain("const existingIndex = history.indexOf(item);");
+    expect(app).toContain("history.unshift(item);");
+    expect(app).toContain("history.splice(MAX_INPUT_HISTORY_ITEMS);");
+    expect(app).toContain("function matchingInputHistory(query, mode = inputHistoryMode())");
+    expect(app).toContain("item.toLowerCase().includes(needle)");
+    expect(app).toContain("function renderHistorySearchIndicator()");
+    expect(app).toContain('form?.classList.toggle("history-searching", Boolean(search));');
+    expect(app).toContain('indicator.setAttribute("aria-hidden", String(!search));');
+    expect(app).toContain('indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;');
+    expect(app).toContain("function startOrAdvanceHistorySearch(input)");
+    expect(app).toContain('query: "",');
+    expect(app).toContain("draft: input.value");
+    expect(app).toContain("matches: []");
+    expect(app).toContain("search.matches = search.query ? matchingInputHistory(search.query, search.mode) : [];");
+    expect(app).toContain("state.historySearch.index = Math.min(state.historySearch.index + 1, state.historySearch.matches.length - 1);");
+    expect(app).toContain("function moveHistorySearchForward(input)");
+    expect(app).toContain("search.index = Math.max(search.index - 1, 0);");
+    expect(app).toContain("function handleHistorySearchKeydown(event)");
+    expect(app).toContain("function enterCommandModeFromDollarKey(event)");
+    expect(app).toContain('state.inputMode !== "prompt" || event.key !== "$"');
+    expect(app).toContain("if (enterCommandModeFromDollarKey(event)) return;");
+    expect(app).toContain('event.ctrlKey && event.key.toLowerCase() === "r"');
+    expect(app).toContain('event.ctrlKey && event.key.toLowerCase() === "z"');
+    expect(app).toContain("if (!state.historySearch) return false;");
+    expect(app).toContain("updateHistorySearchMatches(input, state.historySearch.query + event.key);");
+    expect(app).toContain("function handleGlobalHistorySearchKeydown(event)");
+    expect(app).toContain("if (isEditableKeyTarget(event.target)) return false;");
+    expect(app).toContain("if (handleGlobalHistorySearchKeydown(event)) return;");
+    expect(app).toContain("if (handleHistorySearchKeydown(event)) return;");
+    expect(app).toContain('const mode = command === null ? "prompt" : "shell";');
+    expect(app).toContain("rememberInputHistory(command ?? message, mode);");
+    expect(app).toContain("cancelHistorySearch();");
   });
 
   test("supports fast slash command as a toggle", () => {

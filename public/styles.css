@@ -1864,15 +1864,50 @@ body.flow-resizing {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
+    "search search search"
     "images images images"
     "interrupt input context";
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 0;
   min-width: 0;
   padding: 10px;
   border-top: 1px solid var(--line);
   background: var(--panel);
   z-index: 1;
+}
+
+.history-search-indicator {
+  grid-area: search;
+  min-width: 0;
+  max-height: 0;
+  margin-bottom: 0;
+  opacity: 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(4px);
+  transition:
+    max-height 120ms ease,
+    margin-bottom 120ms ease,
+    opacity 90ms ease,
+    transform 120ms ease;
+}
+
+.message-form.history-searching .history-search-indicator {
+  max-height: 18px;
+  margin-bottom: 8px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.history-search-indicator strong {
+  color: #16a34a;
+  font-weight: 700;
 }
 
 .message-input.drag-over {
@@ -1887,6 +1922,10 @@ body.flow-resizing {
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
+}
+
+.agent-image-context:not([hidden]) {
+  margin-bottom: 8px;
 }
 
 .agent-image-chip {
