@@ -1672,6 +1672,10 @@ body.flow-resizing {
   color: #0f172a;
 }
 
+.terminal-entry-shell .terminal-entry-marker {
+  color: #16a34a;
+}
+
 .terminal-entry {
   position: relative;
 }

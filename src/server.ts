@@ -1493,8 +1493,7 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   if (!command) throw new Error("Type a shell command after $.");
 
   updateFlow(flow.id, { agentStatus: "running" });
-  insertLog(flow.id, "user", `$ ${command}\n`);
-  insertLog(flow.id, "agent:tool", command);
+  insertLog(flow.id, "shell:command", command);
 
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
@@ -1511,7 +1510,6 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   await Promise.all([stdoutDone, stderrDone]);
   insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : "failed"} exit ${code}`);
   updateFlow(flow.id, { agentStatus: code === 0 ? "idle" : "failed" });
-  if (code !== 0) throw new Error(`Command exited with code ${code}`);
 }
 
 async function interruptAgent(flowId: string) {

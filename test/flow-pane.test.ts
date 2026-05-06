@@ -771,7 +771,7 @@ describe("Turbopump pane markup", () => {
   });
 
   test("renders command execution logs as a single shell prompt line", () => {
-    expect(app).toContain('if (group.source === "agent:tool" || group.source === "agent:tool-result")');
+    expect(app).toContain('group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command"');
     expect(app).toContain('block.classList.add("terminal-entry-command");');
     expect(app).toContain('row.className = "terminal-command-line";');
     expect(app).toContain("marker.textContent = meta.marker;");

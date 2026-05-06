@@ -1432,6 +1432,7 @@ function logMeta(source) {
     "agent:approval": { label: "approval", marker: "?", tone: "warning" },
     "agent:input": { label: "input", marker: "?", tone: "warning" },
     "agent:protocol": { label: "protocol", marker: "!", tone: "warning" },
+    "shell:command": { label: "shell", marker: "$", tone: "shell" },
     flow: { label: "flow", marker: "*", tone: "status" },
     linear: { label: "linear", marker: "*", tone: "status" },
     serve: { label: "serve", marker: "$", tone: "tool" },
@@ -1442,6 +1443,9 @@ function logMeta(source) {
 
 function normalizeTerminalLog(log) {
   const message = String(log.message || "");
+  if (log.source === "user" && message.trimStart().startsWith("$ ")) {
+    return { ...log, source: "shell:command", message: message.trimStart().slice(2).trim() };
+  }
   if (log.source === "agent" && message.startsWith("$ ")) {
     return { ...log, source: "agent:tool", message: message.slice(2) };
   }
@@ -1591,6 +1595,14 @@ function terminalGroups(logs) {
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
     if (isHiddenTerminalLog(log)) continue;
+    const previousGroup = groups[groups.length - 1];
+    if (
+      log.source === "agent:tool" &&
+      previousGroup?.source === "shell:command" &&
+      formatTerminalMessage(log.source, log.message) === formatTerminalMessage(previousGroup.source, previousGroup.message)
+    ) {
+      continue;
+    }
     const traceRange = traceRangeForLog(log, traceRanges);
     if (traceRange) {
       let traceGroup = traceGroups.get(traceRange.key);
@@ -1639,7 +1651,7 @@ function appendTerminalBlock(fragment, group) {
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
 
-  if (group.source === "agent:tool" || group.source === "agent:tool-result") {
+  if (group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command") {
     block.classList.add("terminal-entry-command");
     const row = document.createElement("div");
     row.className = "terminal-command-line";
