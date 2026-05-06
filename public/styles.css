@@ -1673,7 +1673,7 @@ body.flow-resizing {
 }
 
 .terminal-entry-shell .terminal-entry-marker {
-  color: #16a34a;
+  color: #22c55e;
 }
 
 .terminal-entry {
@@ -1906,7 +1906,7 @@ body.flow-resizing {
 }
 
 .history-search-indicator strong {
-  color: #16a34a;
+  color: #22c55e;
   font-weight: 700;
 }
 
@@ -2008,11 +2008,13 @@ body.flow-resizing {
 }
 
 .agent-interrupt.command-mode {
-  color: #16a34a;
+  color: #22c55e;
+  font-size: 16px;
+  transform: translateX(-1px);
 }
 
 .agent-interrupt.command-mode:disabled {
-  color: #16a34a;
+  color: #22c55e;
 }
 
 .agent-interrupt.running-mode,
@@ -2070,8 +2072,8 @@ body.flow-resizing {
 }
 
 .message-input.command-mode {
-  border-color: #16a34a;
-  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.25);
+  border-color: #22c55e;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.25);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 

@@ -730,6 +730,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".slash-command-name {\n  min-width: 0;");
     expect(css).toContain("white-space: nowrap;");
     expect(css).toContain(".agent-interrupt:disabled");
+    expect(css).toContain(".agent-interrupt.command-mode {\n  color: #22c55e;\n  font-size: 16px;\n  transform: translateX(-1px);\n}");
     expect(css).not.toContain(".agent-start svg");
     expect(server).toContain('"turn/interrupt"');
     expect(server).toContain("async function interruptAgent");
