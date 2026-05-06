@@ -338,8 +338,12 @@ function renderHistorySearchIndicator() {
   if (!indicator) return;
   const form = els.flowPane.querySelector(".message-form");
   const search = state.historySearch;
+  const terminal = els.flowPane.querySelector(".terminal");
+  const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
   form?.classList.toggle("history-searching", Boolean(search));
   indicator.setAttribute("aria-hidden", String(!search));
+  applyFlowSplitSize();
+  if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);
   if (!search) {
     indicator.textContent = "";
     return;
@@ -440,6 +444,20 @@ function enterCommandModeFromDollarKey(event) {
   return true;
 }
 
+function setInputMode(mode) {
+  const input = els.flowPane.querySelector(".message-input");
+  cancelHistorySearch();
+  state.inputMode = mode;
+  updateMessageInputMode();
+  resizeMessageInput();
+  renderSlashMenu();
+  input?.focus();
+}
+
+function toggleInputMode() {
+  setInputMode(state.inputMode === "command" ? "prompt" : "command");
+}
+
 function isEditableKeyTarget(target) {
   if (!(target instanceof Element)) return false;
   if (target.closest("input, textarea, select")) return true;
@@ -519,8 +537,8 @@ function updateInputModeButton() {
   button.classList.toggle("command-mode", commandMode && !running);
   button.classList.toggle("prompt-mode", !commandMode && !running);
   button.classList.toggle("running-mode", running);
-  button.setAttribute("aria-label", running ? "Pause agent" : commandMode ? "Shell mode" : "Prompt mode");
-  button.title = running ? "Pause agent" : commandMode ? "Shell mode" : "Prompt mode";
+  button.setAttribute("aria-label", running ? "Pause agent" : commandMode ? "Switch to prompt mode" : "Switch to shell mode");
+  button.title = running ? "Pause agent" : commandMode ? "Switch to prompt mode" : "Switch to shell mode";
   if (running) {
     button.innerHTML = `
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1433,7 +1451,7 @@ function renderFlowPane() {
   }
 
   const agentInterrupt = els.flowPane.querySelector(".agent-interrupt");
-  agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;
+  agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));
   els.flowPane.querySelector(".message-input").disabled =
     state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
   updateMessageInputMode();
@@ -2105,8 +2123,22 @@ function resumeTerminalFollow() {
 
 function scrollTerminalToLatest(terminal) {
   requestAnimationFrame(() => {
-    terminal.scrollTop = terminal.scrollHeight;
+    scrollTerminalToLatestNow(terminal);
   });
+}
+
+function scrollTerminalToLatestNow(terminal) {
+  terminal.scrollTop = terminal.scrollHeight;
+}
+
+function followTerminalToLatestDuringLayout(terminal, durationMs) {
+  const startedAt = performance.now();
+  const follow = (now) => {
+    applyFlowSplitSize();
+    scrollTerminalToLatestNow(terminal);
+    if (now - startedAt < durationMs) requestAnimationFrame(follow);
+  };
+  requestAnimationFrame(follow);
 }
 
 function agentWorkingForFlow(flow) {
@@ -2406,6 +2438,8 @@ els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async (
       renderTickets();
       renderFlowPane();
     }
+  } else {
+    toggleInputMode();
   }
 });
 

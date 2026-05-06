@@ -305,7 +305,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function repoUrlConfigured()");
     expect(app).toContain("const agentEnabled = repoUrlConfigured();");
     expect(app).toContain('agentPanel.classList.toggle("disabled", !agentEnabled);');
-    expect(app).toContain("agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;");
+    expect(app).toContain("agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));");
     expect(app).toContain(
       'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
     );
@@ -670,7 +670,7 @@ describe("Turbopump pane markup", () => {
     expect(html).toContain('<path d="M15 6v12" />');
     expect(html.indexOf('class="terminal"')).toBeLessThan(html.indexOf('class="message-form"'));
     expect(app).not.toContain("agentStart.addEventListener");
-    expect(app).toContain("agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;");
+    expect(app).toContain("agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));");
     expect(app).toContain("function agentWorkingForFlow(flow)");
     expect(app).toContain("const AGENT_WORKING_POLL_INTERVAL_MS = 2500;");
     expect(app).toContain("function syncAgentWorkingPoll(flowId, agentWorking)");
@@ -954,6 +954,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('updateFlow(flow.id, { agentStatus: "running" });');
     expect(app).toContain("const agentRunning = flow?.agentStatus === \"running\";");
     expect(app).toContain("state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);");
+    expect(app).toContain("state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));");
   });
 
   test("focuses the message input when typing from non-editable chrome", () => {
@@ -996,7 +997,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function renderHistorySearchIndicator()");
     expect(app).toContain('form?.classList.toggle("history-searching", Boolean(search));');
     expect(app).toContain('indicator.setAttribute("aria-hidden", String(!search));');
+    expect(app).toContain("const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);");
+    expect(app).toContain("applyFlowSplitSize();");
+    expect(app).toContain("if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);");
     expect(app).toContain('indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;');
+    expect(app).toContain("function scrollTerminalToLatestNow(terminal)");
+    expect(app).toContain("function followTerminalToLatestDuringLayout(terminal, durationMs)");
+    expect(app).toContain("if (now - startedAt < durationMs) requestAnimationFrame(follow);");
     expect(app).toContain("function startOrAdvanceHistorySearch(input)");
     expect(app).toContain('query: "",');
     expect(app).toContain("draft: input.value");
@@ -1008,6 +1015,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function handleHistorySearchKeydown(event)");
     expect(app).toContain("function enterCommandModeFromDollarKey(event)");
     expect(app).toContain('state.inputMode !== "prompt" || event.key !== "$"');
+    expect(app).toContain("function setInputMode(mode)");
+    expect(app).toContain('setInputMode(state.inputMode === "command" ? "prompt" : "command");');
+    expect(app).toContain('commandMode ? "Switch to prompt mode" : "Switch to shell mode"');
+    expect(app).toContain("toggleInputMode();");
     expect(app).toContain("if (enterCommandModeFromDollarKey(event)) return;");
     expect(app).toContain('event.ctrlKey && event.key.toLowerCase() === "r"');
     expect(app).toContain('event.ctrlKey && event.key.toLowerCase() === "z"');
