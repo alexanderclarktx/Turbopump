@@ -555,9 +555,18 @@ function resizeMessageInput() {
   const input = els.flowPane.querySelector(".message-input");
   const terminal = els.flowPane.querySelector(".terminal");
   const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
+  const currentHeight = input.getBoundingClientRect().height;
   input.style.height = "auto";
-  input.style.height = `${input.scrollHeight}px`;
-  if (shouldFollowLatest) scrollTerminalToLatest(terminal);
+  const targetHeight = input.scrollHeight;
+  if (!currentHeight || Math.abs(currentHeight - targetHeight) < 1) {
+    input.style.height = `${targetHeight}px`;
+  } else {
+    input.style.height = `${currentHeight}px`;
+    requestAnimationFrame(() => {
+      input.style.height = `${targetHeight}px`;
+    });
+  }
+  if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);
 }
 
 function renderSlashMenu() {

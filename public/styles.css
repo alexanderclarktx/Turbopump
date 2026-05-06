@@ -2069,6 +2069,7 @@ body.flow-resizing {
   resize: none;
   line-height: 1.35;
   overflow-y: auto;
+  transition: height 120ms ease;
 }
 
 .message-input.command-mode {

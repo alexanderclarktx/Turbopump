@@ -720,6 +720,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("max-height: min(220px, 30vh);");
     expect(css).toContain("resize: none;");
     expect(css).toContain("overflow-y: auto;");
+    expect(css).toContain("transition: height 120ms ease;");
     expect(css).toContain(".history-search-indicator");
     expect(css).toContain(".message-form.history-searching");
     expect(css).toContain("max-height 120ms ease");
@@ -929,11 +930,15 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function renderSlashMenu()");
     expect(app).toContain("function selectSlashCommand");
     expect(app).toContain("function resizeMessageInput()");
+    expect(app).toContain("const currentHeight = input.getBoundingClientRect().height;");
+    expect(app).toContain("const targetHeight = input.scrollHeight;");
+    expect(app).toContain('input.style.height = `${currentHeight}px`;');
+    expect(app).toContain('input.style.height = `${targetHeight}px`;');
     expect(app).toContain('const terminal = els.flowPane.querySelector(".terminal");');
     expect(app).toContain("const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);");
     expect(app).toContain('input.style.height = "auto";');
-    expect(app).toContain("input.style.height = `${input.scrollHeight}px`;");
-    expect(app).toContain("if (shouldFollowLatest) scrollTerminalToLatest(terminal);");
+    expect(app).toContain("if (!currentHeight || Math.abs(currentHeight - targetHeight) < 1) {");
+    expect(app).toContain("if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);");
     expect(app).toContain('if (!query.startsWith("/")) return [];');
     expect(app).toContain(".sort((a, b) => a.name.localeCompare(b.name))");
     expect(app).not.toContain("SLASH_COMMAND_EXPANSIONS[command] = sortSlashCommands(expansions);");
