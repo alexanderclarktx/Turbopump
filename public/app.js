@@ -268,6 +268,33 @@ function commandModeCommand(value) {
   return value.trim();
 }
 
+function isEditableKeyTarget(target) {
+  if (!(target instanceof Element)) return false;
+  if (target.closest("input, textarea, select")) return true;
+  return target.closest("[contenteditable]:not([contenteditable='false'])") !== null;
+}
+
+function shouldFocusMessageInputForKey(event) {
+  if (event.defaultPrevented || event.isComposing) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (event.key.length !== 1) return false;
+  if (isEditableKeyTarget(event.target)) return false;
+  const input = els.flowPane.querySelector(".message-input");
+  return Boolean(input && !input.disabled && document.activeElement !== input);
+}
+
+function focusMessageInputForKey(event) {
+  if (!shouldFocusMessageInputForKey(event)) return false;
+  const input = els.flowPane.querySelector(".message-input");
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  event.preventDefault();
+  input.focus();
+  input.setRangeText(event.key, start, end, "end");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+}
+
 function hideSlashMenu() {
   const menu = els.flowPane.querySelector(".slash-menu");
   menu.hidden = true;
@@ -2377,6 +2404,7 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (focusMessageInputForKey(event)) return;
   if (event.key === "Escape") event.preventDefault();
 });
 

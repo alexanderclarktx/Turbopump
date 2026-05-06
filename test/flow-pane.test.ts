@@ -951,6 +951,22 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);");
   });
 
+  test("focuses the message input when typing from non-editable chrome", () => {
+    expect(app).toContain("function isEditableKeyTarget(target)");
+    expect(app).toContain('target.closest("input, textarea, select")');
+    expect(app).toContain("target.closest(\"[contenteditable]:not([contenteditable='false'])\")");
+    expect(app).toContain("function shouldFocusMessageInputForKey(event)");
+    expect(app).toContain("if (event.defaultPrevented || event.isComposing) return false;");
+    expect(app).toContain("if (event.metaKey || event.ctrlKey || event.altKey) return false;");
+    expect(app).toContain("if (event.key.length !== 1) return false;");
+    expect(app).toContain("if (isEditableKeyTarget(event.target)) return false;");
+    expect(app).toContain("return Boolean(input && !input.disabled && document.activeElement !== input);");
+    expect(app).toContain("function focusMessageInputForKey(event)");
+    expect(app).toContain("input.setRangeText(event.key, start, end, \"end\");");
+    expect(app).toContain('input.dispatchEvent(new Event("input", { bubbles: true }));');
+    expect(app).toContain("if (focusMessageInputForKey(event)) return;");
+  });
+
   test("supports fast slash command as a toggle", () => {
     expect(server).toContain('type ReasoningEffort = "low" | "medium" | "high" | "xhigh";');
     expect(server).toContain('type ServiceTier = "fast" | "flex";');
