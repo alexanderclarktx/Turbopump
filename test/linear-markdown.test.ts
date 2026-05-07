@@ -92,6 +92,27 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("1. Update");
   });
 
+  test("continues repeated ordered list markers across intervening paragraphs", () => {
+    const html = renderLinearMarkdown("1. Add\nDetails\n- requested\n\n1. Update\nMore detail\n\n1. Validate");
+
+    expect(html).toContain("<ol><li>Add<br>Details<ul><li>requested</li></ul></li><li>Update<br>More detail</li><li>Validate</li></ol>");
+    expect(html.match(/<ol>/g)).toHaveLength(1);
+    expect(html).not.toContain("1. Update");
+    expect(html).not.toContain("1. Validate");
+  });
+
+  test("keeps follow-up bullets visually under repeated numbered items", () => {
+    const html = renderLinearMarkdown(
+      "1. Fix added\nThe reviewer is right:\n- requested: all resources\n- added: only principals\n\n1. Move workspace\nThen the MCP tool only needs:\n- parallel lookup behavior\n- already-member behavior",
+    );
+
+    expect(html).toContain(
+      "<ol><li>Fix added<br>The reviewer is right:<ul><li>requested: all resources</li><li>added: only principals</li></ul></li><li>Move workspace<br>Then the MCP tool only needs:<ul><li>parallel lookup behavior</li><li>already-member behavior</li></ul></li></ol>",
+    );
+    expect(html.match(/<ul>/g)).toHaveLength(2);
+    expect(html).not.toContain("<ol start=");
+  });
+
   test("renders fenced code blocks while escaping HTML", () => {
     const html = renderLinearMarkdown("```ts\nconst apple = `<red>`;\n```");
 

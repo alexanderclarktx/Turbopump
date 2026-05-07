@@ -5,6 +5,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
 
   const lines = text.split("\n");
   const blocks = [];
+  const orderedListStarts = new Map();
 
   for (let index = 0; index < lines.length; ) {
     const line = lines[index];
@@ -32,8 +33,11 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
 
     const list = matchListLine(line);
     if (list) {
-      const parsed = renderList(lines, index, list.indent, list.ordered, { images, links });
+      const orderedKey = String(list.indent);
+      const startNumber = list.ordered ? (orderedListStarts.get(orderedKey) || list.number) : 1;
+      const parsed = renderList(lines, index, list.indent, list.ordered, { images, links }, startNumber);
       blocks.push(parsed.html);
+      if (list.ordered) orderedListStarts.set(orderedKey, startNumber + parsed.itemCount);
       index = parsed.index;
       continue;
     }
@@ -64,8 +68,9 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
   return blocks.join("");
 }
 
-function renderList(lines, startIndex, indent, ordered, options) {
+function renderList(lines, startIndex, indent, ordered, options, startNumber = 1) {
   const tag = ordered ? "ol" : "ul";
+  const startAttribute = ordered && startNumber > 1 ? ` start="${startNumber}"` : "";
   const items = [];
   let index = startIndex;
 
@@ -95,8 +100,16 @@ function renderList(lines, startIndex, indent, ordered, options) {
           index = nextContentIndex;
           break;
         }
+        if (ordered && nextContentList && !nextContentList.ordered && nextContentList.indent >= indent) {
+          index = nextContentIndex;
+          continue;
+        }
         if (nextContentList && nextContentList.indent > indent) {
           index = nextContentIndex;
+          continue;
+        }
+        if (ordered && !nextContentList) {
+          index += 1;
           continue;
         }
         index += 1;
@@ -105,8 +118,14 @@ function renderList(lines, startIndex, indent, ordered, options) {
 
       if (nextList) {
         if (nextList.indent === indent && nextList.ordered === ordered) break;
+        if (ordered && !nextList.ordered && nextList.indent >= indent) {
+          const nested = renderList(lines, index, nextList.indent, nextList.ordered, options, nextList.number);
+          parts.push(nested.html);
+          index = nested.index;
+          continue;
+        }
         if (nextList.indent > indent) {
-          const nested = renderList(lines, index, nextList.indent, nextList.ordered, options);
+          const nested = renderList(lines, index, nextList.indent, nextList.ordered, options, nextList.number);
           parts.push(nested.html);
           index = nested.index;
           continue;
@@ -115,6 +134,12 @@ function renderList(lines, startIndex, indent, ordered, options) {
       }
 
       const lineIndent = leadingSpaceCount(line);
+      if (ordered && lineIndent >= indent) {
+        const continuationStart = lineIndent > indent ? Math.min(line.length, indent + 2) : indent;
+        parts.push(`<br>${renderInlineMarkdown(line.slice(continuationStart), options)}`);
+        index += 1;
+        continue;
+      }
       if (lineIndent > indent) {
         parts.push(`<br>${renderInlineMarkdown(line.slice(Math.min(line.length, indent + 2)), options)}`);
         index += 1;
@@ -127,7 +152,7 @@ function renderList(lines, startIndex, indent, ordered, options) {
     items.push(`<li>${parts.join("")}</li>`);
   }
 
-  return { html: `<${tag}>${items.join("")}</${tag}>`, index };
+  return { html: `<${tag}${startAttribute}>${items.join("")}</${tag}>`, index, itemCount: items.length };
 }
 
 function matchListLine(line) {
@@ -136,6 +161,7 @@ function matchListLine(line) {
   return {
     indent: leadingSpaceCount(match[1]),
     ordered: Boolean(match[3]),
+    number: match[3] ? Number(match[3]) : 1,
     content: match[4],
   };
 }
