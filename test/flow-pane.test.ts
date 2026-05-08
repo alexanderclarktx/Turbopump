@@ -399,12 +399,14 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("background-color var(--motion-fast)");
   });
 
-  test("keeps ticket status out of cards and pins id to the card corner", () => {
-    expect(app).not.toContain('class="ticket-status"');
+  test("shows ticket status as a meta pill and pins id to the card corner", () => {
     expect(app).toContain('class="ticket-meta"');
     expect(app).toContain('class="ticket-id"');
     expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.identifier)}</span>');
+    expect(app).toContain("const statusName = linearStatusName(ticket);");
+    expect(app).toContain('${statusName ? `<span class="ticket-linear-status">${escapeHtml(statusName)}</span>` : ""}');
     expect(css).not.toContain(".ticket-status {");
+    expect(css).toContain(".ticket-project,\n.ticket-linear-status");
     expect(css).toContain(".ticket-id {\n  position: absolute;");
     expect(css).toContain("top: 8px;");
     expect(css).toContain("right: 10px;");
@@ -427,6 +429,24 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".ticket-priority {\n  display: inline-grid;");
     expect(css).toContain(".ticket-priority.urgent {\n  color: var(--danger);\n}");
     expect(css).toContain(".ticket-priority svg");
+  });
+
+  test("supports client-side pinned Linear tickets at the top of the drawer", () => {
+    expect(app).toContain('const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";');
+    expect(app).toContain("function initialPinnedLinearIssues()");
+    expect(app).toContain("pinnedLinearIssues: initialPinnedLinearIssues(),");
+    expect(app).toContain("const pinnedTickets = tickets.filter((ticket) => isLinearIssuePinned(ticket.identifier));");
+    expect(app).toContain("const nodes = [renderPinnedTicketGroup(pinnedTickets)];");
+    expect(app).toContain('section.className = "ticket-status-group pinned-ticket-group";');
+    expect(app).toContain("section.addEventListener(\"drop\", handlePinnedTicketDrop);");
+    expect(app).toContain("function setLinearIssuePinned(identifier, pinned)");
+    expect(app).toContain("function ticketCanMoveToPinned(issueId)");
+    expect(app).toContain("if (isLinearIssuePinned(issueId)) {");
+    expect(app).not.toContain('class="ticket-pin"');
+    expect(css).toContain(".pinned-ticket-separator");
+    expect(css).toContain(".pinned-ticket-group .ticket-status-group-items");
+    expect(css).toContain(".ticket-card.pinned");
+    expect(css).not.toContain(".ticket-pin {");
   });
 
   test("marks tickets with flows using the favicon instead of a green card tint", () => {

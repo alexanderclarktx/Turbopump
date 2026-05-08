@@ -823,6 +823,10 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   outline-offset: 2px;
 }
 
+.pinned-ticket-group .ticket-status-group-items {
+  min-height: 28px;
+}
+
 .ticket-status-group-body {
   display: grid;
   grid-template-rows: 1fr;
@@ -896,6 +900,27 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 
 .ticket-status-separator:hover {
   color: var(--ink);
+}
+
+.pinned-ticket-separator {
+  cursor: default;
+}
+
+.pinned-ticket-separator::before {
+  display: none;
+}
+
+.ticket-pinned-icon {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.pinned-ticket-separator:hover {
+  color: var(--muted);
 }
 
 .ticket-status-label {
@@ -983,6 +1008,10 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   transform: scaleY(1);
 }
 
+.ticket-card.pinned {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+}
+
 .ticket-flow-mark {
   width: 18px;
   height: 18px;
@@ -1063,7 +1092,8 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   white-space: nowrap;
 }
 
-.ticket-project {
+.ticket-project,
+.ticket-linear-status {
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   padding: 2px 6px;

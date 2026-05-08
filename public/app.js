@@ -1,6 +1,7 @@
 import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js";
 
 const COLLAPSED_LINEAR_STATUSES_KEY = "flow.collapsedLinearStatuses";
+const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
 const THEME_KEY = "flow.theme";
 const PROMPT_HISTORY_KEY = "flow.promptHistory";
@@ -65,6 +66,15 @@ function initialCollapsedLinearStatuses() {
   }
 }
 
+function initialPinnedLinearIssues() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PINNED_LINEAR_ISSUES_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 function initialFlowSplitSize() {
   const value = Number(localStorage.getItem(FLOW_SPLIT_SIZE_KEY) || 50);
   return clampFlowSplitSize(Number.isFinite(value) ? value : 50);
@@ -109,6 +119,7 @@ const state = {
   settingsCollapsed: true,
   theme: initialTheme(),
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
+  pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
   slashCommandIndex: 0,
   messageSubmitting: false,
@@ -1090,13 +1101,9 @@ async function loadLinearTickets(options = {}) {
 }
 
 function renderTickets() {
-  if (!state.linearTickets.length) {
-    els.ticketGrid.replaceChildren();
-    els.ticketGrid.dataset.ticketSignature = "";
-    return;
-  }
   const tickets = sortedLinearTickets(state.linearTickets);
-  const groups = groupedTicketsByLinearStatus(tickets);
+  const pinnedTickets = tickets.filter((ticket) => isLinearIssuePinned(ticket.identifier));
+  const groups = groupedTicketsByLinearStatus(tickets.filter((ticket) => !isLinearIssuePinned(ticket.identifier)));
   const signature = tickets
     .map((ticket) =>
       [
@@ -1111,7 +1118,8 @@ function renderTickets() {
       ].join("\u001f"),
     )
     .join("\u001e")
-    .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"));
+    .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"))
+    .concat("\u001d", [...state.pinnedLinearIssues].sort().join("\u001f"));
 
   if (els.ticketGrid.dataset.ticketSignature === signature) {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
@@ -1121,7 +1129,7 @@ function renderTickets() {
   }
 
   els.ticketGrid.dataset.ticketSignature = signature;
-  const nodes = [];
+  const nodes = [renderPinnedTicketGroup(pinnedTickets)];
   for (const group of groups) {
     nodes.push(renderTicketStatusGroup(group));
   }
@@ -1202,6 +1210,35 @@ function renderTicketStatusGroup(group) {
   return section;
 }
 
+function renderPinnedTicketGroup(tickets) {
+  const section = document.createElement("section");
+  section.className = "ticket-status-group pinned-ticket-group";
+  section.addEventListener("dragenter", handlePinnedTicketDragEnter);
+  section.addEventListener("dragover", handlePinnedTicketDragOver);
+  section.addEventListener("dragleave", handleTicketStatusDragLeave);
+  section.addEventListener("drop", handlePinnedTicketDrop);
+
+  const separator = document.createElement("div");
+  separator.className = "ticket-status-separator pinned-ticket-separator";
+  separator.innerHTML = `
+    <svg class="ticket-pinned-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="m14 4 6 6-4 1-3 3v5l-1 1-4-4 1-1h5l3-3 1-4-4-4Z" />
+    </svg>
+    <span class="ticket-status-label">Pinned</span>
+    <span class="ticket-status-count">${tickets.length}</span>
+  `;
+
+  const body = document.createElement("div");
+  body.className = "ticket-status-group-body";
+  const items = document.createElement("div");
+  items.className = "ticket-status-group-items";
+  items.replaceChildren(...tickets.map((ticket) => renderTicketCard(ticket)));
+  body.append(items);
+
+  section.append(separator, body);
+  return section;
+}
+
 function renderTicketStatusSeparator(group) {
   const separator = document.createElement("button");
   separator.className = "ticket-status-separator";
@@ -1218,9 +1255,24 @@ function renderTicketStatusSeparator(group) {
   return separator;
 }
 
+function isLinearIssuePinned(identifier) {
+  return state.pinnedLinearIssues.has(identifier);
+}
+
+function persistPinnedLinearIssues() {
+  localStorage.setItem(PINNED_LINEAR_ISSUES_KEY, JSON.stringify([...state.pinnedLinearIssues]));
+}
+
+function setLinearIssuePinned(identifier, pinned) {
+  if (pinned) state.pinnedLinearIssues.add(identifier);
+  else state.pinnedLinearIssues.delete(identifier);
+  persistPinnedLinearIssues();
+  renderTickets();
+}
+
 function ticketCanMoveToStatus(issueId, group) {
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
-  return Boolean(ticket && group.stateId && linearStatusId(ticket) !== group.stateId);
+  return Boolean(ticket && group.stateId && (isLinearIssuePinned(issueId) || linearStatusId(ticket) !== group.stateId));
 }
 
 function setTicketStatusGroupDragOver(groupElement, active) {
@@ -1257,7 +1309,40 @@ function handleTicketStatusDrop(event, group) {
   if (!ticketCanMoveToStatus(issueId, group)) return;
   event.preventDefault();
   clearTicketDragState();
+  if (isLinearIssuePinned(issueId)) {
+    state.pinnedLinearIssues.delete(issueId);
+    persistPinnedLinearIssues();
+  }
+  if (linearStatusId(state.linearTickets.find((item) => item.identifier === issueId)) === group.stateId) {
+    renderTickets();
+    return;
+  }
   void moveTicketToLinearStatus(issueId, group);
+}
+
+function ticketCanMoveToPinned(issueId) {
+  return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId) && !isLinearIssuePinned(issueId));
+}
+
+function handlePinnedTicketDragEnter(event) {
+  if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
+  event.preventDefault();
+  setTicketStatusGroupDragOver(event.currentTarget, true);
+}
+
+function handlePinnedTicketDragOver(event) {
+  if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  setTicketStatusGroupDragOver(event.currentTarget, true);
+}
+
+function handlePinnedTicketDrop(event) {
+  const issueId = state.draggingLinearIssueId || event.dataTransfer.getData("text/plain");
+  if (!ticketCanMoveToPinned(issueId)) return;
+  event.preventDefault();
+  clearTicketDragState();
+  setLinearIssuePinned(issueId, true);
 }
 
 function replaceLinearIssue(issue) {
@@ -1330,6 +1415,7 @@ function updateTicketCardState(card) {
   const ticket = state.linearTickets.find((item) => item.identifier === card.dataset.issue);
   card.classList.toggle("active", card.dataset.issue === state.selectedLinearIssueId);
   card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+  card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
 }
 
 function renderTicketCard(ticket) {
@@ -1343,12 +1429,14 @@ function renderTicketCard(ticket) {
   updateTicketCardState(card);
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
   const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : "";
+  const statusName = linearStatusName(ticket);
   card.innerHTML = `
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
       ${renderLinearPriorityIcon(ticket.priority)}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
+      ${statusName ? `<span class="ticket-linear-status">${escapeHtml(statusName)}</span>` : ""}
     </div>
     ${
       ticket.flowId
