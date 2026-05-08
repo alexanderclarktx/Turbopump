@@ -260,8 +260,10 @@ function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
 }
 
+let sessionEnvContents = readFileSync(envPath, "utf8");
+
 function readEnvFile() {
-  return readFileSync(envPath, "utf8");
+  return sessionEnvContents;
 }
 
 function parseEnv(contents: string) {
@@ -1528,6 +1530,17 @@ async function interruptAgent(flowId: string) {
   });
 }
 
+function stopIdleAgentRuntimesForEnvUpdate() {
+  for (const runtime of agentProcesses.values()) {
+    if (runtime.activeTurnId) continue;
+    runtime.stopping = true;
+    agentProcesses.delete(runtime.flowId);
+    runtime.proc.kill();
+    updateFlow(runtime.flowId, { agentStatus: "idle" });
+    insertLog(runtime.flowId, "agent:status", "agent environment updated");
+  }
+}
+
 function stopServe() {
   if (!serveProcess) return;
   const previous = serveProcess;
@@ -1811,8 +1824,9 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/env" && request.method === "PUT") {
     const body = await readJson<{ contents: string }>(request);
-    writeFileSync(envPath, body.contents ?? "", "utf8");
+    sessionEnvContents = body.contents ?? "";
     setSetting("envVersion", String(Number(getSetting("envVersion", "0")) + 1));
+    stopIdleAgentRuntimesForEnvUpdate();
     const activeServe = serveProcess ? getFlow(serveProcess.flowId) : null;
     if (activeServe) startServe(activeServe);
     return json({ ok: true, restartedServe: Boolean(activeServe) });

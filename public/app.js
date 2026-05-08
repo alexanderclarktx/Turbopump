@@ -1,6 +1,7 @@
 import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js";
 
 const COLLAPSED_LINEAR_STATUSES_KEY = "flow.collapsedLinearStatuses";
+const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
 const THEME_KEY = "flow.theme";
@@ -75,6 +76,17 @@ function initialPinnedLinearIssues() {
   }
 }
 
+function initialCollapsedSettingsSections() {
+  const raw = localStorage.getItem(COLLAPSED_SETTINGS_SECTIONS_KEY);
+  if (raw === null) return new Set(["checkouts"]);
+  try {
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : []);
+  } catch {
+    return new Set(["checkouts"]);
+  }
+}
+
 function initialFlowSplitSize() {
   const value = Number(localStorage.getItem(FLOW_SPLIT_SIZE_KEY) || 50);
   return clampFlowSplitSize(Number.isFinite(value) ? value : 50);
@@ -118,6 +130,7 @@ const state = {
   openTraceGroups: new Map(),
   settingsCollapsed: true,
   theme: initialTheme(),
+  collapsedSettingsSections: initialCollapsedSettingsSections(),
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
   pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
@@ -144,6 +157,7 @@ const state = {
 
 const els = {
   settingsPane: document.querySelector("#settingsPane"),
+  settingsContent: document.querySelector(".settings-content"),
   settingsToggle: document.querySelector("#settingsToggle"),
   themeToggle: document.querySelector("#themeToggle"),
   repoUrl: document.querySelector("#repoUrl"),
@@ -709,7 +723,35 @@ async function saveEnv() {
     body: JSON.stringify({ contents: els.envEditor.value }),
   });
   lastSavedEnv = els.envEditor.value;
-  toast(result.restartedServe ? "Env saved and serve restarted" : "Env saved");
+  toast(result.restartedServe ? "Env updated and serve restarted" : "Env updated");
+}
+
+function settingsSectionKey(section) {
+  const label = section.querySelector(".settings-section-toggle span")?.textContent || "";
+  return label.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function applySettingsSectionState(section) {
+  const key = settingsSectionKey(section);
+  const collapsed = state.collapsedSettingsSections.has(key);
+  section.classList.toggle("collapsed", collapsed);
+  section.querySelector(".settings-section-toggle")?.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function renderSettingsSections() {
+  els.settingsContent.querySelectorAll(".settings-section").forEach(applySettingsSectionState);
+}
+
+function toggleSettingsSection(section) {
+  const key = settingsSectionKey(section);
+  if (!key) return;
+  if (state.collapsedSettingsSections.has(key)) {
+    state.collapsedSettingsSections.delete(key);
+  } else {
+    state.collapsedSettingsSections.add(key);
+  }
+  localStorage.setItem(COLLAPSED_SETTINGS_SECTIONS_KEY, JSON.stringify([...state.collapsedSettingsSections]));
+  applySettingsSectionState(section);
 }
 
 function setSettingsCollapsed(collapsed) {
@@ -798,6 +840,7 @@ function setFlowSplitSize(value) {
 
 async function bootstrap() {
   applyTheme(state.theme);
+  renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
   setFlowSplitSize(state.flowSplitSize);
   const data = await api("/api/bootstrap");
@@ -1222,7 +1265,7 @@ function renderPinnedTicketGroup(tickets) {
   separator.className = "ticket-status-separator pinned-ticket-separator";
   separator.innerHTML = `
     <svg class="ticket-pinned-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="m14 4 6 6-4 1-3 3v5l-1 1-4-4 1-1h5l3-3 1-4-4-4Z" />
+      <path d="m12 3.5 2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9L12 3.5Z" />
     </svg>
     <span class="ticket-status-label">Pinned</span>
     <span class="ticket-status-count">${tickets.length}</span>
@@ -1429,14 +1472,12 @@ function renderTicketCard(ticket) {
   updateTicketCardState(card);
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
   const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : "";
-  const statusName = linearStatusName(ticket);
   card.innerHTML = `
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
       ${renderLinearPriorityIcon(ticket.priority)}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
-      ${statusName ? `<span class="ticket-linear-status">${escapeHtml(statusName)}</span>` : ""}
     </div>
     ${
       ticket.flowId
@@ -1652,6 +1693,7 @@ function renderLinearDetail(context) {
     issue.estimate ? `${issue.estimate} pts` : "",
   ].filter(Boolean);
   const priorityMeta = renderLinearPriorityIcon(issue.priority);
+  const statusName = issue.state?.name || context.ticket?.state?.name || "";
 
   container.innerHTML = `
     <section class="linear-issue">
@@ -1661,6 +1703,7 @@ function renderLinearDetail(context) {
             ${escapeHtml(issue.identifier || context.issueId)}
           </a>
           <h3>${escapeHtml(issue.title || context.title)}</h3>
+          ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}
         </div>
       </div>
       <div class="linear-meta">
@@ -2451,6 +2494,12 @@ els.settingsPane.addEventListener("keydown", (event) => {
   if (!state.settingsCollapsed || !["Enter", " "].includes(event.key)) return;
   event.preventDefault();
   setSettingsCollapsed(false);
+});
+
+els.settingsContent.addEventListener("click", (event) => {
+  const toggle = event.target.closest(".settings-section-toggle");
+  if (!toggle) return;
+  toggleSettingsSection(toggle.closest(".settings-section"));
 });
 
 els.repoUrl.addEventListener("input", () => {

@@ -33,62 +33,96 @@
         </div>
 
         <div class="settings-content">
-          <section>
-            <h2>Linear</h2>
-            <span id="linearState" class="pill">Linear disconnected</span>
-            <form id="linearKeyForm" class="linear-key-form">
-              <input id="linearApiKey" type="password" placeholder="Linear API key" autocomplete="off" />
-              <button type="submit">Connect Linear</button>
-            </form>
+          <section class="settings-section">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Linear</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <span id="linearState" class="pill">Linear disconnected</span>
+              <form id="linearKeyForm" class="linear-key-form">
+                <input id="linearApiKey" type="password" placeholder="Linear API key" autocomplete="off" />
+                <button type="submit">Connect Linear</button>
+              </form>
+            </div>
           </section>
 
-          <section>
-            <h2>Repo</h2>
-            <label>
-              url
-              <input id="repoUrl" placeholder="git@github.com:my/repo.git" />
-            </label>
+          <section class="settings-section">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Repo</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <label>
+                url
+                <input id="repoUrl" placeholder="git@github.com:my/repo.git" />
+              </label>
+            </div>
           </section>
 
-          <section class="agent-settings">
-            <h2>Agents</h2>
-            <label class="agent-instructions-label">
-              <span class="setting-label-row">
-                <span>developer instructions</span>
-                <button
-                  id="resetAgentDeveloperInstructions"
-                  class="icon-button"
-                  type="button"
-                  aria-label="Reset developer instructions"
-                  title="Reset developer instructions"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M20 6v5h-5" />
-                    <path d="M4 18v-5h5" />
-                    <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
-                    <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
-                  </svg>
-                </button>
-              </span>
-              <textarea id="agentDeveloperInstructions" spellcheck="false"></textarea>
-            </label>
+          <section class="settings-section agent-settings">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Agents</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <label class="agent-instructions-label">
+                <span class="setting-label-row">
+                  <span>developer instructions</span>
+                  <button
+                    id="resetAgentDeveloperInstructions"
+                    class="icon-button"
+                    type="button"
+                    aria-label="Reset developer instructions"
+                    title="Reset developer instructions"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M20 6v5h-5" />
+                      <path d="M4 18v-5h5" />
+                      <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
+                      <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
+                    </svg>
+                  </button>
+                </span>
+                <textarea id="agentDeveloperInstructions" spellcheck="false"></textarea>
+              </label>
+            </div>
           </section>
 
-          <section class="checkout-settings">
-            <h2>Checkouts</h2>
-            <div id="checkoutList" class="checkout-list" aria-live="polite"></div>
+          <section class="settings-section checkout-settings">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Checkouts</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <div id="checkoutList" class="checkout-list" aria-live="polite"></div>
+            </div>
           </section>
 
-          <section class="development-settings" hidden>
-            <h2>Development</h2>
-            <label>
-              serve script
-              <input id="serveCommand" placeholder="bun run dev" />
-            </label>
-            <label>
-              environment
-              <textarea id="envEditor" spellcheck="false"></textarea>
-            </label>
+          <section class="settings-section environment-settings">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Environment</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <label>
+                environment
+                <textarea id="envEditor" spellcheck="false"></textarea>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section development-settings" hidden>
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Development</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <label>
+                serve script
+                <input id="serveCommand" placeholder="bun run dev" />
+              </label>
+            </div>
           </section>
         </div>
       </aside>

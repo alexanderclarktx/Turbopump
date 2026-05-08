@@ -63,9 +63,10 @@ describe("Turbopump pane markup", () => {
     expect(narrowRules).not.toContain(".workspace {\n    min-height: 720px;\n  }");
   });
 
-  test("keeps the Settings heading larger than section headings", () => {
+  test("keeps the Settings heading larger than section toggles", () => {
     expect(css).toContain(".settings-header h2 {\n  margin: 0;\n  color: var(--ink);\n  font-size: 22px;");
-    expect(css).toContain(".settings-content h2 {\n  margin: 0;\n  color: var(--ink);\n  font-size: 14px;");
+    expect(css).toContain(".settings-section-toggle {\n  display: flex;");
+    expect(css).toContain("font-size: 14px;");
     expect(css).not.toContain(".sidebar h2 {\n  margin: 0;\n  font-size: 14px;");
   });
 
@@ -126,14 +127,43 @@ describe("Turbopump pane markup", () => {
   });
 
   test("hides the Development settings section", () => {
-    expect(html).toContain('<section class="development-settings" hidden>');
-    expect(html).toContain("<h2>Development</h2>");
+    expect(html).toContain('<section class="settings-section development-settings" hidden>');
+    expect(html).toContain("<span>Development</span>");
     expect(css).toContain("[hidden] {\n  display: none !important;");
   });
 
+  test("uses session-scoped environment settings for spawned commands", () => {
+    expect(html).toContain('<section class="settings-section environment-settings">');
+    expect(html).toContain("<span>Environment</span>");
+    expect(html).toContain('id="envEditor"');
+    expect(server).toContain("let sessionEnvContents = readFileSync(envPath, \"utf8\");");
+    expect(server).toContain("return sessionEnvContents;");
+    expect(server).toContain("sessionEnvContents = body.contents ?? \"\";");
+    expect(server).not.toContain("writeFileSync(envPath, body.contents ?? \"\", \"utf8\");");
+    expect(server).toContain("...parseEnv(readEnvFile()),");
+    expect(server).toContain("env: runtimeEnv(flow),");
+    expect(server).toContain("function stopIdleAgentRuntimesForEnvUpdate()");
+    expect(server).toContain("if (runtime.activeTurnId) continue;");
+    expect(server).toContain("stopIdleAgentRuntimesForEnvUpdate();");
+  });
+
+  test("makes settings sections collapsible", () => {
+    expect(html).toContain('class="settings-section-toggle"');
+    expect(html).toContain('class="settings-section-body"');
+    expect(app).toContain('const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";');
+    expect(app).toContain("function initialCollapsedSettingsSections()");
+    expect(app).toContain('if (raw === null) return new Set(["checkouts"]);');
+    expect(app).toContain("collapsedSettingsSections: initialCollapsedSettingsSections()");
+    expect(app).toContain("function toggleSettingsSection(section)");
+    expect(app).toContain('els.settingsContent.addEventListener("click", (event) => {');
+    expect(app).toContain('localStorage.setItem(COLLAPSED_SETTINGS_SECTIONS_KEY, JSON.stringify([...state.collapsedSettingsSections]));');
+    expect(css).toContain(".settings-section.collapsed .settings-section-body {\n  display: none;");
+    expect(css).toContain(".settings-section.collapsed .settings-section-chevron");
+  });
+
   test("exposes agent developer instructions in Settings", () => {
-    expect(html).toContain('<section class="agent-settings">');
-    expect(html).toContain("<h2>Agents</h2>");
+    expect(html).toContain('<section class="settings-section agent-settings">');
+    expect(html).toContain("<span>Agents</span>");
     expect(html).toContain('id="agentDeveloperInstructions"');
     expect(html).toContain('id="resetAgentDeveloperInstructions"');
     expect(html).toContain('aria-label="Reset developer instructions"');
@@ -174,8 +204,8 @@ describe("Turbopump pane markup", () => {
   });
 
   test("shows checkout cleanup cards in Settings without deleting traces", () => {
-    expect(html).toContain('<section class="checkout-settings">');
-    expect(html).toContain("<h2>Checkouts</h2>");
+    expect(html).toContain('<section class="settings-section checkout-settings">');
+    expect(html).toContain("<span>Checkouts</span>");
     expect(html).toContain('id="checkoutList"');
     expect(app).toContain("checkouts: []");
     expect(app).toContain("checkoutsLoaded: false");
@@ -399,14 +429,16 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("background-color var(--motion-fast)");
   });
 
-  test("shows ticket status as a meta pill and pins id to the card corner", () => {
+  test("shows ticket id on cards and Linear status under the Flow pane title", () => {
     expect(app).toContain('class="ticket-meta"');
     expect(app).toContain('class="ticket-id"');
     expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.identifier)}</span>');
-    expect(app).toContain("const statusName = linearStatusName(ticket);");
-    expect(app).toContain('${statusName ? `<span class="ticket-linear-status">${escapeHtml(statusName)}</span>` : ""}');
+    expect(app).toContain("const statusName = issue.state?.name || context.ticket?.state?.name || \"\";");
+    expect(app).toContain('${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}');
     expect(css).not.toContain(".ticket-status {");
-    expect(css).toContain(".ticket-project,\n.ticket-linear-status");
+    expect(app).not.toContain("ticket-linear-status");
+    expect(css).not.toContain("ticket-linear-status");
+    expect(css).toContain(".linear-status-pill");
     expect(css).toContain(".ticket-id {\n  position: absolute;");
     expect(css).toContain("top: 8px;");
     expect(css).toContain("right: 10px;");
