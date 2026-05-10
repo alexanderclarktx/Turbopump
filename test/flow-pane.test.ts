@@ -541,6 +541,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".terminal-entry-body li > ul,\n.terminal-entry-body li > ol {\n  margin: 2px 0;\n  padding-left: 4ch;");
     expect(css).toContain(".linear-markdown li,\n.terminal-entry-body li");
     expect(css).toContain(".linear-markdown code,\n.terminal-entry-body code");
+    expect(css).toContain("body.theme-dark .linear-markdown .markdown-code-block code,\nbody.theme-dark .terminal-entry-body .markdown-code-block code");
+    expect(css).toContain("background: transparent;");
     expect(markdown).toContain("<strong>");
     expect(renderLinearMarkdown("[managedAgentFileLoader.ts](/Users/alex/project/file.ts:201)", "", { links: true })).toContain(
       '<a href="/Users/alex/project/file.ts:201" target="_blank" rel="noreferrer">managedAgentFileLoader.ts</a>',

@@ -9,17 +9,11 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
 
   for (let index = 0; index < lines.length; ) {
     const line = lines[index];
-    const fence = line.match(/^\s*```([A-Za-z0-9_-]*)\s*$/);
+    const fence = matchCodeFenceStart(line);
     if (fence) {
-      const codeLines = [];
-      index += 1;
-      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-      if (index < lines.length) index += 1;
-      const language = fence[1] ? ` data-language="${escapeAttribute(fence[1])}"` : "";
-      blocks.push(`<pre class="markdown-code-block"${language}><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      const parsed = renderCodeFence(lines, index, fence);
+      blocks.push(parsed.html);
+      index = parsed.index;
       continue;
     }
 
@@ -53,7 +47,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
       const current = lines[index];
       if (
         !current.trim() ||
-        /^\s*```[A-Za-z0-9_-]*\s*$/.test(current) ||
+        matchCodeFenceStart(current) ||
         /^(#{1,6})\s+(.+)$/.test(current) ||
         /^\s*(?:[-*+]|\d+[.)])\s+(.+)$/.test(current)
       ) {
@@ -66,6 +60,33 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
   }
 
   return blocks.join("");
+}
+
+function matchCodeFenceStart(line) {
+  const match = String(line || "").match(/^\s*(`{3,}|~{3,})\s*([^`]*)$/);
+  if (!match) return null;
+  const info = match[2].trim();
+  const language = info.match(/^([A-Za-z0-9_+.-]+)/)?.[1] || "";
+  return { marker: match[1], language };
+}
+
+function matchCodeFenceEnd(line) {
+  return /^\s*(?:`{3,}|~{3,})\s*$/.test(String(line || ""));
+}
+
+function renderCodeFence(lines, startIndex, fence = matchCodeFenceStart(lines[startIndex])) {
+  const codeLines = [];
+  let index = startIndex + 1;
+  while (index < lines.length && !matchCodeFenceEnd(lines[index])) {
+    codeLines.push(lines[index]);
+    index += 1;
+  }
+  if (index < lines.length) index += 1;
+  const language = fence?.language ? ` data-language="${escapeAttribute(fence.language)}"` : "";
+  return {
+    html: `<pre class="markdown-code-block"${language}><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+    index,
+  };
 }
 
 function renderList(lines, startIndex, indent, ordered, options, startNumber = 1) {
@@ -84,6 +105,14 @@ function renderList(lines, startIndex, indent, ordered, options, startNumber = 1
     while (index < lines.length) {
       const line = lines[index];
       const nextList = matchListLine(line);
+      const fence = matchCodeFenceStart(line);
+
+      if (fence) {
+        const parsed = renderCodeFence(lines, index, fence);
+        parts.push(parsed.html);
+        index = parsed.index;
+        continue;
+      }
 
       if (!line.trim()) {
         const nextContentIndex = nextNonBlankLineIndex(lines, index + 1);

@@ -122,6 +122,28 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("<red>");
   });
 
+  test("renders fenced code blocks with common info strings", () => {
+    const html = renderLinearMarkdown(
+      "```text\nError calling Ando MCP tool ...\n```\n\n```json\n{\"error\":{\"code\":-32003}}\n```",
+    );
+
+    expect(html).toContain('<pre class="markdown-code-block" data-language="text"><code>');
+    expect(html).toContain("Error calling Ando MCP tool ...");
+    expect(html).toContain('<pre class="markdown-code-block" data-language="json"><code>');
+    expect(html).toContain('{"error":{"code":-32003}}');
+    expect(html).not.toContain("```text");
+    expect(html).not.toContain("```json");
+  });
+
+  test("renders fenced code blocks inside numbered list items", () => {
+    const html = renderLinearMarkdown(
+      "1. initialize\n2. notifications/initialized\n3. tools/call\n4. DELETE session in finally\nIf tools/call gets 400, execute wraps it as:\n```text\nError calling Ando MCP tool ...\n```\n\nThe wrapper can retry.",
+    );
+
+    expect(html).toContain('<li>DELETE session in finally<br>If tools/call gets 400, execute wraps it as:<pre class="markdown-code-block" data-language="text"><code>Error calling Ando MCP tool ...</code></pre><br>The wrapper can retry.</li>');
+    expect(html).not.toContain("```text");
+  });
+
   test("does not parse Markdown inside fenced code blocks", () => {
     const html = renderLinearMarkdown("```\n# apple\n- banana\n`pear`\n```");
 

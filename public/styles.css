@@ -462,8 +462,14 @@ body.theme-dark .terminal-entry-body code {
 body.theme-dark .linear-markdown .markdown-code-block,
 body.theme-dark .terminal-entry-body .markdown-code-block {
   border-color: var(--line);
-  background: #11161c;
+  background: transparent;
   color: var(--terminal-ink);
+}
+
+body.theme-dark .linear-markdown .markdown-code-block code,
+body.theme-dark .terminal-entry-body .markdown-code-block code {
+  border: 0;
+  background: transparent;
 }
 
 body.theme-dark .flow-resizer {
@@ -1522,7 +1528,7 @@ body.flow-resizing {
   margin: 6px 0;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #f6f8fa;
+  background: transparent;
   padding: 10px 12px;
   color: #27313d;
   overflow: auto;
