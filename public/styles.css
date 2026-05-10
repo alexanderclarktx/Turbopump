@@ -472,6 +472,88 @@ body.theme-dark .terminal-entry-body .markdown-code-block code {
   background: transparent;
 }
 
+body.theme-dark .linear-markdown .token.comment,
+body.theme-dark .linear-markdown .token.prolog,
+body.theme-dark .linear-markdown .token.doctype,
+body.theme-dark .linear-markdown .token.cdata,
+body.theme-dark .terminal-entry-body .token.comment,
+body.theme-dark .terminal-entry-body .token.prolog,
+body.theme-dark .terminal-entry-body .token.doctype,
+body.theme-dark .terminal-entry-body .token.cdata {
+  color: #8a96a8;
+}
+
+body.theme-dark .linear-markdown .token.punctuation,
+body.theme-dark .terminal-entry-body .token.punctuation {
+  color: #b8c0cc;
+}
+
+body.theme-dark .linear-markdown .token.property,
+body.theme-dark .linear-markdown .token.tag,
+body.theme-dark .linear-markdown .token.boolean,
+body.theme-dark .linear-markdown .token.number,
+body.theme-dark .linear-markdown .token.constant,
+body.theme-dark .linear-markdown .token.symbol,
+body.theme-dark .linear-markdown .token.deleted,
+body.theme-dark .terminal-entry-body .token.property,
+body.theme-dark .terminal-entry-body .token.tag,
+body.theme-dark .terminal-entry-body .token.boolean,
+body.theme-dark .terminal-entry-body .token.number,
+body.theme-dark .terminal-entry-body .token.constant,
+body.theme-dark .terminal-entry-body .token.symbol,
+body.theme-dark .terminal-entry-body .token.deleted {
+  color: #ff9b8a;
+}
+
+body.theme-dark .linear-markdown .token.selector,
+body.theme-dark .linear-markdown .token.attr-name,
+body.theme-dark .linear-markdown .token.string,
+body.theme-dark .linear-markdown .token.char,
+body.theme-dark .linear-markdown .token.builtin,
+body.theme-dark .linear-markdown .token.inserted,
+body.theme-dark .terminal-entry-body .token.selector,
+body.theme-dark .terminal-entry-body .token.attr-name,
+body.theme-dark .terminal-entry-body .token.string,
+body.theme-dark .terminal-entry-body .token.char,
+body.theme-dark .terminal-entry-body .token.builtin,
+body.theme-dark .terminal-entry-body .token.inserted {
+  color: #75d99a;
+}
+
+body.theme-dark .linear-markdown .token.operator,
+body.theme-dark .linear-markdown .token.entity,
+body.theme-dark .linear-markdown .token.url,
+body.theme-dark .terminal-entry-body .token.operator,
+body.theme-dark .terminal-entry-body .token.entity,
+body.theme-dark .terminal-entry-body .token.url {
+  color: #c4a7ff;
+}
+
+body.theme-dark .linear-markdown .token.atrule,
+body.theme-dark .linear-markdown .token.attr-value,
+body.theme-dark .linear-markdown .token.keyword,
+body.theme-dark .terminal-entry-body .token.atrule,
+body.theme-dark .terminal-entry-body .token.attr-value,
+body.theme-dark .terminal-entry-body .token.keyword {
+  color: #8bb7ff;
+}
+
+body.theme-dark .linear-markdown .token.function,
+body.theme-dark .linear-markdown .token.class-name,
+body.theme-dark .terminal-entry-body .token.function,
+body.theme-dark .terminal-entry-body .token.class-name {
+  color: #ffd166;
+}
+
+body.theme-dark .linear-markdown .token.regex,
+body.theme-dark .linear-markdown .token.important,
+body.theme-dark .linear-markdown .token.variable,
+body.theme-dark .terminal-entry-body .token.regex,
+body.theme-dark .terminal-entry-body .token.important,
+body.theme-dark .terminal-entry-body .token.variable {
+  color: #ff8cc6;
+}
+
 body.theme-dark .flow-resizer {
   background: #181e25;
 }
@@ -1555,6 +1637,137 @@ body.flow-resizing {
   font-size: 12px;
   line-height: 1.5;
   white-space: inherit;
+}
+
+.linear-markdown .token.comment,
+.linear-markdown .token.prolog,
+.linear-markdown .token.doctype,
+.linear-markdown .token.cdata,
+.terminal-entry-body .token.comment,
+.terminal-entry-body .token.prolog,
+.terminal-entry-body .token.doctype,
+.terminal-entry-body .token.cdata {
+  color: #64748b;
+}
+
+.linear-markdown .token.punctuation,
+.terminal-entry-body .token.punctuation {
+  color: #475569;
+}
+
+.linear-markdown .token.property,
+.linear-markdown .token.tag,
+.linear-markdown .token.boolean,
+.linear-markdown .token.number,
+.linear-markdown .token.constant,
+.linear-markdown .token.symbol,
+.linear-markdown .token.deleted,
+.terminal-entry-body .token.property,
+.terminal-entry-body .token.tag,
+.terminal-entry-body .token.boolean,
+.terminal-entry-body .token.number,
+.terminal-entry-body .token.constant,
+.terminal-entry-body .token.symbol,
+.terminal-entry-body .token.deleted {
+  color: #b42318;
+}
+
+.linear-markdown .token.selector,
+.linear-markdown .token.attr-name,
+.linear-markdown .token.string,
+.linear-markdown .token.char,
+.linear-markdown .token.builtin,
+.linear-markdown .token.inserted,
+.terminal-entry-body .token.selector,
+.terminal-entry-body .token.attr-name,
+.terminal-entry-body .token.string,
+.terminal-entry-body .token.char,
+.terminal-entry-body .token.builtin,
+.terminal-entry-body .token.inserted {
+  color: #047857;
+}
+
+.linear-markdown .token.operator,
+.linear-markdown .token.entity,
+.linear-markdown .token.url,
+.terminal-entry-body .token.operator,
+.terminal-entry-body .token.entity,
+.terminal-entry-body .token.url {
+  color: #6d28d9;
+}
+
+.linear-markdown .token.atrule,
+.linear-markdown .token.attr-value,
+.linear-markdown .token.keyword,
+.terminal-entry-body .token.atrule,
+.terminal-entry-body .token.attr-value,
+.terminal-entry-body .token.keyword {
+  color: #1d4ed8;
+}
+
+.linear-markdown .token.function,
+.linear-markdown .token.class-name,
+.terminal-entry-body .token.function,
+.terminal-entry-body .token.class-name {
+  color: #a16207;
+}
+
+.linear-markdown .token.regex,
+.linear-markdown .token.important,
+.linear-markdown .token.variable,
+.terminal-entry-body .token.regex,
+.terminal-entry-body .token.important,
+.terminal-entry-body .token.variable {
+  color: #be185d;
+}
+
+.terminal-markdown-output {
+  position: relative;
+}
+
+.terminal-markdown-content {
+  display: contents;
+}
+
+.terminal-markdown-toggle {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.terminal-markdown-output:hover .terminal-markdown-toggle,
+.terminal-markdown-output:focus-within .terminal-markdown-toggle {
+  opacity: 1;
+}
+
+.terminal-markdown-toggle:hover,
+.terminal-markdown-toggle:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--text);
+  outline: none;
+}
+
+.terminal-raw-markdown {
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .linear-markdown ul,

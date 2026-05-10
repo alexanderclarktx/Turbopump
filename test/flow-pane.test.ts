@@ -4,6 +4,7 @@ const html = await Bun.file("public/index.html").text();
 const app = await Bun.file("public/app.js").text();
 const css = await Bun.file("public/styles.css").text();
 const server = await Bun.file("src/server.ts").text();
+const packageJson = await Bun.file("package.json").json();
 const markdown = await Bun.file("public/linear-markdown.js").text();
 const readyStatusIcon = await Bun.file("public/status-icons/ready.svg").text();
 const completedStatusIcon = await Bun.file("public/status-icons/completed.svg").text();
@@ -530,8 +531,19 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");
     expect(app).toContain('["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain('document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre")');
+    expect(app).toContain("function renderTerminalMarkdownOutput(message)");
+    expect(app).toContain('class="terminal-markdown-toggle"');
+    expect(app).toContain('><div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown');
+    expect(app).toContain("function toggleTerminalMarkdownOutput(button)");
+    expect(app).toContain('event.target.closest(".terminal-markdown-toggle")');
+    expect(app).toContain("function highlightCodeBlocks(root)");
+    expect(app).toContain("window.Prism?.highlightAllUnder?.(root);");
     expect(app).toContain('renderLinearMarkdown(message, "", { images: false, links: true })');
     expect(app).not.toContain("body.textContent = formatTerminalMessage(group.source, group.message);");
+    expect(html).toContain('<script src="/vendor/prismjs/prism.js" data-manual></script>');
+    expect(html).toContain('<script src="/vendor/prismjs/components/prism-typescript.min.js"></script>');
+    expect(server).toContain('path.startsWith("/vendor/prismjs/")');
+    expect(packageJson.dependencies.prismjs).toBeDefined();
     expect(css).toContain(".linear-markdown h1,");
     expect(css).toContain("margin: 6px 0 2px;");
     expect(css).toContain(".linear-markdown a,\n.terminal-entry-body a");
@@ -543,7 +555,15 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-markdown code,\n.terminal-entry-body code");
     expect(css).toContain("body.theme-dark .linear-markdown .markdown-code-block code,\nbody.theme-dark .terminal-entry-body .markdown-code-block code");
     expect(css).toContain("background: transparent;");
+    expect(css).toContain(".terminal-markdown-output {\n  position: relative;");
+    expect(css).toContain(".terminal-markdown-content {\n  display: contents;");
+    expect(css).toContain(".terminal-markdown-toggle {\n  position: absolute;");
+    expect(css).toContain(".terminal-markdown-output:hover .terminal-markdown-toggle");
+    expect(css).toContain(".terminal-raw-markdown {\n  margin: 0;");
+    expect(css).toContain(".linear-markdown .token.keyword,");
+    expect(css).toContain("body.theme-dark .linear-markdown .token.keyword,");
     expect(markdown).toContain("<strong>");
+    expect(renderLinearMarkdown("```ts\nconst value = 1;\n```")).toContain('class="language-typescript"');
     expect(renderLinearMarkdown("[managedAgentFileLoader.ts](/Users/alex/project/file.ts:201)", "", { links: true })).toContain(
       '<a href="/Users/alex/project/file.ts:201" target="_blank" rel="noreferrer">managedAgentFileLoader.ts</a>',
     );

@@ -82,11 +82,34 @@ function renderCodeFence(lines, startIndex, fence = matchCodeFenceStart(lines[st
     index += 1;
   }
   if (index < lines.length) index += 1;
-  const language = fence?.language ? ` data-language="${escapeAttribute(fence.language)}"` : "";
+  const prismLanguage = prismLanguageName(fence?.language || "");
+  const language = prismLanguage ? ` data-language="${escapeAttribute(prismLanguage)}"` : "";
+  const className = prismLanguage ? ` class="language-${escapeAttribute(prismLanguage)}"` : "";
   return {
-    html: `<pre class="markdown-code-block"${language}><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+    html: `<pre class="markdown-code-block${prismLanguage ? ` language-${escapeAttribute(prismLanguage)}` : ""}"${language}><code${className}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
     index,
   };
+}
+
+function prismLanguageName(language) {
+  const normalized = String(language || "").toLowerCase();
+  const aliases = {
+    cjs: "javascript",
+    console: "shell-session",
+    js: "javascript",
+    jsx: "jsx",
+    md: "markdown",
+    py: "python",
+    rb: "ruby",
+    rs: "rust",
+    sh: "bash",
+    shell: "bash",
+    text: "",
+    ts: "typescript",
+    tsx: "tsx",
+    yml: "yaml",
+  };
+  return aliases[normalized] ?? normalized;
 }
 
 function renderList(lines, startIndex, indent, ordered, options, startNumber = 1) {

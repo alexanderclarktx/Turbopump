@@ -93,6 +93,7 @@ const legacyDataDir = join(rootDir, `.${"water"}${"flow"}`);
 const checkoutDir = join(dataDir, "checkouts");
 const repoCheckoutDir = join(dataDir, "repo");
 const publicDir = join(rootDir, "public");
+const prismDir = join(rootDir, "node_modules", "prismjs");
 const envPath = join(dataDir, ".env");
 const legacyEnvPath = join(legacyDataDir, ".env");
 const dbPath = join(dataDir, "flow.sqlite");
@@ -2041,6 +2042,19 @@ async function handleApi(request: Request, url: URL) {
 
 function serveStatic(url: URL) {
   const path = url.pathname === "/" ? "/index.html" : url.pathname;
+  if (path.startsWith("/vendor/prismjs/")) {
+    const vendorPath = path.slice("/vendor/prismjs/".length);
+    const resolvedVendor = resolve(prismDir, `.${vendorPath.startsWith("/") ? vendorPath : `/${vendorPath}`}`);
+    if (!resolvedVendor.startsWith(prismDir) || !resolvedVendor.endsWith(".js")) {
+      return new Response("Not found", { status: 404 });
+    }
+    const file = Bun.file(resolvedVendor);
+    return file.exists().then((exists) => {
+      if (!exists) return new Response("Not found", { status: 404 });
+      return new Response(file, { headers: { "content-type": "text/javascript; charset=utf-8" } });
+    });
+  }
+
   const resolved = resolve(publicDir, `.${path}`);
   if (!resolved.startsWith(publicDir)) return new Response("Not found", { status: 404 });
   const file = Bun.file(resolved);

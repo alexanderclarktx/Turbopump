@@ -2028,6 +2028,31 @@ function usesTerminalBlockMarkdown(source) {
   return ["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
 
+function renderTerminalMarkdownOutput(message) {
+  return `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Show raw markdown" title="Show raw markdown">Raw</button><div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true })}</div>`;
+}
+
+function toggleTerminalMarkdownOutput(button) {
+  const body = button.closest(".terminal-entry-body");
+  const content = body?.querySelector(".terminal-markdown-content");
+  if (!content) return;
+
+  const raw = content.dataset.rawMarkdown || "";
+  const showingRaw = body.classList.toggle("showing-raw-markdown");
+  button.setAttribute("aria-pressed", String(showingRaw));
+  button.setAttribute("aria-label", showingRaw ? "Show rendered markdown" : "Show raw markdown");
+  button.title = showingRaw ? "Show rendered markdown" : "Show raw markdown";
+  button.textContent = showingRaw ? "Rendered" : "Raw";
+  content.innerHTML = showingRaw
+    ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
+    : renderLinearMarkdown(raw, "", { images: false, links: true });
+  if (!showingRaw) highlightCodeBlocks(content);
+}
+
+function highlightCodeBlocks(root) {
+  window.Prism?.highlightAllUnder?.(root);
+}
+
 function appendTerminalBlock(fragment, group) {
   if (group.source === "agent:trace-group") {
     appendTerminalTraceGroup(fragment, group);
@@ -2085,9 +2110,13 @@ function appendTerminalBlock(fragment, group) {
   const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
   body.className = "terminal-entry-body";
   const message = formatTerminalMessage(group.source, group.message);
-  body.innerHTML = usesTerminalBlockMarkdown(group.source)
-    ? renderLinearMarkdown(message, "", { images: false, links: true })
-    : renderInlineMarkdown(message, { images: false, links: false });
+  if (usesTerminalBlockMarkdown(group.source)) {
+    body.classList.add("terminal-markdown-output");
+    body.innerHTML = renderTerminalMarkdownOutput(message);
+    highlightCodeBlocks(body);
+  } else {
+    body.innerHTML = renderInlineMarkdown(message, { images: false, links: false });
+  }
 
   header.replaceChildren(marker, label, ...(time ? [time] : []));
   block.replaceChildren(header, body);
@@ -2552,6 +2581,14 @@ els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   if (!pendingFlowId || !terminalAtLatest(terminal)) return;
   terminal._flowLogPending = "";
   renderLogs(pendingFlowId, { scrollToLatest: true });
+});
+
+els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
+  const toggle = event.target.closest(".terminal-markdown-toggle");
+  if (!toggle) return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleTerminalMarkdownOutput(toggle);
 });
 
 els.flowPane.querySelector(".terminal").addEventListener(
