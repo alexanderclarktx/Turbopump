@@ -430,16 +430,18 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("background-color var(--motion-fast)");
   });
 
-  test("shows ticket id on cards and Linear status under the Flow pane title", () => {
+  test("shows ticket id on cards and Linear status at the end of the Flow pane metadata row", () => {
     expect(app).toContain('class="ticket-meta"');
     expect(app).toContain('class="ticket-id"');
     expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.identifier)}</span>');
     expect(app).toContain("const statusName = issue.state?.name || context.ticket?.state?.name || \"\";");
-    expect(app).toContain('${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}');
+    expect(app).toContain(
+      '${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}\n        ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}',
+    );
     expect(css).not.toContain(".ticket-status {");
     expect(app).not.toContain("ticket-linear-status");
     expect(css).not.toContain("ticket-linear-status");
-    expect(css).toContain(".linear-status-pill");
+    expect(css).not.toContain(".linear-status-pill {\n  display: inline-flex;");
     expect(css).toContain(".ticket-id {\n  position: absolute;");
     expect(css).toContain("top: 8px;");
     expect(css).toContain("right: 10px;");
@@ -485,10 +487,11 @@ describe("Turbopump pane markup", () => {
   test("marks tickets with flows using the favicon instead of a green card tint", () => {
     expect(app).toContain('class="ticket-flow-mark"');
     expect(app).toContain('class="ticket-flow-corner"');
-    expect(app).toContain('<span class="ticket-stage">${stageName}</span>');
-    expect(app).toContain('${stageName ? `<span class="ticket-stage">${stageName}</span>` : ""}<img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow">');
+    expect(app).toContain('<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow"></div>');
+    expect(app).not.toContain("ticket-stage");
     expect(css).toContain(".ticket-flow-mark");
     expect(css).toContain(".ticket-flow-corner");
+    expect(css).not.toContain(".ticket-stage");
     expect(css).not.toContain(".ticket-card.in-flow {\n  border-color:");
     expect(css).not.toContain(".ticket-card.in-flow:hover");
   });
@@ -665,7 +668,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("branch.href = flow.prUrl;");
     expect(app).toContain('branch.removeAttribute("href");');
     expect(app).not.toContain('context.querySelector(".agent-context-phase")');
-    expect(app).toContain("const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : \"\";");
+    expect(app).not.toContain("const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : \"\";");
     expect(app).not.toContain("titleCase");
     expect(app).toContain("renderAgentContext(flow);");
     expect(css).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");

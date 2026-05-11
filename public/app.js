@@ -1471,7 +1471,6 @@ function renderTicketCard(ticket) {
   card.dataset.issue = ticket.identifier;
   updateTicketCardState(card);
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
-  const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : "";
   card.innerHTML = `
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
@@ -1481,7 +1480,7 @@ function renderTicketCard(ticket) {
     </div>
     ${
       ticket.flowId
-        ? `<div class="ticket-flow-corner">${stageName ? `<span class="ticket-stage">${stageName}</span>` : ""}<img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow"></div>`
+        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow"></div>`
         : ""
     }
   `;
@@ -1703,13 +1702,13 @@ function renderLinearDetail(context) {
             ${escapeHtml(issue.identifier || context.issueId)}
           </a>
           <h3>${escapeHtml(issue.title || context.title)}</h3>
-          ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}
         </div>
       </div>
       <div class="linear-meta">
         ${priorityMeta ? `<span class="linear-meta-priority">${priorityMeta}</span>` : ""}
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
         ${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}
+        ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}
       </div>
       <div class="linear-description linear-markdown">${renderLinearMarkdown(issue.description, "No description.")}</div>
     </section>
