@@ -146,7 +146,10 @@ const state = {
   inputMode: "prompt",
   promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
+  promptHistoryOrder: new Map(),
+  shellHistoryOrder: new Map(),
   historySearch: null,
+  historyNavigation: null,
   terminalFollowPaused: false,
   draggingLinearIssueId: "",
   suppressTicketClick: false,
@@ -320,25 +323,45 @@ function inputHistory(mode = inputHistoryMode()) {
   return mode === "shell" ? state.shellHistory : state.promptHistory;
 }
 
+function inputHistoryOrder(mode = inputHistoryMode()) {
+  return mode === "shell" ? state.shellHistoryOrder : state.promptHistoryOrder;
+}
+
 function saveInputHistory(mode = inputHistoryMode()) {
   localStorage.setItem(inputHistoryKey(mode), JSON.stringify(inputHistory(mode)));
 }
 
-function rememberInputHistory(value, mode = inputHistoryMode()) {
-  const item = value.trim();
-  if (!item) return;
+function inputHistoryLogOrder(log) {
+  const timestamp = Date.parse(log.createdAt || "");
+  const id = Number(log.id || 0);
+  if (Number.isFinite(timestamp)) return timestamp + id / 1_000_000;
+  return Number.isFinite(id) && id > 0 ? id : Date.now();
+}
+
+function sortInputHistory(mode = inputHistoryMode()) {
   const history = inputHistory(mode);
-  const existingIndex = history.indexOf(item);
-  if (existingIndex >= 0) history.splice(existingIndex, 1);
-  history.unshift(item);
+  const order = inputHistoryOrder(mode);
+  history.sort((a, b) => (order.get(b) ?? 0) - (order.get(a) ?? 0));
   history.splice(MAX_INPUT_HISTORY_ITEMS);
   saveInputHistory(mode);
 }
 
+function rememberInputHistory(value, mode = inputHistoryMode(), orderValue = Date.now()) {
+  const item = value.trim();
+  if (!item) return;
+  const history = inputHistory(mode);
+  const order = inputHistoryOrder(mode);
+  const existingIndex = history.indexOf(item);
+  if (existingIndex < 0) history.push(item);
+  if ((order.get(item) ?? -Infinity) <= orderValue) order.set(item, orderValue);
+  sortInputHistory(mode);
+}
+
 function rememberLogHistory(log) {
   const normalized = normalizeTerminalLog(log);
-  if (normalized.source === "user") rememberInputHistory(normalized.message, "prompt");
-  if (normalized.source === "shell:command") rememberInputHistory(normalized.message, "shell");
+  const order = inputHistoryLogOrder(log);
+  if (normalized.source === "user") rememberInputHistory(normalized.message, "prompt", order);
+  if (normalized.source === "shell:command") rememberInputHistory(normalized.message, "shell", order);
 }
 
 function matchingInputHistory(query, mode = inputHistoryMode()) {
@@ -355,6 +378,56 @@ function applyHistorySearchResult(input) {
   input.setSelectionRange(result.length, result.length);
   resizeMessageInput();
   renderSlashMenu();
+  return true;
+}
+
+function resetInputHistoryNavigation() {
+  state.historyNavigation = null;
+}
+
+function updateInputHistoryNavigation(input, direction) {
+  const mode = inputHistoryMode();
+  const history = inputHistory(mode);
+  if (!history.length) return false;
+  if (!state.historyNavigation || state.historyNavigation.mode !== mode) {
+    if (direction < 0) return false;
+    state.historyNavigation = {
+      mode,
+      draft: input.value,
+      index: -1,
+    };
+  }
+  const nextIndex = state.historyNavigation.index + direction;
+  if (nextIndex < -1 || nextIndex >= history.length) return true;
+  state.historyNavigation.index = nextIndex;
+  const value = nextIndex === -1 ? state.historyNavigation.draft : history[nextIndex];
+  input.value = value;
+  input.setSelectionRange(value.length, value.length);
+  resizeMessageInput();
+  hideSlashMenu();
+  return true;
+}
+
+function inputCaretOnFirstLine(input) {
+  const start = input.selectionStart ?? 0;
+  return !input.value.slice(0, start).includes("\n");
+}
+
+function inputCaretOnLastLine(input) {
+  const end = input.selectionEnd ?? input.value.length;
+  return !input.value.slice(end).includes("\n");
+}
+
+function handleInputHistoryNavigationKeydown(event) {
+  if (state.historySearch) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;
+  const input = event.currentTarget;
+  const direction = event.key === "ArrowUp" ? 1 : -1;
+  if (direction > 0 && !inputCaretOnFirstLine(input)) return false;
+  if (direction < 0 && !state.historyNavigation && !inputCaretOnLastLine(input)) return false;
+  if (!updateInputHistoryNavigation(input, direction)) return false;
+  event.preventDefault();
   return true;
 }
 
@@ -461,6 +534,7 @@ function enterCommandModeFromDollarKey(event) {
   if (input.value.trim()) return false;
   event.preventDefault();
   cancelHistorySearch();
+  resetInputHistoryNavigation();
   state.inputMode = "command";
   input.value = "";
   updateMessageInputMode();
@@ -472,6 +546,7 @@ function enterCommandModeFromDollarKey(event) {
 function setInputMode(mode) {
   const input = els.flowPane.querySelector(".message-input");
   cancelHistorySearch();
+  resetInputHistoryNavigation();
   state.inputMode = mode;
   updateMessageInputMode();
   resizeMessageInput();
@@ -540,6 +615,7 @@ function focusMessageInputForKey(event) {
   input.focus();
   if (event.key === "$" && state.inputMode === "prompt") {
     cancelHistorySearch();
+    resetInputHistoryNavigation();
     state.inputMode = "command";
     input.value = "";
     updateMessageInputMode();
@@ -2648,9 +2724,11 @@ els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async (
 els.flowPane.querySelector(".message-input").addEventListener("input", () => {
   const input = els.flowPane.querySelector(".message-input");
   cancelHistorySearch();
+  resetInputHistoryNavigation();
   if (state.inputMode === "prompt" && input.value.trimStart().startsWith("$")) {
     const dollarIndex = input.value.indexOf("$");
     cancelHistorySearch();
+    resetInputHistoryNavigation();
     state.inputMode = "command";
     input.value = input.value.slice(dollarIndex + 1).trimStart();
   }
@@ -2713,6 +2791,7 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
   if (event.key === "Backspace" && state.inputMode === "command" && input.value.length === 0) {
     event.preventDefault();
     cancelHistorySearch();
+    resetInputHistoryNavigation();
     state.inputMode = "prompt";
     updateMessageInputMode();
     renderSlashMenu();
@@ -2759,6 +2838,7 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
   }
 
   if (handleInputModeTabKeydown(event)) return;
+  if (handleInputHistoryNavigationKeydown(event)) return;
 
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -2811,6 +2891,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   const agentMessage = command === null ? agentMessageWithImages(message || "Use the attached image context.") : "";
   rememberInputHistory(command ?? message, mode);
   cancelHistorySearch();
+  resetInputHistoryNavigation();
   state.messageSubmitting = true;
   input.value = "";
   updateMessageInputMode();

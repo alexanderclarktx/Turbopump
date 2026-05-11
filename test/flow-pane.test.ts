@@ -1079,16 +1079,28 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function initialInputHistory(key)");
     expect(app).toContain("promptHistory: initialInputHistory(PROMPT_HISTORY_KEY)");
     expect(app).toContain("shellHistory: initialInputHistory(SHELL_HISTORY_KEY)");
+    expect(app).toContain("promptHistoryOrder: new Map()");
+    expect(app).toContain("shellHistoryOrder: new Map()");
     expect(app).toContain("historySearch: null");
+    expect(app).toContain("historyNavigation: null");
     expect(app).toContain("function inputHistoryMode()");
     expect(app).toContain('return state.inputMode === "command" ? "shell" : "prompt";');
-    expect(app).toContain("function rememberInputHistory(value, mode = inputHistoryMode())");
+    expect(app).toContain("function rememberInputHistory(value, mode = inputHistoryMode(), orderValue = Date.now())");
     expect(app).toContain("function rememberLogHistory(log)");
-    expect(app).toContain('if (normalized.source === "user") rememberInputHistory(normalized.message, "prompt");');
-    expect(app).toContain('if (normalized.source === "shell:command") rememberInputHistory(normalized.message, "shell");');
+    expect(app).toContain("function inputHistoryOrder(mode = inputHistoryMode())");
+    expect(app).toContain("function inputHistoryLogOrder(log)");
+    expect(app).toContain('const timestamp = Date.parse(log.createdAt || "");');
+    expect(app).toContain("return timestamp + id / 1_000_000;");
+    expect(app).toContain("function sortInputHistory(mode = inputHistoryMode())");
+    expect(app).toContain("history.sort((a, b) => (order.get(b) ?? 0) - (order.get(a) ?? 0));");
+    expect(app).toContain("if ((order.get(item) ?? -Infinity) <= orderValue) order.set(item, orderValue);");
+    expect(app).toContain("sortInputHistory(mode);");
+    expect(app).toContain("const order = inputHistoryLogOrder(log);");
+    expect(app).toContain('if (normalized.source === "user") rememberInputHistory(normalized.message, "prompt", order);');
+    expect(app).toContain('if (normalized.source === "shell:command") rememberInputHistory(normalized.message, "shell", order);');
     expect(app).toContain("rememberLogHistory(log);");
     expect(app).toContain("const existingIndex = history.indexOf(item);");
-    expect(app).toContain("history.unshift(item);");
+    expect(app).toContain("if (existingIndex < 0) history.push(item);");
     expect(app).toContain("history.splice(MAX_INPUT_HISTORY_ITEMS);");
     expect(app).toContain("function matchingInputHistory(query, mode = inputHistoryMode())");
     expect(app).toContain("item.toLowerCase().includes(needle)");
@@ -1110,6 +1122,24 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("state.historySearch.index = Math.min(state.historySearch.index + 1, state.historySearch.matches.length - 1);");
     expect(app).toContain("function moveHistorySearchForward(input)");
     expect(app).toContain("search.index = Math.max(search.index - 1, 0);");
+    expect(app).toContain("function resetInputHistoryNavigation()");
+    expect(app).toContain("state.historyNavigation = null;");
+    expect(app).toContain("function updateInputHistoryNavigation(input, direction)");
+    expect(app).toContain("const history = inputHistory(mode);");
+    expect(app).toContain("if (direction < 0) return false;");
+    expect(app).toContain("draft: input.value");
+    expect(app).toContain("const value = nextIndex === -1 ? state.historyNavigation.draft : history[nextIndex];");
+    expect(app).toContain("hideSlashMenu();");
+    expect(app).toContain("function inputCaretOnFirstLine(input)");
+    expect(app).toContain('return !input.value.slice(0, start).includes("\\n");');
+    expect(app).toContain("function inputCaretOnLastLine(input)");
+    expect(app).toContain('return !input.value.slice(end).includes("\\n");');
+    expect(app).toContain("function handleInputHistoryNavigationKeydown(event)");
+    expect(app).toContain('if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;');
+    expect(app).toContain('const direction = event.key === "ArrowUp" ? 1 : -1;');
+    expect(app).toContain("if (direction > 0 && !inputCaretOnFirstLine(input)) return false;");
+    expect(app).toContain("if (direction < 0 && !state.historyNavigation && !inputCaretOnLastLine(input)) return false;");
+    expect(app).toContain("if (!updateInputHistoryNavigation(input, direction)) return false;");
     expect(app).toContain("function handleHistorySearchKeydown(event)");
     expect(app).toContain("function enterCommandModeFromDollarKey(event)");
     expect(app).toContain('state.inputMode !== "prompt" || event.key !== "$"');
@@ -1127,9 +1157,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("event.preventDefault();\n  if (event.repeat) return true;\n  toggleInputMode();");
     expect(app).toContain("if (enterCommandModeFromDollarKey(event)) return;");
     const messageInputKeydown = app.slice(app.indexOf('els.flowPane.querySelector(".message-input").addEventListener("keydown"'));
+    expect(messageInputKeydown).toContain("if (handleInputHistoryNavigationKeydown(event)) return;");
     expect(messageInputKeydown).toContain("if (handleInputModeTabKeydown(event)) return;");
     expect(messageInputKeydown.indexOf("selectSlashCommand();")).toBeLessThan(
-      messageInputKeydown.indexOf("handleInputModeTabKeydown(event)"),
+      messageInputKeydown.indexOf("handleInputHistoryNavigationKeydown(event)"),
+    );
+    expect(messageInputKeydown.indexOf("handleInputModeTabKeydown(event)")).toBeLessThan(
+      messageInputKeydown.indexOf("handleInputHistoryNavigationKeydown(event)"),
     );
     const globalKeydown = app.slice(app.indexOf('document.addEventListener("keydown"'));
     expect(globalKeydown).toContain("if (handleInputModeTabKeydown(event)) return;");
