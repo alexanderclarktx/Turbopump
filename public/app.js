@@ -154,6 +154,8 @@ const state = {
   flowDiffs: new Map(),
   flowDiffLoadingIds: new Set(),
   diffModalFlowId: "",
+  diffModalDiff: null,
+  diffModalLoadingFlowId: "",
   draggingLinearIssueId: "",
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
@@ -185,6 +187,7 @@ const els = {
 let repoConfigSaveTimer = 0;
 let agentConfigSaveTimer = 0;
 let envSaveTimer = 0;
+let diffModalTransitionTimer = 0;
 let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
 let lastSavedEnv = "";
@@ -678,11 +681,14 @@ function updateMessageInputMode() {
 function updateInputModeButton() {
   const button = els.flowPane.querySelector(".agent-interrupt");
   if (!button) return;
-  const running = flowRuntimeActive(selectedFlow());
+  const flow = selectedFlow();
+  const running = flowRuntimeActive(flow);
+  const shellRunning = running && flowRuntimeKind(flow) === "shell";
   const commandMode = state.inputMode === "command";
   button.classList.toggle("command-mode", commandMode && !running);
   button.classList.toggle("prompt-mode", !commandMode && !running);
   button.classList.toggle("running-mode", running);
+  button.classList.toggle("shell-running-mode", shellRunning);
   button.setAttribute("aria-label", running ? "Pause agent" : commandMode ? "Switch to prompt mode" : "Switch to shell mode");
   button.title = running ? "Pause agent" : commandMode ? "Switch to prompt mode" : "Switch to shell mode";
   if (running) {
@@ -1173,6 +1179,10 @@ function normalizeDiff(data) {
     names: data?.names || "",
     patch: data?.patch || "",
     error: data?.error || "",
+    count: Number(data?.count || 0),
+    additions: Number(data?.additions || 0),
+    deletions: Number(data?.deletions || 0),
+    baseRef: data?.baseRef || "",
   };
 }
 
@@ -1185,8 +1195,9 @@ function diffHasChanges(diff) {
 }
 
 function diffFileCount(diff) {
+  if (Number.isFinite(diff?.count) && diff.count > 0) return diff.count;
   const paths = new Set();
-  for (const line of `${diff?.names || ""}\n${diff?.status || ""}`.split("\n")) {
+  for (const line of `${diff?.status || ""}\n${String(diff?.names || "").replaceAll("\0", "\n")}`.split("\n")) {
     const parts = line.trim().split(/\s+/).filter(Boolean);
     const path = parts[parts.length - 1];
     if (path) paths.add(path);
@@ -1195,27 +1206,58 @@ function diffFileCount(diff) {
 }
 
 function diffIndicatorLabel(diff) {
-  const count = diffFileCount(diff);
-  return count ? `diff ${count}` : "diff";
+  const additions = Number(diff?.additions || 0);
+  const deletions = Number(diff?.deletions || 0);
+  if (!additions && !deletions && !diffFileCount(diff)) return "";
+  return `<span class="diff-additions">+${additions}</span><span class="diff-deletions">-${deletions}</span>`;
+}
+
+function diffLoadingKey(flowId, options = {}) {
+  return `${flowId}:${options.patch ? "patch" : "summary"}`;
 }
 
 async function loadFlowDiff(flowId, options = {}) {
   if (!flowId) return null;
-  if (!options.force && state.flowDiffs.has(flowId)) return state.flowDiffs.get(flowId);
-  if (state.flowDiffLoadingIds.has(flowId)) return state.flowDiffs.get(flowId) || null;
-  state.flowDiffLoadingIds.add(flowId);
+  const existing = state.flowDiffs.get(flowId);
+  if (!options.force && existing && (!options.patch || existing.patch)) {
+    if (options.modal && state.diffModalFlowId === flowId) {
+      state.diffModalDiff = { ...existing };
+      state.diffModalLoadingFlowId = "";
+      renderDiffModal();
+    }
+    return existing;
+  }
+  const loadingKey = diffLoadingKey(flowId, options);
+  if (state.flowDiffLoadingIds.has(loadingKey)) return state.flowDiffs.get(flowId) || null;
+  state.flowDiffLoadingIds.add(loadingKey);
+  if (options.modal && state.diffModalFlowId === flowId) {
+    state.diffModalLoadingFlowId = flowId;
+    renderDiffModal();
+  }
+  renderAgentContext(selectedFlow());
   try {
-    const diff = normalizeDiff(await api(`/api/flows/${encodeURIComponent(flowId)}/diff`));
+    const diff = normalizeDiff(await api(`/api/flows/${encodeURIComponent(flowId)}/diff${options.patch ? "?patch=1" : ""}`));
+    const latest = state.flowDiffs.get(flowId);
+    if (!options.patch && latest?.patch) diff.patch = latest.patch;
     state.flowDiffs.set(flowId, diff);
+    if (options.modal && state.diffModalFlowId === flowId) {
+      state.diffModalDiff = { ...diff };
+      state.diffModalLoadingFlowId = "";
+      renderDiffModal();
+    }
     return diff;
   } catch (error) {
     const diff = normalizeDiff({ error: error.message || String(error) });
     state.flowDiffs.set(flowId, diff);
+    if (options.modal && state.diffModalFlowId === flowId) {
+      state.diffModalDiff = { ...diff };
+      state.diffModalLoadingFlowId = "";
+      renderDiffModal();
+    }
     return diff;
   } finally {
-    state.flowDiffLoadingIds.delete(flowId);
+    state.flowDiffLoadingIds.delete(loadingKey);
     renderAgentContext(selectedFlow());
-    renderDiffModal();
   }
 }
 
@@ -1228,7 +1270,7 @@ function renderAgentContext(flow) {
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
   context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
   diffButton.hidden = !flow || !diffHasChanges(diff);
-  diffButton.textContent = diffIndicatorLabel(diff);
+  diffButton.innerHTML = diffIndicatorLabel(diff);
   diffButton.title = "Open diff viewer";
   diffButton.disabled = !flow;
   diffButton.onclick = flow ? () => openDiffViewer(flow.id) : null;
@@ -1244,28 +1286,84 @@ function renderAgentContext(flow) {
     branch.removeAttribute("rel");
     branch.removeAttribute("title");
   }
-  if (flow?.id && !diff && !state.flowDiffLoadingIds.has(flow.id)) void loadFlowDiff(flow.id);
+  if (flow?.id && !diff && !state.flowDiffLoadingIds.has(diffLoadingKey(flow.id))) void loadFlowDiff(flow.id);
 }
 
 function openDiffViewer(flowId) {
   state.diffModalFlowId = flowId || "";
+  state.diffModalDiff = flowId && state.flowDiffs.get(flowId) ? { ...state.flowDiffs.get(flowId) } : null;
+  state.diffModalLoadingFlowId = flowId || "";
   renderDiffModal();
-  if (flowId) void loadFlowDiff(flowId, { force: true });
+  if (flowId) void loadFlowDiff(flowId, { patch: true, modal: true });
 }
 
 function closeDiffViewer() {
   state.diffModalFlowId = "";
+  state.diffModalDiff = null;
+  state.diffModalLoadingFlowId = "";
   renderDiffModal();
+}
+
+function showDiffModal() {
+  clearTimeout(diffModalTransitionTimer);
+  els.diffModal.hidden = false;
+  els.diffModal.classList.remove("is-closing");
+  requestAnimationFrame(() => els.diffModal.classList.add("is-open"));
+}
+
+function hideDiffModal() {
+  clearTimeout(diffModalTransitionTimer);
+  els.diffModal.classList.remove("is-open");
+  els.diffModal.classList.add("is-closing");
+  diffModalTransitionTimer = setTimeout(() => {
+    if (state.diffModalFlowId) return;
+    els.diffModal.hidden = true;
+    els.diffModal.classList.remove("is-closing");
+  }, 180);
+}
+
+function diffLineClass(line) {
+  if (/^(diff --git|index |new file mode|deleted file mode|similarity index|rename from|rename to)/.test(line)) return "diff-line-meta";
+  if (/^(@@|\+\+\+|---)/.test(line)) return "diff-line-coord";
+  if (line.startsWith("+")) return "diff-line-inserted";
+  if (line.startsWith("-")) return "diff-line-deleted";
+  return "";
+}
+
+function renderDiffCode(code, text) {
+  code.className = "language-diff diff-code";
+  code.replaceChildren();
+  if (!text) return;
+  const fragment = document.createDocumentFragment();
+  for (const line of String(text).split(/(\n)/)) {
+    if (line === "\n") {
+      fragment.appendChild(document.createTextNode(line));
+      continue;
+    }
+    const className = diffLineClass(line);
+    if (!className) {
+      fragment.appendChild(document.createTextNode(line));
+      continue;
+    }
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = line;
+    fragment.appendChild(span);
+  }
+  code.appendChild(fragment);
 }
 
 function renderDiffModal() {
   if (!els.diffModal) return;
   const flowId = state.diffModalFlowId;
-  els.diffModal.hidden = !flowId;
-  if (!flowId) return;
+  if (!flowId) {
+    hideDiffModal();
+    return;
+  }
+  showDiffModal();
   const flow = state.flows.find((item) => item.id === flowId);
-  const diff = state.flowDiffs.get(flowId);
-  const loading = state.flowDiffLoadingIds.has(flowId);
+  const diff = state.diffModalDiff;
+  const loading = state.diffModalLoadingFlowId === flowId && !diff?.patch;
   const title = els.diffModal.querySelector("#diffModalTitle");
   const summary = els.diffModal.querySelector(".diff-modal-summary");
   const code = els.diffModal.querySelector(".diff-modal-code code");
@@ -1275,9 +1373,7 @@ function renderDiffModal() {
     : diff?.error
       ? diff.error
       : diff?.stat?.trim() || diff?.names?.trim() || diff?.status?.trim() || "No diff.";
-  code.textContent = loading ? "" : diff?.patch?.trim() || diff?.names?.trim() || diff?.status?.trim() || "";
-  code.className = "language-diff";
-  if (window.Prism && code.textContent) window.Prism.highlightElement(code);
+  renderDiffCode(code, loading ? "" : diff?.patch?.trim() || diff?.names?.trim() || diff?.status?.trim() || "");
 }
 
 function appendLogEntry(log) {

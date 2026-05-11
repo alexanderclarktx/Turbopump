@@ -635,6 +635,11 @@ body.theme-dark .agent-interrupt.running-mode:disabled {
   color: #c084fc;
 }
 
+body.theme-dark .agent-interrupt.shell-running-mode,
+body.theme-dark .agent-interrupt.shell-running-mode:disabled {
+  color: #22c55e;
+}
+
 body.theme-dark .terminal-entry-error .terminal-entry-marker,
 body.theme-dark .terminal-entry-error .terminal-entry-label,
 body.theme-dark .terminal-entry-error .terminal-entry-body {
@@ -2377,6 +2382,11 @@ body.flow-resizing {
   color: #6d28d9;
 }
 
+.agent-interrupt.shell-running-mode,
+.agent-interrupt.shell-running-mode:disabled {
+  color: #22c55e;
+}
+
 .agent-working {
   display: inline-flex;
   align-items: baseline;
@@ -2471,18 +2481,48 @@ body.flow-resizing {
 }
 
 .agent-context-diff {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  align-self: center;
+  min-height: 0;
+  height: 1.2em;
   padding: 0 0 0 6px;
   border: 0;
   border-left: 1px solid var(--line-strong);
+  border-radius: 0;
   background: transparent;
-  color: var(--link);
   font: inherit;
+  font-weight: 700;
+  line-height: 1.2;
   cursor: pointer;
 }
 
 .agent-context-diff:hover,
 .agent-context-diff:focus-visible {
-  text-decoration: underline;
+  text-decoration: none;
+}
+
+.agent-context-diff .diff-additions {
+  color: #15803d;
+}
+
+.agent-context-diff .diff-deletions {
+  color: #dc2626;
+}
+
+body.theme-dark .agent-context-diff .diff-additions {
+  color: #4ade80;
+}
+
+body.theme-dark .agent-context-diff .diff-deletions {
+  color: #f87171;
+}
+
+body.theme-dark .agent-context-diff,
+body.theme-dark .agent-context-diff:hover,
+body.theme-dark .agent-context-diff:focus-visible {
+  background: transparent;
 }
 
 .agent-context-model,
@@ -2499,11 +2539,20 @@ body.flow-resizing {
   place-items: center;
   padding: 24px;
   background: rgb(15 23 42 / 45%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.diff-modal-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .diff-modal {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
   width: min(980px, 100%);
   max-height: min(760px, calc(100vh - 48px));
   border: 1px solid var(--line-strong);
@@ -2512,6 +2561,16 @@ body.flow-resizing {
   color: var(--ink);
   box-shadow: 0 24px 60px rgb(15 23 42 / 28%);
   overflow: hidden;
+  transform: translateY(8px) scale(0.985);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+  opacity: 0;
+}
+
+.diff-modal-backdrop.is-open .diff-modal {
+  transform: translateY(0) scale(1);
+  opacity: 1;
 }
 
 .diff-modal-header {
@@ -2540,7 +2599,8 @@ body.flow-resizing {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .diff-modal-summary {
@@ -2553,11 +2613,53 @@ body.flow-resizing {
 }
 
 .diff-modal-code {
+  height: 100%;
   min-height: 0;
+  max-height: 100%;
   padding: 14px;
   overflow: auto;
+  overscroll-behavior: contain;
   background: var(--terminal);
   color: var(--terminal-ink);
+}
+
+.diff-modal-code code {
+  display: block;
+  min-width: 0;
+  white-space: inherit;
+}
+
+.diff-modal-code .diff-line-meta {
+  color: #7c3aed;
+  font-weight: 700;
+}
+
+.diff-modal-code .diff-line-coord {
+  color: #2563eb;
+}
+
+.diff-modal-code .diff-line-inserted {
+  color: #047857;
+}
+
+.diff-modal-code .diff-line-deleted {
+  color: #b42318;
+}
+
+body.theme-dark .diff-modal-code .diff-line-meta {
+  color: #c4a7ff;
+}
+
+body.theme-dark .diff-modal-code .diff-line-coord {
+  color: #8bb7ff;
+}
+
+body.theme-dark .diff-modal-code .diff-line-inserted {
+  color: #75d99a;
+}
+
+body.theme-dark .diff-modal-code .diff-line-deleted {
+  color: #ff9b8a;
 }
 
 .slash-menu {

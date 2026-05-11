@@ -1833,29 +1833,80 @@ async function listAssignedLinearIssues(apiKey?: string) {
   };
 }
 
-function getDiff(flow: Flow) {
+async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   try {
     flow = repairFlowCheckoutPath(flow);
   } catch (error) {
-    return { status: "", stat: "", names: "", patch: String(error) };
+    return { status: "", stat: "", names: "", patch: String(error), count: 0, additions: 0, deletions: 0, baseRef: "" };
   }
-  const run = (args: string[]) => {
-    const result = Bun.spawnSync({
+  const run = async (args: string[], options: { trim?: boolean } = {}) => {
+    const result = Bun.spawn({
       cmd: ["git", ...args],
       cwd: flow.checkoutPath,
       stdout: "pipe",
       stderr: "pipe",
       env: process.env,
     });
-    return result.exitCode === 0
-      ? result.stdout.toString()
-      : result.stderr.toString() || result.stdout.toString();
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(result.stdout).text(),
+      new Response(result.stderr).text(),
+      result.exited,
+    ]);
+    const text = exitCode === 0 ? stdout : stderr || stdout;
+    return {
+      ok: exitCode === 0,
+      text: options.trim === false ? text : text.trim(),
+    };
   };
+
+  const remoteHead = await run(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+  const baseRefCandidates = [
+    remoteHead.ok ? remoteHead.text : "",
+    "origin/main",
+    "origin/master",
+    flow.baseSha,
+  ].filter(Boolean);
+  let baseRef = flow.baseSha;
+  for (const candidate of baseRefCandidates) {
+    const mergeBase = await run(["merge-base", "HEAD", candidate]);
+    if (mergeBase.ok && mergeBase.text) {
+      baseRef = mergeBase.text;
+      break;
+    }
+  }
+
+  const namesResult = await run(["diff", "--name-only", "-z", baseRef], { trim: false });
+  const numstatResult = await run(["diff", "--numstat", baseRef], { trim: false });
+  const names = namesResult.ok ? namesResult.text : "";
+  let additions = 0;
+  let deletions = 0;
+  if (numstatResult.ok) {
+    for (const line of numstatResult.text.split("\n")) {
+      const [added, deleted] = line.split("\t");
+      const addedCount = Number(added);
+      const deletedCount = Number(deleted);
+      if (Number.isFinite(addedCount)) additions += addedCount;
+      if (Number.isFinite(deletedCount)) deletions += deletedCount;
+    }
+  }
+  const diff = {
+    status: names.replaceAll("\0", "\n").trim(),
+    names,
+    count: names.split("\0").filter(Boolean).length,
+    additions,
+    deletions,
+    baseRef,
+  };
+  if (!options.patch) return { ...diff, stat: "", patch: "" };
+  const combinedResult = await run(["diff", "--find-renames", "--stat", "--patch", baseRef], { trim: false });
+  const combined = combinedResult.text;
+  const patchStart = combined.indexOf("diff --git ");
+  const stat = patchStart >= 0 ? combined.slice(0, patchStart).trim() : "";
+  const patch = patchStart >= 0 ? combined.slice(patchStart) : combined;
   return {
-    status: run(["status", "--short"]),
-    stat: run(["diff", "--stat", flow.baseSha]),
-    names: run(["diff", "--name-status", flow.baseSha]),
-    patch: run(["diff", "--find-renames", flow.baseSha]),
+    ...diff,
+    stat,
+    patch,
   };
 }
 
@@ -2055,7 +2106,7 @@ async function handleApi(request: Request, url: URL) {
     }
 
     if (parts[3] === "diff" && request.method === "GET") {
-      return json(getDiff(flow));
+      return json(await getDiff(flow, { patch: url.searchParams.get("patch") === "1" }));
     }
 
     if ((parts[3] === "meta" || parts[3] === "stage") && request.method === "POST") {
