@@ -194,11 +194,12 @@ tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWind
 
 const clients = new Set<ServerWebSocket>();
 const agentProcesses = new Map<string, RuntimeProcess>();
+const shellProcesses = new Map<string, RuntimeProcess>();
 let serveProcess: RuntimeProcess | null = null;
 
 type RuntimeProcess = {
   flowId: string;
-  kind: "agent" | "serve";
+  kind: "agent" | "serve" | "shell";
   proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   command?: string;
   requestId?: number;
@@ -1494,6 +1495,7 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   flow = repairFlowCheckoutPath(flow);
   const command = userCommand.trim();
   if (!command) throw new Error("Type a shell command after $.");
+  if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");
 
   updateFlow(flow.id, { agentStatus: "running" });
   insertLog(flow.id, "shell:command", command);
@@ -1501,21 +1503,43 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
     env: runtimeEnv(flow),
-    stdin: "ignore",
+    stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
   });
+  const runtime: RuntimeProcess = { flowId: flow.id, kind: "shell", proc, command };
+  shellProcesses.set(flow.id, runtime);
 
   const stdoutDone = streamProcessOutput(flow.id, "agent:cmd", proc.stdout);
   const stderrDone = streamProcessOutput(flow.id, "agent:stderr", proc.stderr);
 
-  const code = await proc.exited;
-  await Promise.all([stdoutDone, stderrDone]);
-  insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : "failed"} exit ${code}`);
-  updateFlow(flow.id, { agentStatus: code === 0 ? "idle" : "failed" });
+  try {
+    const code = await proc.exited;
+    await Promise.all([stdoutDone, stderrDone]);
+    insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`);
+    updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
+  } finally {
+    if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
+  }
+}
+
+function interruptShellCommand(flowId: string) {
+  const runtime = shellProcesses.get(flowId);
+  if (!runtime) return false;
+  updateFlow(flowId, { agentStatus: "interrupting" });
+  insertLog(flowId, "agent:status", "shell interrupt requested");
+  runtime.stopping = true;
+  try {
+    runtime.proc.stdin?.write("\x03");
+  } catch {
+    // Some commands close stdin before exiting; SIGINT below is the fallback.
+  }
+  runtime.proc.kill("SIGINT");
+  return true;
 }
 
 async function interruptAgent(flowId: string) {
+  if (interruptShellCommand(flowId)) return;
   const runtime = agentProcesses.get(flowId);
   if (!runtime) return;
   if (!runtime.threadId || !runtime.activeTurnId) {

@@ -759,8 +759,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("syncAgentWorkingPoll(id, agentWorking);");
     expect(app).toContain("if (agentWorking) appendTerminalWorkingBlock(fragment);");
     expect(app).not.toContain('els.flowPane.querySelector(".agent-working").hidden = !agentWorking;');
-    expect(app).toContain("if (state.interruptSubmitting) return;");
+    expect(app).toContain("async function interruptSelectedFlow()");
+    expect(app).toContain("if (state.interruptSubmitting) return false;");
     expect(app).toContain("state.interruptSubmitting = true;");
+    expect(app).toContain('await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });');
+    expect(app).toContain('event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c"');
+    expect(app).toContain("void interruptSelectedFlow();");
+    expect(app).toContain("if (!(await interruptSelectedFlow()))");
     expect(app).toContain(
       'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
     );
@@ -812,6 +817,16 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain(".agent-start svg");
     expect(server).toContain('"turn/interrupt"');
     expect(server).toContain("async function interruptAgent");
+    expect(server).toContain("const shellProcesses = new Map<string, RuntimeProcess>();");
+    expect(server).toContain('kind: "agent" | "serve" | "shell";');
+    expect(server).toContain('if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");');
+    expect(server).toContain('shellProcesses.set(flow.id, runtime);');
+    expect(server).toContain('runtime.proc.stdin?.write("\\x03");');
+    expect(server).toContain('runtime.proc.kill("SIGINT");');
+    expect(server).toContain("function interruptShellCommand(flowId: string)");
+    expect(server).toContain("if (interruptShellCommand(flowId)) return;");
+    expect(server).toContain('runtime.stopping ? "interrupted" : "failed"');
+    expect(server).toContain('agentStatus: code === 0 || runtime.stopping ? "idle" : "failed"');
     expect(server).not.toContain("agent stopped by Turbopump");
   });
 
@@ -1102,7 +1117,22 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('setInputMode(state.inputMode === "command" ? "prompt" : "command");');
     expect(app).toContain('commandMode ? "Switch to prompt mode" : "Switch to shell mode"');
     expect(app).toContain("toggleInputMode();");
+    expect(app).toContain("function canToggleInputMode()");
+    expect(app).toContain("const ticket = selectedTicket();");
+    expect(app).not.toContain("selectedLinearTicket");
+    expect(app).toContain("function handleInputModeTabKeydown(event)");
+    expect(app).toContain("if (event.defaultPrevented) return false;");
+    expect(app).toContain('if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;');
+    expect(app).toContain("if (!canToggleInputMode()) return false;");
+    expect(app).toContain("event.preventDefault();\n  if (event.repeat) return true;\n  toggleInputMode();");
     expect(app).toContain("if (enterCommandModeFromDollarKey(event)) return;");
+    const messageInputKeydown = app.slice(app.indexOf('els.flowPane.querySelector(".message-input").addEventListener("keydown"'));
+    expect(messageInputKeydown).toContain("if (handleInputModeTabKeydown(event)) return;");
+    expect(messageInputKeydown.indexOf("selectSlashCommand();")).toBeLessThan(
+      messageInputKeydown.indexOf("handleInputModeTabKeydown(event)"),
+    );
+    const globalKeydown = app.slice(app.indexOf('document.addEventListener("keydown"'));
+    expect(globalKeydown).toContain("if (handleInputModeTabKeydown(event)) return;");
     expect(app).toContain('event.ctrlKey && event.key.toLowerCase() === "r"');
     expect(app).toContain('event.ctrlKey && event.key.toLowerCase() === "z"');
     expect(app).toContain("if (!state.historySearch) return false;");

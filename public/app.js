@@ -483,6 +483,39 @@ function toggleInputMode() {
   setInputMode(state.inputMode === "command" ? "prompt" : "command");
 }
 
+function canToggleInputMode() {
+  const flow = selectedFlow();
+  const ticket = selectedTicket();
+  return Boolean(repoUrlConfigured() && !state.messageSubmitting && !state.agentImageUploading && flow?.agentStatus !== "running" && (flow || ticket));
+}
+
+function handleInputModeTabKeydown(event) {
+  if (event.defaultPrevented) return false;
+  if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;
+  if (!canToggleInputMode()) return false;
+  event.preventDefault();
+  if (event.repeat) return true;
+  toggleInputMode();
+  return true;
+}
+
+async function interruptSelectedFlow() {
+  if (state.interruptSubmitting) return false;
+  const selected = selectedFlow();
+  if (selected?.agentStatus !== "running") return false;
+  state.interruptSubmitting = true;
+  renderTickets();
+  renderFlowPane();
+  try {
+    await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
+  } finally {
+    state.interruptSubmitting = false;
+    renderTickets();
+    renderFlowPane();
+  }
+  return true;
+}
+
 function isEditableKeyTarget(target) {
   if (!(target instanceof Element)) return false;
   if (target.closest("input, textarea, select")) return true;
@@ -2607,20 +2640,7 @@ els.flowPane.querySelector(".terminal").addEventListener(
 );
 
 els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async () => {
-  if (state.interruptSubmitting) return;
-  const selected = selectedFlow();
-  if (selected?.agentStatus === "running") {
-    state.interruptSubmitting = true;
-    renderTickets();
-    renderFlowPane();
-    try {
-      await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
-    } finally {
-      state.interruptSubmitting = false;
-      renderTickets();
-      renderFlowPane();
-    }
-  } else {
+  if (!(await interruptSelectedFlow())) {
     toggleInputMode();
   }
 });
@@ -2690,11 +2710,6 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
   if (enterCommandModeFromDollarKey(event)) return;
   if (handleHistorySearchKeydown(event)) return;
 
-  if (event.key === "Tab") {
-    event.preventDefault();
-    return;
-  }
-
   if (event.key === "Backspace" && state.inputMode === "command" && input.value.length === 0) {
     event.preventDefault();
     cancelHistorySearch();
@@ -2742,6 +2757,8 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
       return;
     }
   }
+
+  if (handleInputModeTabKeydown(event)) return;
 
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -2831,6 +2848,12 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && selectedFlow()?.agentStatus === "running") {
+    event.preventDefault();
+    void interruptSelectedFlow();
+    return;
+  }
+  if (handleInputModeTabKeydown(event)) return;
   if (handleGlobalHistorySearchKeydown(event)) return;
   if (focusMessageInputForKey(event)) return;
   if (event.key === "Escape") event.preventDefault();
