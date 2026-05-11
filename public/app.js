@@ -1906,9 +1906,14 @@ function renderFlowPane() {
   }
 
   const agentInterrupt = els.flowPane.querySelector(".agent-interrupt");
-  agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));
-  els.flowPane.querySelector(".message-input").disabled =
+  const messageForm = els.flowPane.querySelector(".message-form");
+  const messageInput = els.flowPane.querySelector(".message-input");
+  const inputDisabled =
     state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
+  agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));
+  messageInput.disabled = inputDisabled;
+  messageForm.classList.toggle("input-disabled", inputDisabled);
+  messageForm.setAttribute("aria-disabled", String(inputDisabled));
   updateMessageInputMode();
   resizeMessageInput();
 
@@ -2180,6 +2185,7 @@ function parseTraceGroup(log) {
       afterId,
       beforeId,
       count: Number(payload.count || 0),
+      kind: typeof payload.kind === "string" ? payload.kind : "",
       key: `${afterId}:${beforeId}`,
     };
   } catch {
@@ -2193,6 +2199,10 @@ function isRuntimeDisappearedLog(log) {
 
 function isTurnCompletedLog(log) {
   return log.source === "agent:status" && /^turn completed\b/.test(String(log.message || "").trim());
+}
+
+function isShellExitLog(log) {
+  return log.source === "agent:tool-result" && /^(completed|interrupted|failed) exit \d+\b/.test(String(log.message || "").trim());
 }
 
 function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
@@ -2213,6 +2223,31 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
     if (!count) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
+  }
+  return ranges;
+}
+
+function syntheticShellTraceRanges(logs, existingRanges) {
+  const existingKeys = new Set(existingRanges.map((range) => range.key));
+  const ranges = [];
+  let latestShellCommand = null;
+  for (const log of logs) {
+    if (log.source === "shell:command") {
+      latestShellCommand = log;
+      continue;
+    }
+    if (!latestShellCommand || !isShellExitLog(log)) continue;
+    const afterId = Number(latestShellCommand.id);
+    const beforeId = Number(log.id) + 1;
+    const key = `${afterId}:${beforeId}`;
+    if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
+      const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+      if (count) {
+        ranges.push({ afterId, beforeId, count, key, kind: "shell" });
+        existingKeys.add(key);
+      }
+    }
+    latestShellCommand = null;
   }
   return ranges;
 }
@@ -2290,15 +2325,16 @@ function terminalGroups(logs) {
   const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
   const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
   const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
+  const shellTraceRanges = syntheticShellTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]);
   const traceRanges = [
     ...persistedTraceRanges,
     ...runtimeDisappearedTraceRanges,
-    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),
+    ...shellTraceRanges,
+    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges, ...shellTraceRanges]),
   ];
   const traceGroups = new Map();
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
-    if (isHiddenTerminalLog(log)) continue;
     const previousGroup = groups[groups.length - 1];
     if (
       log.source === "agent:tool" &&
@@ -2308,6 +2344,7 @@ function terminalGroups(logs) {
       continue;
     }
     const traceRange = traceRangeForLog(log, traceRanges);
+    if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log))) continue;
     if (traceRange) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {

@@ -338,12 +338,19 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('agentPanel.classList.toggle("disabled", !agentEnabled);');
     expect(app).toContain("agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));");
     expect(app).toContain(
-      'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
+      "const inputDisabled =\n    state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);",
     );
+    expect(app).toContain("messageInput.disabled = inputDisabled;");
+    expect(app).toContain('messageForm.classList.toggle("input-disabled", inputDisabled);');
+    expect(app).toContain('messageForm.setAttribute("aria-disabled", String(inputDisabled));');
     expect(app).toContain("renderFlowPane();\n});");
     expect(css).toContain(".agent-disabled-message");
     expect(css).toContain(".agent-panel.disabled .agent-disabled-message {\n  display: grid;");
     expect(css).toContain(".agent-panel.disabled .terminal,\n.agent-panel.disabled .message-form {\n  display: none;");
+    expect(css).toContain(".message-form.input-disabled {\n  border-top-color: var(--line-strong);");
+    expect(css).not.toContain(".message-form.input-disabled::after");
+    expect(css).toContain(".message-form.input-disabled .message-input");
+    expect(css).toContain("border-color: var(--line-strong);\n  background: var(--panel);");
   });
 
   test("uses planning as the first flow stage everywhere except migration", () => {
@@ -826,7 +833,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("void interruptSelectedFlow();");
     expect(app).toContain("if (!(await interruptSelectedFlow()))");
     expect(app).toContain(
-      'state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);',
+      "const inputDisabled =\n    state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);",
     );
     expect(app).toContain("async function uploadAgentImages(files)");
     expect(app).toContain("function eventHasDraggedFiles(event)");
@@ -896,7 +903,10 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('insertLog(flowId, "agent:status", "shell interrupt forced cleanup");');
     expect(server).toContain('detached: true,');
     expect(server).toContain('shellProcesses.set(flow.id, runtime);');
-    expect(server).toContain('void Promise.all([stdoutDone, stderrDone]);');
+    expect(server).toContain('const commandLogId = insertLog(flow.id, "shell:command", command);');
+    expect(server).toContain("await Promise.all([stdoutDone, stderrDone]);");
+    expect(server).toContain('const resultLogId = insertLog(flow.id, "agent:tool-result"');
+    expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
     expect(server).toContain('runtime.proc.stdin?.write("\\x03");');
     expect(server).toContain('signalRuntimeProcess(runtime, "SIGINT");');
     expect(server).toContain("scheduleShellInterruptEscalation(flowId, runtime);");
@@ -943,7 +953,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('log.source === "flow" && /^stage changed\\b/i.test(message)');
     expect(app).toContain('log.source === "agent:tool-result" && message === "completed exit 0"');
     expect(app).toContain('log.source === "agent:tool-result" && message === "failed exit 7"');
-    expect(app).toContain("if (isHiddenTerminalLog(log)) continue;");
+    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log))) continue;');
   });
 
   test("renders command execution logs as a single shell prompt line", () => {
@@ -1027,6 +1037,7 @@ describe("Turbopump pane markup", () => {
   test("collapses completed-turn traces between the prompt and final message", () => {
     expect(server).toContain('insertLog(\n    flowId,\n    "agent:trace-group",');
     expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
+    expect(server).toContain('function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "")');
     expect(server).toContain("function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number)");
     expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string)");
@@ -1040,12 +1051,19 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('"agent:trace-group": { label: "trace"');
     expect(app).toContain("function parseTraceGroup(log)");
     expect(app).toContain("function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges)");
+    expect(app).toContain("function syntheticShellTraceRanges(logs, existingRanges)");
     expect(app).toContain("function syntheticSteerTraceRanges(logs, existingRanges)");
     expect(app).toContain("function isTurnCompletedLog(log)");
+    expect(app).toContain("function isShellExitLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
     expect(app).toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
+    expect(app).toContain("const shellTraceRanges = syntheticShellTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]);");
+    expect(app).toContain('kind: typeof payload.kind === "string" ? payload.kind : ""');
+    expect(app).toContain('ranges.push({ afterId, beforeId, count, key, kind: "shell" });');
+    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log))) continue;');
     expect(app).toContain("...runtimeDisappearedTraceRanges,");
-    expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
+    expect(app).toContain("...shellTraceRanges,");
+    expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges, ...shellTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
     expect(app).toContain("openTraceGroups: new Map()");
     expect(app).toContain("traceKey: traceRange.key,");

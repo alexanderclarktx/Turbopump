@@ -2237,6 +2237,23 @@ body.flow-resizing {
   z-index: 1;
 }
 
+.message-form.input-disabled {
+  border-top-color: var(--line-strong);
+  background: var(--panel-soft);
+}
+
+.message-form.input-disabled .message-input {
+  border-color: var(--line-strong);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.message-form.input-disabled .agent-context {
+  opacity: 0.62;
+}
+
 .history-search-indicator {
   grid-area: search;
   min-width: 0;

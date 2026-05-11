@@ -1136,10 +1136,10 @@ function isAgentMessageSource(source: string) {
   return source === "agent:message" || source === "agent";
 }
 
-function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
-  if (beforeId <= promptId) return;
+function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
+  if (beforeId <= afterId) return;
 
-  const logs = (logsAfterStmt.all(flowId, promptId) as LogRow[]).filter((log) => log.id < beforeId);
+  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter((log) => log.id < beforeId);
   const traceCount = logs.length;
   if (!traceCount) return;
 
@@ -1147,11 +1147,16 @@ function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId:
     flowId,
     "agent:trace-group",
     JSON.stringify({
-      afterId: promptId,
+      afterId,
       beforeId,
       count: traceCount,
+      ...(kind ? { kind } : {}),
     }),
   );
+}
+
+function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
+  createTraceGroupBetweenLogs(flowId, promptId, beforeId);
 }
 
 function createTurnTraceGroup(flowId: string, beforeId: number) {
@@ -1578,7 +1583,7 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   const runtime: RuntimeProcess = { flowId: flow.id, kind: "shell", proc, command };
   shellProcesses.set(flow.id, runtime);
   updateFlow(flow.id, { agentStatus: "running" });
-  insertLog(flow.id, "shell:command", command);
+  const commandLogId = insertLog(flow.id, "shell:command", command);
 
   const stdoutDone = streamProcessOutput(flow.id, "agent:cmd", proc.stdout).catch((error) =>
     insertLog(flow.id, "agent:stderr", `stdout read failed: ${String(error)}\n`),
@@ -1590,7 +1595,9 @@ async function runShellCommand(flow: Flow, userCommand: string) {
 
   try {
     const code = await proc.exited;
-    insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`);
+    await Promise.all([stdoutDone, stderrDone]);
+    const resultLogId = insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`);
+    createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");
     updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
   } finally {
     if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
