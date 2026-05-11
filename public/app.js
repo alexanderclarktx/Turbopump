@@ -151,6 +151,9 @@ const state = {
   historySearch: null,
   historyNavigation: null,
   terminalFollowPaused: false,
+  flowDiffs: new Map(),
+  flowDiffLoadingIds: new Set(),
+  diffModalFlowId: "",
   draggingLinearIssueId: "",
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
@@ -176,6 +179,7 @@ const els = {
   ticketState: document.querySelector("#ticketState"),
   ticketGrid: document.querySelector("#ticketGrid"),
   flowPane: document.querySelector("#flowPane"),
+  diffModal: document.querySelector("#diffModal"),
 };
 
 let repoConfigSaveTimer = 0;
@@ -558,10 +562,18 @@ function toggleInputMode() {
   setInputMode(state.inputMode === "command" ? "prompt" : "command");
 }
 
+function flowRuntimeActive(flow) {
+  return flow?.agentStatus === "running" || flow?.agentStatus === "interrupting";
+}
+
+function flowRuntimeKind(flow) {
+  return flow?.agentRuntimeKind === "shell" ? "shell" : "agent";
+}
+
 function canToggleInputMode() {
   const flow = selectedFlow();
   const ticket = selectedTicket();
-  return Boolean(repoUrlConfigured() && !state.messageSubmitting && !state.agentImageUploading && flow?.agentStatus !== "running" && (flow || ticket));
+  return Boolean(repoUrlConfigured() && !state.messageSubmitting && !state.agentImageUploading && !flowRuntimeActive(flow) && (flow || ticket));
 }
 
 function handleInputModeTabKeydown(event) {
@@ -577,7 +589,7 @@ function handleInputModeTabKeydown(event) {
 async function interruptSelectedFlow() {
   if (state.interruptSubmitting) return false;
   const selected = selectedFlow();
-  if (selected?.agentStatus !== "running") return false;
+  if (!flowRuntimeActive(selected)) return false;
   state.interruptSubmitting = true;
   renderTickets();
   renderFlowPane();
@@ -666,7 +678,7 @@ function updateMessageInputMode() {
 function updateInputModeButton() {
   const button = els.flowPane.querySelector(".agent-interrupt");
   if (!button) return;
-  const running = selectedFlow()?.agentStatus === "running";
+  const running = flowRuntimeActive(selectedFlow());
   const commandMode = state.inputMode === "command";
   button.classList.toggle("command-mode", commandMode && !running);
   button.classList.toggle("prompt-mode", !commandMode && !running);
@@ -969,7 +981,10 @@ async function bootstrap() {
   lastSavedEnv = els.envEditor.value;
   render();
   const flow = selectedFlow();
-  if (flow) await loadLogs(flow.id);
+  if (flow) {
+    await loadLogs(flow.id);
+    void loadFlowDiff(flow.id, { force: true });
+  }
   void loadAllLogs();
   if (state.linearSignedIn) await loadLinearTickets();
   connectWs();
@@ -1151,12 +1166,72 @@ function agentContextWindowLabel(flow) {
   return `${Math.round((available / total) * 100)}%`;
 }
 
+function normalizeDiff(data) {
+  return {
+    status: data?.status || "",
+    stat: data?.stat || "",
+    names: data?.names || "",
+    patch: data?.patch || "",
+    error: data?.error || "",
+  };
+}
+
+function diffText(diff) {
+  return [diff?.status, diff?.stat, diff?.names, diff?.patch].filter(Boolean).join("\n").trim();
+}
+
+function diffHasChanges(diff) {
+  return Boolean(diffText(diff));
+}
+
+function diffFileCount(diff) {
+  const paths = new Set();
+  for (const line of `${diff?.names || ""}\n${diff?.status || ""}`.split("\n")) {
+    const parts = line.trim().split(/\s+/).filter(Boolean);
+    const path = parts[parts.length - 1];
+    if (path) paths.add(path);
+  }
+  return paths.size;
+}
+
+function diffIndicatorLabel(diff) {
+  const count = diffFileCount(diff);
+  return count ? `diff ${count}` : "diff";
+}
+
+async function loadFlowDiff(flowId, options = {}) {
+  if (!flowId) return null;
+  if (!options.force && state.flowDiffs.has(flowId)) return state.flowDiffs.get(flowId);
+  if (state.flowDiffLoadingIds.has(flowId)) return state.flowDiffs.get(flowId) || null;
+  state.flowDiffLoadingIds.add(flowId);
+  try {
+    const diff = normalizeDiff(await api(`/api/flows/${encodeURIComponent(flowId)}/diff`));
+    state.flowDiffs.set(flowId, diff);
+    return diff;
+  } catch (error) {
+    const diff = normalizeDiff({ error: error.message || String(error) });
+    state.flowDiffs.set(flowId, diff);
+    return diff;
+  } finally {
+    state.flowDiffLoadingIds.delete(flowId);
+    renderAgentContext(selectedFlow());
+    renderDiffModal();
+  }
+}
+
 function renderAgentContext(flow) {
   const context = els.flowPane.querySelector(".agent-context");
   const branch = context.querySelector(".agent-context-branch");
+  const diffButton = context.querySelector(".agent-context-diff");
+  const diff = flow?.id ? state.flowDiffs.get(flow.id) : null;
   context.hidden = !flow;
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
   context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
+  diffButton.hidden = !flow || !diffHasChanges(diff);
+  diffButton.textContent = diffIndicatorLabel(diff);
+  diffButton.title = "Open diff viewer";
+  diffButton.disabled = !flow;
+  diffButton.onclick = flow ? () => openDiffViewer(flow.id) : null;
   branch.textContent = flow?.branchName || "";
   if (flow?.prUrl) {
     branch.href = flow.prUrl;
@@ -1169,6 +1244,40 @@ function renderAgentContext(flow) {
     branch.removeAttribute("rel");
     branch.removeAttribute("title");
   }
+  if (flow?.id && !diff && !state.flowDiffLoadingIds.has(flow.id)) void loadFlowDiff(flow.id);
+}
+
+function openDiffViewer(flowId) {
+  state.diffModalFlowId = flowId || "";
+  renderDiffModal();
+  if (flowId) void loadFlowDiff(flowId, { force: true });
+}
+
+function closeDiffViewer() {
+  state.diffModalFlowId = "";
+  renderDiffModal();
+}
+
+function renderDiffModal() {
+  if (!els.diffModal) return;
+  const flowId = state.diffModalFlowId;
+  els.diffModal.hidden = !flowId;
+  if (!flowId) return;
+  const flow = state.flows.find((item) => item.id === flowId);
+  const diff = state.flowDiffs.get(flowId);
+  const loading = state.flowDiffLoadingIds.has(flowId);
+  const title = els.diffModal.querySelector("#diffModalTitle");
+  const summary = els.diffModal.querySelector(".diff-modal-summary");
+  const code = els.diffModal.querySelector(".diff-modal-code code");
+  title.textContent = `${flow?.linearIssueId || "Flow"} diff`;
+  summary.textContent = loading
+    ? "Loading diff..."
+    : diff?.error
+      ? diff.error
+      : diff?.stat?.trim() || diff?.names?.trim() || diff?.status?.trim() || "No diff.";
+  code.textContent = loading ? "" : diff?.patch?.trim() || diff?.names?.trim() || diff?.status?.trim() || "";
+  code.className = "language-diff";
+  if (window.Prism && code.textContent) window.Prism.highlightElement(code);
 }
 
 function appendLogEntry(log) {
@@ -1558,7 +1667,7 @@ function ticketAgentWorking(ticket) {
   return Boolean(
     repoUrlConfigured() &&
       flow &&
-      (flow.agentStatus === "running" ||
+      (flowRuntimeActive(flow) ||
         (flow.id === state.selectedFlowId && (state.messageSubmitting || state.interruptSubmitting))),
   );
 }
@@ -1645,6 +1754,7 @@ async function selectFlow(id) {
   localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
   render();
   await loadLogs(id);
+  void loadFlowDiff(id, { force: true });
   void loadLinearDetail(flow.linearIssueId);
 }
 
@@ -1660,7 +1770,10 @@ async function openTicketInFlowPane(ticket) {
     localStorage.removeItem("flow.selectedFlowId");
   }
   render();
-  if (flow) await loadLogs(flow.id);
+  if (flow) {
+    await loadLogs(flow.id);
+    void loadFlowDiff(flow.id, { force: true });
+  }
   void loadLinearDetail(ticket.identifier);
 }
 
@@ -1685,7 +1798,7 @@ function renderFlowPane() {
   const issueUrl = flow?.linearIssueUrl || ticket?.url || "";
   const agentEnabled = repoUrlConfigured();
   const agentPanel = els.flowPane.querySelector(".agent-panel");
-  const agentRunning = flow?.agentStatus === "running";
+  const agentRunning = flowRuntimeActive(flow);
 
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
@@ -2140,6 +2253,75 @@ function renderTerminalMarkdownOutput(message) {
   return `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Show raw markdown" title="Show raw markdown">Raw</button><div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true })}</div>`;
 }
 
+function ansiClassForCode(code) {
+  const colors = {
+    30: "black",
+    31: "red",
+    32: "green",
+    33: "yellow",
+    34: "blue",
+    35: "magenta",
+    36: "cyan",
+    37: "white",
+    90: "bright-black",
+    91: "bright-red",
+    92: "bright-green",
+    93: "bright-yellow",
+    94: "bright-blue",
+    95: "bright-magenta",
+    96: "bright-cyan",
+    97: "bright-white",
+  };
+  return colors[code] ? `ansi-fg-${colors[code]}` : "";
+}
+
+function renderAnsiText(root, message) {
+  const text = String(message || "");
+  const pattern = /\x1b\[([0-?]*)([ -/]*)([@-~])|\[(\d{1,3}(?:;\d{1,3})*)m/g;
+  let index = 0;
+  let colorClass = "";
+  let bold = false;
+
+  const appendText = (value) => {
+    if (!value) return;
+    if (!colorClass && !bold) {
+      root.appendChild(document.createTextNode(value));
+      return;
+    }
+    const span = document.createElement("span");
+    if (colorClass) span.classList.add(colorClass);
+    if (bold) span.classList.add("ansi-bold");
+    span.textContent = value;
+    root.appendChild(span);
+  };
+
+  for (const match of text.matchAll(pattern)) {
+    appendText(text.slice(index, match.index));
+    index = match.index + match[0].length;
+    const command = match[3] || "m";
+    if (command !== "m") continue;
+    const params = (match[1] || match[4] || "0")
+      .split(";")
+      .map((item) => Number(item || 0));
+    for (const code of params) {
+      if (code === 0) {
+        colorClass = "";
+        bold = false;
+      } else if (code === 1) {
+        bold = true;
+      } else if (code === 22) {
+        bold = false;
+      } else if (code === 39) {
+        colorClass = "";
+      } else {
+        const nextColorClass = ansiClassForCode(code);
+        if (nextColorClass) colorClass = nextColorClass;
+      }
+    }
+  }
+  appendText(text.slice(index));
+}
+
 function toggleTerminalMarkdownOutput(button) {
   const body = button.closest(".terminal-entry-body");
   const content = body?.querySelector(".terminal-markdown-content");
@@ -2222,6 +2404,8 @@ function appendTerminalBlock(fragment, group) {
     body.classList.add("terminal-markdown-output");
     body.innerHTML = renderTerminalMarkdownOutput(message);
     highlightCodeBlocks(body);
+  } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
+    renderAnsiText(body, message);
   } else {
     body.innerHTML = renderInlineMarkdown(message, { images: false, links: false });
   }
@@ -2420,7 +2604,7 @@ function followTerminalToLatestDuringLayout(terminal, durationMs) {
 
 function agentWorkingForFlow(flow) {
   const agentEnabled = repoUrlConfigured();
-  return Boolean(agentEnabled && flow && (state.messageSubmitting || state.interruptSubmitting || flow.agentStatus === "running"));
+  return Boolean(agentEnabled && flow && (state.messageSubmitting || state.interruptSubmitting || flowRuntimeActive(flow)));
 }
 
 function stopAgentWorkingPoll(flowId = "") {
@@ -2481,17 +2665,17 @@ async function pollAgentWorkingFlow() {
   }
 }
 
-function appendTerminalWorkingBlock(fragment) {
+function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
   const block = document.createElement("section");
-  block.className = "terminal-entry terminal-entry-working";
+  block.className = `terminal-entry terminal-entry-working terminal-entry-working-${runtimeKind}`;
   block.setAttribute("aria-live", "polite");
 
   const body = document.createElement("div");
-  body.className = "terminal-entry-body agent-working";
+  body.className = `terminal-entry-body agent-working ${runtimeKind === "shell" ? "shell-working" : "agent-turn-working"}`;
 
   const dots = document.createElement("span");
   dots.className = "agent-working-dots";
-  dots.setAttribute("aria-label", "Agent working");
+  dots.setAttribute("aria-label", runtimeKind === "shell" ? "Shell command running" : "Agent working");
   dots.innerHTML = "<span>.</span><span>.</span><span>.</span>";
 
   body.replaceChildren(dots);
@@ -2517,8 +2701,9 @@ function renderLogs(id, options = {}) {
   const groups = terminalGroups(logs);
   const flow = state.flows.find((item) => item.id === id) || null;
   const agentWorking = agentWorkingForFlow(flow);
+  const runtimeKind = flowRuntimeKind(flow);
   syncAgentWorkingPoll(id, agentWorking);
-  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}`;
+  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${runtimeKind}`;
   if (terminal._flowLogFlowId === id && terminal._flowLogSignature === signature && !options.force) {
     if (options.scrollToLatest) scrollTerminalToLatest(terminal);
     return;
@@ -2527,7 +2712,7 @@ function renderLogs(id, options = {}) {
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
-  if (agentWorking) appendTerminalWorkingBlock(fragment);
+  if (agentWorking) appendTerminalWorkingBlock(fragment, runtimeKind);
   terminal.replaceChildren(fragment);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
@@ -2563,6 +2748,8 @@ function connectWs() {
     if (message.event === "flows") {
       setFlows(message.payload);
       render();
+      const flow = selectedFlow();
+      if (flow) void loadFlowDiff(flow.id, { force: true });
       await loadAllLogs();
     }
     if (message.event === "checkouts") {
@@ -2922,6 +3109,11 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   }
 });
 
+els.diffModal?.querySelector(".diff-modal-close")?.addEventListener("click", closeDiffViewer);
+els.diffModal?.addEventListener("click", (event) => {
+  if (event.target === els.diffModal) closeDiffViewer();
+});
+
 let titleResizeFrame = 0;
 window.addEventListener("resize", () => {
   cancelAnimationFrame(titleResizeFrame);
@@ -2929,7 +3121,12 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && selectedFlow()?.agentStatus === "running") {
+  if (event.key === "Escape" && state.diffModalFlowId) {
+    event.preventDefault();
+    closeDiffViewer();
+    return;
+  }
+  if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && flowRuntimeActive(selectedFlow())) {
     event.preventDefault();
     void interruptSelectedFlow();
     return;

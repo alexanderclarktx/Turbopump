@@ -362,6 +362,32 @@ function listFlows() {
   return allFlowsStmt.all() as Flow[];
 }
 
+function runtimeAdjustedFlow(flow: Flow) {
+  const shellRuntime = shellProcesses.get(flow.id);
+  if (shellRuntime) {
+    return {
+      ...flow,
+      agentStatus: shellRuntime.stopping ? "interrupting" : "running",
+      agentRuntimeKind: "shell",
+    };
+  }
+
+  const agentRuntime = agentProcesses.get(flow.id);
+  if (agentRuntime?.activeTurnId) {
+    return {
+      ...flow,
+      agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running",
+      agentRuntimeKind: "agent",
+    };
+  }
+
+  return flow;
+}
+
+function listClientFlows() {
+  return listFlows().map((flow) => runtimeAdjustedFlow(flow));
+}
+
 function checkoutNameFromPath(path: string) {
   return basename(resolve(path));
 }
@@ -527,7 +553,7 @@ function updateFlow(id: string, fields: Partial<Flow>) {
     now(),
     id,
   );
-  broadcast("flows", listFlows());
+  broadcast("flows", listClientFlows());
 }
 
 function repairFlowCheckoutPath(flow: Flow) {
@@ -550,6 +576,16 @@ function flowStatusAgeMs(flow: Flow, nowMs = Date.now()) {
 }
 
 function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
+  const shellRuntime = shellProcesses.get(flow.id);
+  if (shellRuntime) {
+    const shellStatus = shellRuntime.stopping ? "interrupting" : "running";
+    if (flow.agentStatus !== shellStatus) {
+      updateFlow(flow.id, { agentStatus: shellStatus });
+      return getFlow(flow.id) ?? { ...flow, agentStatus: shellStatus };
+    }
+    return flow;
+  }
+
   if (flow.agentStatus !== "running" && flow.agentStatus !== "interrupting") return flow;
 
   const runtime = agentProcesses.get(flow.id);
@@ -1531,9 +1567,6 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   if (!command) throw new Error("Type a shell command after $.");
   if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");
 
-  updateFlow(flow.id, { agentStatus: "running" });
-  insertLog(flow.id, "shell:command", command);
-
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
     env: runtimeEnv(flow),
@@ -1544,6 +1577,8 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   });
   const runtime: RuntimeProcess = { flowId: flow.id, kind: "shell", proc, command };
   shellProcesses.set(flow.id, runtime);
+  updateFlow(flow.id, { agentStatus: "running" });
+  insertLog(flow.id, "shell:command", command);
 
   const stdoutDone = streamProcessOutput(flow.id, "agent:cmd", proc.stdout).catch((error) =>
     insertLog(flow.id, "agent:stderr", `stdout read failed: ${String(error)}\n`),
@@ -1613,7 +1648,7 @@ function stopServe() {
   previous.proc.kill();
   db.query("update flows set serving = 0").run();
   insertLog(previous.flowId, "serve", "\n[serve stopped by Turbopump]\n");
-  broadcast("flows", listFlows());
+  broadcast("flows", listClientFlows());
 }
 
 function startServe(flow: Flow) {
@@ -1841,7 +1876,7 @@ async function handleApi(request: Request, url: URL) {
         developerInstructions: getAgentDeveloperInstructionsTemplate(),
         defaultDeveloperInstructions: defaultAgentDeveloperInstructions,
       },
-      flows: listFlows(),
+      flows: listClientFlows(),
     });
   }
 
@@ -1931,7 +1966,7 @@ async function handleApi(request: Request, url: URL) {
     const body = await readJson<{ issueId?: string; stateId?: string }>(request);
     const result = await updateLinearIssueStatus(decodeURIComponent(parts[3]), body.issueId || "", body.stateId || "");
     if (result.flow) {
-      broadcast("flows", listFlows());
+      broadcast("flows", listClientFlows());
       broadcast("checkouts", listCheckouts());
     }
     return json({ ok: true, ...result });
@@ -1973,7 +2008,7 @@ async function handleApi(request: Request, url: URL) {
       insertLog(id, "flow", `Created checkout ${target}\nBranch ${branch}\n`);
       await syncLinearStatus(flow);
     }
-    broadcast("flows", listFlows());
+    broadcast("flows", listClientFlows());
     broadcast("checkouts", listCheckouts());
     return json({ ok: true, flow: getFlow(id) });
   }
@@ -2044,7 +2079,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "agent" && parts[4] === "status" && request.method === "GET") {
       const reconciled = reconcileAgentHeartbeat(flow);
       return json({
-        flow: reconciled,
+        flow: runtimeAdjustedFlow(reconciled),
         turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId),
       });
     }
@@ -2089,7 +2124,7 @@ async function handleApi(request: Request, url: URL) {
 
     if (parts[3] === "linear-sync" && request.method === "POST") {
       await syncLinearStatus(flow);
-      broadcast("flows", listFlows());
+      broadcast("flows", listClientFlows());
       broadcast("checkouts", listCheckouts());
       return json({ ok: true, flow: getFlow(id) });
     }
