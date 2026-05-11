@@ -576,6 +576,10 @@ body.theme-dark .terminal-trace-count {
   color: var(--muted);
 }
 
+body.theme-dark .terminal-entry-shell .terminal-entry-marker {
+  color: #22c55e;
+}
+
 body.theme-dark .terminal-entry-user .terminal-entry-marker,
 body.theme-dark .terminal-entry-user .terminal-entry-label,
 body.theme-dark .terminal-entry-warning .terminal-entry-marker,
@@ -1941,6 +1945,11 @@ body.flow-resizing {
 
 .terminal-entry-shell .terminal-entry-marker {
   color: #22c55e;
+}
+
+.terminal-entry-shell.terminal-entry-command .terminal-command-line,
+.terminal-entry-shell.terminal-entry-command .terminal-entry-body {
+  font-size: 12px;
 }
 
 .terminal-entry {

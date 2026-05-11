@@ -218,6 +218,8 @@ type RuntimeProcess = {
   >;
 };
 
+type RuntimeSignal = "SIGINT" | "SIGTERM" | "SIGKILL";
+
 type ServerWebSocket = {
   send: (message: string) => void;
 };
@@ -803,6 +805,38 @@ async function streamProcessOutput(
   }
   const remainder = decoder.decode();
   if (remainder) insertLog(flowId, source, remainder);
+}
+
+function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
+  let signaled = false;
+  try {
+    process.kill(-runtime.proc.pid, signal);
+    signaled = true;
+  } catch {
+    // The process may not be a process-group leader, or it may already be gone.
+  }
+  try {
+    runtime.proc.kill(signal);
+    signaled = true;
+  } catch {
+    // The group signal above may already have handled it.
+  }
+  return signaled;
+}
+
+function scheduleShellInterruptEscalation(flowId: string, runtime: RuntimeProcess) {
+  setTimeout(() => {
+    if (shellProcesses.get(flowId) !== runtime) return;
+    insertLog(flowId, "agent:status", "shell interrupt escalated");
+    signalRuntimeProcess(runtime, "SIGTERM");
+  }, 1500);
+  setTimeout(() => {
+    if (shellProcesses.get(flowId) !== runtime) return;
+    insertLog(flowId, "agent:status", "shell interrupt forced cleanup");
+    signalRuntimeProcess(runtime, "SIGKILL");
+    shellProcesses.delete(flowId);
+    updateFlow(flowId, { agentStatus: "idle" });
+  }, 3500);
 }
 
 function writeCodexMessage(runtime: RuntimeProcess, message: Record<string, unknown>) {
@@ -1503,6 +1537,7 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
     env: runtimeEnv(flow),
+    detached: true,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -1510,12 +1545,16 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   const runtime: RuntimeProcess = { flowId: flow.id, kind: "shell", proc, command };
   shellProcesses.set(flow.id, runtime);
 
-  const stdoutDone = streamProcessOutput(flow.id, "agent:cmd", proc.stdout);
-  const stderrDone = streamProcessOutput(flow.id, "agent:stderr", proc.stderr);
+  const stdoutDone = streamProcessOutput(flow.id, "agent:cmd", proc.stdout).catch((error) =>
+    insertLog(flow.id, "agent:stderr", `stdout read failed: ${String(error)}\n`),
+  );
+  const stderrDone = streamProcessOutput(flow.id, "agent:stderr", proc.stderr).catch((error) =>
+    insertLog(flow.id, "agent:stderr", `stderr read failed: ${String(error)}\n`),
+  );
+  void Promise.all([stdoutDone, stderrDone]);
 
   try {
     const code = await proc.exited;
-    await Promise.all([stdoutDone, stderrDone]);
     insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`);
     updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
   } finally {
@@ -1534,7 +1573,8 @@ function interruptShellCommand(flowId: string) {
   } catch {
     // Some commands close stdin before exiting; SIGINT below is the fallback.
   }
-  runtime.proc.kill("SIGINT");
+  signalRuntimeProcess(runtime, "SIGINT");
+  scheduleShellInterruptEscalation(flowId, runtime);
   return true;
 }
 
