@@ -541,9 +541,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");
     expect(app).toContain('["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain('document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre")');
-    expect(app).toContain("function renderTerminalMarkdownOutput(message)");
+    expect(app).toContain("function usesTerminalMarkdownToggle(source)");
+    expect(app).toContain('["agent", "agent:message"].includes(source)');
+    expect(app).toContain("function renderTerminalMarkdownOutput(message, showToggle = false)");
     expect(app).toContain('class="terminal-markdown-toggle"');
-    expect(app).toContain('><div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown');
+    expect(app).toContain('return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown');
+    expect(app).toContain("renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source))");
     expect(app).toContain("function toggleTerminalMarkdownOutput(button)");
     expect(app).toContain('event.target.closest(".terminal-markdown-toggle")');
     expect(app).toContain("function highlightCodeBlocks(root)");
@@ -557,6 +560,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-markdown h1,");
     expect(css).toContain("margin: 6px 0 2px;");
     expect(css).toContain(".linear-markdown a,\n.terminal-entry-body a");
+    expect(css).toContain("color: var(--link);\n  font-weight: 700;\n  overflow-wrap: anywhere;\n  text-decoration: none;");
     expect(css).toContain(".linear-markdown ul,\n.linear-markdown ol {\n  margin: 4px 0 4px 18px;");
     expect(css).toContain(".terminal-entry-body ul,\n.terminal-entry-body ol {\n  margin: 4px 0;\n  padding-left: 3ch;");
     expect(css).toContain(".terminal-entry-body ul {\n  padding-left: 2ch;");
@@ -953,7 +957,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('log.source === "flow" && /^stage changed\\b/i.test(message)');
     expect(app).toContain('log.source === "agent:tool-result" && message === "completed exit 0"');
     expect(app).toContain('log.source === "agent:tool-result" && message === "failed exit 7"');
-    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log))) continue;');
+    expect(app).toContain("function isRoutineShellExitLog(log)");
+    expect(app).toContain('String(log.message || "").trim() === "completed exit 0"');
+    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log) && !isRoutineShellExitLog(log))) continue;');
   });
 
   test("renders command execution logs as a single shell prompt line", () => {
@@ -1038,6 +1044,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('insertLog(\n    flowId,\n    "agent:trace-group",');
     expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
     expect(server).toContain('function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "")');
+    expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
     expect(server).toContain("function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number)");
     expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string)");
@@ -1052,15 +1059,21 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function parseTraceGroup(log)");
     expect(app).toContain("function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges)");
     expect(app).toContain("function syntheticShellTraceRanges(logs, existingRanges)");
+    expect(app).toContain("function latestInputLogId(logs)");
+    expect(app).toContain('if (log.source !== "user" && log.source !== "shell:command") continue;');
+    expect(app).toContain("const latestInputId = latestInputLogId(normalizedLogs);");
+    expect(app).toContain('defaultOpen: traceRange.kind === "shell" && traceRange.afterId === latestInputId');
+    expect(app).toContain("group.defaultOpen || (group.flowId && group.traceKey");
     expect(app).toContain("function syntheticSteerTraceRanges(logs, existingRanges)");
     expect(app).toContain("function isTurnCompletedLog(log)");
     expect(app).toContain("function isShellExitLog(log)");
+    expect(app).toContain("function isRoutineShellExitLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
     expect(app).toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
     expect(app).toContain("const shellTraceRanges = syntheticShellTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]);");
     expect(app).toContain('kind: typeof payload.kind === "string" ? payload.kind : ""');
     expect(app).toContain('ranges.push({ afterId, beforeId, count, key, kind: "shell" });');
-    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log))) continue;');
+    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log) && !isRoutineShellExitLog(log))) continue;');
     expect(app).toContain("...runtimeDisappearedTraceRanges,");
     expect(app).toContain("...shellTraceRanges,");
     expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges, ...shellTraceRanges]),");
@@ -1195,6 +1208,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function inputHistoryMode()");
     expect(app).toContain('return state.inputMode === "command" ? "shell" : "prompt";');
     expect(app).toContain("function rememberInputHistory(value, mode = inputHistoryMode(), orderValue = Date.now())");
+    expect(app).toContain("function shouldRememberInputHistoryItem(item, mode)");
+    expect(app).toContain('return !(mode === "prompt" && item.startsWith("/"));');
+    expect(app).toContain("if (!shouldRememberInputHistoryItem(item, mode)) return;");
     expect(app).toContain("function rememberLogHistory(log)");
     expect(app).toContain("function inputHistoryOrder(mode = inputHistoryMode())");
     expect(app).toContain("function inputHistoryLogOrder(log)");

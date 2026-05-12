@@ -1533,12 +1533,10 @@ body.flow-resizing {
 
 .linear-markdown a,
 .terminal-entry-body a {
-  color: var(--accent);
+  color: var(--link);
   font-weight: 700;
   overflow-wrap: anywhere;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
+  text-decoration: none;
   transition:
     color var(--motion-fast),
     opacity var(--motion-fast);

@@ -353,9 +353,14 @@ function sortInputHistory(mode = inputHistoryMode()) {
   saveInputHistory(mode);
 }
 
+function shouldRememberInputHistoryItem(item, mode) {
+  return !(mode === "prompt" && item.startsWith("/"));
+}
+
 function rememberInputHistory(value, mode = inputHistoryMode(), orderValue = Date.now()) {
   const item = value.trim();
   if (!item) return;
+  if (!shouldRememberInputHistoryItem(item, mode)) return;
   const history = inputHistory(mode);
   const order = inputHistoryOrder(mode);
   const existingIndex = history.indexOf(item);
@@ -2205,6 +2210,10 @@ function isShellExitLog(log) {
   return log.source === "agent:tool-result" && /^(completed|interrupted|failed) exit \d+\b/.test(String(log.message || "").trim());
 }
 
+function isRoutineShellExitLog(log) {
+  return log.source === "agent:tool-result" && String(log.message || "").trim() === "completed exit 0";
+}
+
 function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
@@ -2284,6 +2293,16 @@ function traceRangeForLog(log, ranges) {
   return ranges.find((range) => log.id > range.afterId && log.id < range.beforeId) || null;
 }
 
+function latestInputLogId(logs) {
+  let id = 0;
+  for (const log of logs) {
+    if (log.source !== "user" && log.source !== "shell:command") continue;
+    const logId = Number(log.id);
+    if (Number.isFinite(logId) && logId > id) id = logId;
+  }
+  return id;
+}
+
 function appendTerminalGroup(groups, log) {
   const previous = groups[groups.length - 1];
   if (previous && previous.source === log.source && isStreamingSource(log.source)) {
@@ -2323,6 +2342,7 @@ function isHiddenTerminalLog(log) {
 function terminalGroups(logs) {
   const groups = [];
   const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
+  const latestInputId = latestInputLogId(normalizedLogs);
   const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
   const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
   const shellTraceRanges = syntheticShellTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]);
@@ -2344,7 +2364,7 @@ function terminalGroups(logs) {
       continue;
     }
     const traceRange = traceRangeForLog(log, traceRanges);
-    if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log))) continue;
+    if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log) && !isRoutineShellExitLog(log))) continue;
     if (traceRange) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
@@ -2356,6 +2376,9 @@ function terminalGroups(logs) {
           message: "",
           createdAt: log.createdAt,
           lastAt: log.createdAt,
+          traceAfterId: traceRange.afterId,
+          traceKind: traceRange.kind,
+          defaultOpen: traceRange.kind === "shell" && traceRange.afterId === latestInputId,
           children: [],
         };
         traceGroups.set(traceRange.key, traceGroup);
@@ -2382,8 +2405,15 @@ function usesTerminalBlockMarkdown(source) {
   return ["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
 
-function renderTerminalMarkdownOutput(message) {
-  return `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Show raw markdown" title="Show raw markdown">Raw</button><div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true })}</div>`;
+function usesTerminalMarkdownToggle(source) {
+  return ["agent", "agent:message"].includes(source);
+}
+
+function renderTerminalMarkdownOutput(message, showToggle = false) {
+  const toggle = showToggle
+    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Show raw markdown" title="Show raw markdown">Raw</button>`
+    : "";
+  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true })}</div>`;
 }
 
 function ansiClassForCode(code) {
@@ -2535,7 +2565,7 @@ function appendTerminalBlock(fragment, group) {
   const message = formatTerminalMessage(group.source, group.message);
   if (usesTerminalBlockMarkdown(group.source)) {
     body.classList.add("terminal-markdown-output");
-    body.innerHTML = renderTerminalMarkdownOutput(message);
+    body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
     highlightCodeBlocks(body);
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
     renderAnsiText(body, message);
@@ -2644,7 +2674,7 @@ function openTraceGroupKeys(flowId) {
 }
 
 function isTerminalTraceGroupOpen(group) {
-  return Boolean(group.flowId && group.traceKey && state.openTraceGroups.get(group.flowId)?.has(group.traceKey));
+  return Boolean(group.defaultOpen || (group.flowId && group.traceKey && state.openTraceGroups.get(group.flowId)?.has(group.traceKey)));
 }
 
 function setTerminalTraceGroupOpen(details, open) {
