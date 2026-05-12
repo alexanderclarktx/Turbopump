@@ -2805,6 +2805,14 @@ async function pollAgentWorkingFlow() {
     return;
   }
   if (state.messageSubmitting || state.interruptSubmitting) {
+    state.agentWorkingPollInFlight = true;
+    try {
+      await loadLogs(flowId);
+    } catch {
+      // Keep the polling loop alive; transient fetch failures should not freeze the indicator.
+    } finally {
+      state.agentWorkingPollInFlight = false;
+    }
     scheduleAgentWorkingPoll(flowId);
     return;
   }
@@ -3249,9 +3257,13 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   hideSlashMenu();
   renderTickets();
   renderFlowPane();
+  let submittedFlowId = "";
   try {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
+    submittedFlowId = flow.id;
+    renderFlowPane();
+    scheduleAgentWorkingPoll(flow.id);
     if (command === null) {
       await api(`/api/flows/${flow.id}/message`, {
         method: "POST",
@@ -3266,6 +3278,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
+    if (submittedFlowId) await loadLogs(submittedFlowId);
     renderTickets();
     renderFlowPane();
     els.flowPane.querySelector(".message-input").focus();

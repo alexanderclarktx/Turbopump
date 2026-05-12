@@ -110,8 +110,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("body.theme-dark .ticket-status-separator {\n  color: var(--muted);\n}");
     expect(css).toContain("body.theme-dark .ticket-title {\n  color: var(--terminal-ink);\n}");
     expect(css).toContain("body.theme-dark .terminal-entry-user .terminal-entry-body {\n  color: var(--terminal-ink);");
-    expect(css).toContain("body.theme-dark .terminal-entry-user .terminal-entry-marker");
-    expect(css).toContain("body.theme-dark .terminal-entry-user .terminal-entry-label");
+    expect(css).toContain(".terminal-entry-user .terminal-entry-marker,\n.terminal-entry-user .terminal-entry-label {\n  color: #d97706;\n}");
+    expect(css).toContain("body.theme-dark .terminal-entry-user .terminal-entry-marker,\nbody.theme-dark .terminal-entry-user .terminal-entry-label {\n  color: #fbbf24;\n}");
   });
 
   test("keeps Linear connection state pill from being selected", () => {
@@ -349,6 +349,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".agent-panel.disabled .terminal,\n.agent-panel.disabled .message-form {\n  display: none;");
     expect(css).toContain(".message-form.input-disabled {\n  border-top-color: var(--line-strong);");
     expect(css).not.toContain(".message-form.input-disabled::after");
+    expect(css).not.toContain(".message-form.input-disabled .agent-context");
     expect(css).toContain(".message-form.input-disabled .message-input");
     expect(css).toContain("border-color: var(--line-strong);\n  background: var(--panel);");
   });
@@ -560,7 +561,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-markdown h1,");
     expect(css).toContain("margin: 6px 0 2px;");
     expect(css).toContain(".linear-markdown a,\n.terminal-entry-body a");
-    expect(css).toContain("color: var(--link);\n  font-weight: 700;\n  overflow-wrap: anywhere;\n  text-decoration: none;");
+    expect(css).toContain("color: #3b82f6;\n  font-weight: 700;\n  overflow-wrap: anywhere;\n  text-decoration: none;");
+    expect(css).toContain("body.theme-dark .linear-markdown a,\nbody.theme-dark .terminal-entry-body a {\n  color: #93c5fd;\n}");
     expect(css).toContain(".linear-markdown ul,\n.linear-markdown ol {\n  margin: 4px 0 4px 18px;");
     expect(css).toContain(".terminal-entry-body ul,\n.terminal-entry-body ol {\n  margin: 4px 0;\n  padding-left: 3ch;");
     expect(css).toContain(".terminal-entry-body ul {\n  padding-left: 2ch;");
@@ -816,6 +818,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function syncAgentWorkingPoll(flowId, agentWorking)");
     expect(app).toContain("function pollAgentWorkingFlow()");
     expect(app).toContain('const data = await api(`/api/flows/${flowId}/agent/status`);');
+    expect(app).toContain("if (state.messageSubmitting || state.interruptSubmitting) {\n    state.agentWorkingPollInFlight = true;");
+    expect(app).toContain("await loadLogs(flowId);");
     expect(app).toContain("terminal-entry-working-${runtimeKind}");
     expect(app).toContain('runtimeKind === "shell" ? "shell-working" : "agent-turn-working"');
     expect(app).toContain('runtimeKind === "shell" ? "Shell command running" : "Agent working"');
@@ -851,6 +855,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (state.messageSubmitting) return;");
     expect(app).toContain("state.messageSubmitting = true;");
     expect(app).toContain("const flow = await ensureSelectedFlow();");
+    expect(app).toContain("submittedFlowId = flow.id;");
+    expect(app).toContain("scheduleAgentWorkingPoll(flow.id);");
+    expect(app).toContain("if (submittedFlowId) await loadLogs(submittedFlowId);");
     expect(app).toContain('await api(`/api/flows/${flow.id}/message`, {');
     expect(app).toContain("/agent/interrupt");
     expect(server).toContain("const agentHeartbeatSweepIntervalMs = 5000;");
