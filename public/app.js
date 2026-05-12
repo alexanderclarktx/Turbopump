@@ -870,8 +870,13 @@ function applySettingsSectionState(section) {
   section.querySelector(".settings-section-toggle")?.setAttribute("aria-expanded", String(!collapsed));
 }
 
+function resetSettingsHorizontalScroll() {
+  if (els.settingsContent.scrollLeft !== 0) els.settingsContent.scrollLeft = 0;
+}
+
 function renderSettingsSections() {
   els.settingsContent.querySelectorAll(".settings-section").forEach(applySettingsSectionState);
+  resetSettingsHorizontalScroll();
 }
 
 function toggleSettingsSection(section) {
@@ -901,6 +906,7 @@ function setSettingsCollapsed(collapsed) {
     els.settingsPane.removeAttribute("tabindex");
     els.settingsPane.removeAttribute("title");
     els.settingsPane.removeAttribute("role");
+    resetSettingsHorizontalScroll();
     void ensureCheckoutsLoaded();
   }
 }
@@ -1082,7 +1088,6 @@ function renderCheckoutCard(checkout) {
   meta.className = "checkout-meta";
   const fields = [
     ["Linear", renderLinearStatusIcon(checkout.linearStatus)],
-    ["Phase", checkout.flowPhase || "No flow"],
     ["Last prompt", formatCheckoutTimestamp(checkout.lastPromptAt)],
   ];
   for (const [label, value] of fields) {
@@ -2996,6 +3001,8 @@ els.settingsContent.addEventListener("click", (event) => {
   if (!toggle) return;
   toggleSettingsSection(toggle.closest(".settings-section"));
 });
+
+els.settingsContent.addEventListener("scroll", resetSettingsHorizontalScroll);
 
 els.repoUrl.addEventListener("input", () => {
   scheduleRepoConfigSave();

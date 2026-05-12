@@ -196,6 +196,7 @@ body.settings-collapsed main {
 
 .sidebar {
   position: relative;
+  box-sizing: border-box;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   align-content: start;
@@ -302,15 +303,19 @@ body.theme-dark .theme-icon-moon {
 .settings-content {
   display: grid;
   align-content: start;
+  box-sizing: border-box;
   gap: 18px;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-x: none;
   opacity: 1;
-  transform: translateX(0);
   visibility: visible;
   transition:
     opacity 140ms ease,
-    transform 180ms ease,
     visibility 0ms linear 0ms;
 }
 
@@ -362,11 +367,9 @@ body.settings-collapsed .settings-content {
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
-  transform: translateX(-10px);
   visibility: hidden;
   transition:
     opacity 100ms ease,
-    transform 180ms ease,
     visibility 0ms linear 180ms;
 }
 
@@ -650,12 +653,16 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .sidebar section {
+  box-sizing: border-box;
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .settings-section-toggle {
   display: flex;
+  box-sizing: border-box;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -672,7 +679,13 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   user-select: none;
 }
 
+.settings-section-toggle > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .settings-section-chevron {
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 16px;
   line-height: 1;
@@ -684,8 +697,11 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .settings-section-body {
+  box-sizing: border-box;
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .settings-section.collapsed .settings-section-body {
@@ -707,7 +723,18 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .sidebar label {
+  min-width: 0;
+  max-width: 100%;
   user-select: none;
+}
+
+.sidebar button,
+.sidebar input,
+.sidebar .pill,
+.sidebar textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .sidebar input,

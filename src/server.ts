@@ -109,24 +109,19 @@ const defaultAgentDeveloperInstructions = [
   "",
   "Work only in the checkout directory supplied as the current working directory.",
   "",
-  "In the planning stage, do not edit files. Focus on establishing task clarity.",
-  "",
-  "Flow stages are: planning -> working -> reviewing -> done.",
-  "",
   "Update flow metadata when appropriate by POSTing JSON to:",
   "{flowMetaApiUrl}",
-  'Example body: {"stage":"reviewing","prUrl":"https://github.com/org/repo/pull/123"}',
+  'Example body: {"prUrl":"https://github.com/org/repo/pull/123"}',
   'Each field in the body is optional.',
   "",
   "Flow ID: {flowId}",
   "Linear issue: {linearIssueId}",
   "Issue title: {title}",
-  "Current stage: {stage}",
   "Checkout path: {checkoutPath}",
   "",
   "working guidelines:",
-  "- pr names should be short and minimally capitalized",
-  "- don't set the flow phase to done unless told to"
+  "- use short PR titles",
+  "- do not capitalize the first word of PR titles"
 ].join("\n");
 
 mkdirSync(dataDir, { recursive: true });
@@ -296,7 +291,6 @@ function runtimeEnv(flow?: Flow) {
     ...parseEnv(readEnvFile()),
     FLOW_API_URL: apiBaseUrl,
     FLOW_RUN_ID: flow?.id ?? "",
-    FLOW_STAGE: flow?.stage ?? "",
   } as Record<string, string>;
 }
 
@@ -923,7 +917,6 @@ function agentTemplateContext(flow: Flow) {
     flowId: flow.id,
     linearIssueId: flow.linearIssueId,
     title: flow.title,
-    stage: flow.stage,
     prUrl: flow.prUrl,
     checkoutPath: flow.checkoutPath,
     flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/meta`,

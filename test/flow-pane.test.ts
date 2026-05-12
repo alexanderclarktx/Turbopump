@@ -196,11 +196,12 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('setSetting("agentDeveloperInstructions"');
     expect(server).not.toContain('setSetting("agentStartPrompt"');
     expect(server).not.toContain("buildAgentPrompt");
-    expect(server).toContain("Flow stages are: planning -> working -> reviewing -> done.");
     expect(server).toContain("flowMetaApiUrl");
-    expect(server).toContain('Example body: {"stage":"reviewing","prUrl":"https://github.com/org/repo/pull/123"}');
+    expect(server).toContain('Example body: {"prUrl":"https://github.com/org/repo/pull/123"}');
     expect(server).toContain("Each field in the body is optional.");
-    expect(server).toContain("stage: flow.stage,");
+    expect(server).not.toContain('"Current stage: {stage}"');
+    expect(server).not.toContain("FLOW_STAGE");
+    expect(server).not.toContain("stage: flow.stage,");
     expect(server).toContain("prUrl: flow.prUrl,");
   });
 
@@ -220,6 +221,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function renderLinearStatusIcon(status)");
     expect(app).toContain('<img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />');
     expect(app).toContain('["Linear", renderLinearStatusIcon(checkout.linearStatus)]');
+    expect(app).not.toContain('["Phase", checkout.flowPhase || "No flow"]');
     expect(app).toContain("function deleteCheckout(name)");
     expect(app).toContain("Date.parse(a.lastPromptAt || a.createdAt || 0)");
     expect(app).toContain("deletingCheckoutNames: new Set()");
@@ -294,6 +296,14 @@ describe("Turbopump pane markup", () => {
   test("prevents horizontal scrolling in Linear panes", () => {
     expect(css).toContain(".ticket-grid {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  overflow-x: hidden;\n  overflow-y: auto;");
     expect(css).toContain(".linear-detail {\n  display: grid;\n  align-content: start;\n  gap: 12px;\n  padding: 14px;\n  overflow-x: hidden;\n  overflow-y: auto;");
+  });
+
+  test("prevents horizontal scrolling in the Settings pane", () => {
+    expect(css).toContain(".settings-content {\n  display: grid;\n  align-content: start;\n  box-sizing: border-box;\n  gap: 18px;\n  min-height: 0;\n  min-width: 0;\n  width: 100%;\n  max-width: 100%;\n  overflow-x: hidden;\n  overflow-y: auto;\n  overscroll-behavior-x: none;");
+    expect(css).toContain(".sidebar button,\n.sidebar input,\n.sidebar .pill,\n.sidebar textarea {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;");
+    expect(css).toContain(".settings-section-toggle > span:first-child {\n  min-width: 0;\n  overflow-wrap: anywhere;");
+    expect(app).toContain("function resetSettingsHorizontalScroll()");
+    expect(app).toContain('els.settingsContent.addEventListener("scroll", resetSettingsHorizontalScroll);');
   });
 
   test("uses a vertical split flow pane instead of tabs", () => {
