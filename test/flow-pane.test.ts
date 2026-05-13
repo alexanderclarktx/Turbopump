@@ -216,7 +216,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function renderCheckouts()");
     expect(app).toContain("function renderCheckoutCard(checkout)");
     expect(app).toContain("function ensureCheckoutsLoaded()");
-    expect(app).toContain("void ensureCheckoutsLoaded();");
+    expect(app).toContain("function scheduleCheckoutsLoaded()");
+    expect(app).toContain("if (state.settingsCollapsed) return;");
+    expect(app).toContain("renderCheckouts();\n    scheduleCheckoutsLoaded();");
+    expect(app).toContain("scheduleCheckoutsLoaded();");
+    expect(app).toContain("checkoutLoadFrame = requestAnimationFrame");
     expect(app).toContain("state.checkoutsLoading = true;");
     expect(app).toContain("function renderLinearStatusIcon(status)");
     expect(app).toContain('<img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />');
@@ -304,6 +308,15 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".settings-section-toggle > span:first-child {\n  min-width: 0;\n  overflow-wrap: anywhere;");
     expect(app).toContain("function resetSettingsHorizontalScroll()");
     expect(app).toContain('els.settingsContent.addEventListener("scroll", resetSettingsHorizontalScroll);');
+  });
+
+  test("avoids layout animations when opening and closing Settings", () => {
+    expect(css).not.toContain("transition: grid-template-columns");
+    expect(css).not.toContain("grid-template-rows 180ms ease");
+    expect(css).not.toContain("padding 180ms ease");
+    expect(css).toContain(".sidebar {\n  position: relative;\n  box-sizing: border-box;");
+    expect(css).toContain("contain: layout style;");
+    expect(css).toContain("contain: layout paint style;");
   });
 
   test("uses a vertical split flow pane instead of tabs", () => {

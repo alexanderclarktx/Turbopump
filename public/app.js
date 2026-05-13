@@ -188,6 +188,7 @@ let repoConfigSaveTimer = 0;
 let agentConfigSaveTimer = 0;
 let envSaveTimer = 0;
 let diffModalTransitionTimer = 0;
+let checkoutLoadFrame = 0;
 let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
 let lastSavedEnv = "";
@@ -907,7 +908,8 @@ function setSettingsCollapsed(collapsed) {
     els.settingsPane.removeAttribute("title");
     els.settingsPane.removeAttribute("role");
     resetSettingsHorizontalScroll();
-    void ensureCheckoutsLoaded();
+    renderCheckouts();
+    scheduleCheckoutsLoaded();
   }
 }
 
@@ -1059,6 +1061,16 @@ async function ensureCheckoutsLoaded() {
   await loadCheckouts();
 }
 
+function scheduleCheckoutsLoaded() {
+  if (checkoutLoadFrame) return;
+  checkoutLoadFrame = requestAnimationFrame(() => {
+    checkoutLoadFrame = requestAnimationFrame(() => {
+      checkoutLoadFrame = 0;
+      void ensureCheckoutsLoaded();
+    });
+  });
+}
+
 async function deleteCheckout(name) {
   if (!name) return;
   await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
@@ -1140,6 +1152,7 @@ function renderCheckoutCard(checkout) {
 
 function renderCheckouts() {
   if (!els.checkoutList) return;
+  if (state.settingsCollapsed) return;
   if (state.checkoutsLoading) {
     const loading = document.createElement("p");
     loading.className = "note";

@@ -187,7 +187,6 @@ main {
   grid-template-columns: 320px 320px minmax(0, 1fr);
   height: 100vh;
   min-height: 0;
-  transition: grid-template-columns 180ms ease;
 }
 
 body.settings-collapsed main {
@@ -205,12 +204,10 @@ body.settings-collapsed main {
   border-top: 1px solid var(--line);
   border-right: 1px solid var(--line);
   background: #f8f9fb;
+  contain: layout style;
   overflow: hidden;
   min-height: 0;
   min-width: 0;
-  transition:
-    grid-template-rows 180ms ease,
-    padding 180ms ease;
 }
 
 .settings-header {
@@ -230,10 +227,7 @@ body.settings-collapsed main {
   overflow: hidden;
   white-space: nowrap;
   user-select: none;
-  transition:
-    opacity 140ms ease,
-    max-width 180ms ease,
-    transform 180ms ease;
+  transition: opacity 140ms ease;
 }
 
 .settings-toggle {
@@ -312,8 +306,10 @@ body.theme-dark .theme-icon-moon {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-x: none;
+  contain: layout paint style;
   opacity: 1;
   visibility: visible;
+  will-change: opacity;
   transition:
     opacity 140ms ease,
     visibility 0ms linear 0ms;
