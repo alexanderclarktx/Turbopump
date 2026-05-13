@@ -182,12 +182,14 @@ const els = {
   ticketGrid: document.querySelector("#ticketGrid"),
   flowPane: document.querySelector("#flowPane"),
   diffModal: document.querySelector("#diffModal"),
+  imagePreviewModal: document.querySelector("#imagePreviewModal"),
 };
 
 let repoConfigSaveTimer = 0;
 let agentConfigSaveTimer = 0;
 let envSaveTimer = 0;
 let diffModalTransitionTimer = 0;
+let imagePreviewTransitionTimer = 0;
 let checkoutLoadFrame = 0;
 let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
@@ -1343,6 +1345,40 @@ function hideDiffModal() {
     els.diffModal.hidden = true;
     els.diffModal.classList.remove("is-closing");
   }, 180);
+}
+
+function openImagePreview(src, alt = "") {
+  if (!els.imagePreviewModal || !src) return;
+  clearTimeout(imagePreviewTransitionTimer);
+  const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
+  const title = els.imagePreviewModal.querySelector("#imagePreviewTitle");
+  image.src = src;
+  image.alt = alt;
+  title.textContent = alt || "Image preview";
+  els.imagePreviewModal.hidden = false;
+  els.imagePreviewModal.classList.remove("is-closing");
+  requestAnimationFrame(() => els.imagePreviewModal.classList.add("is-open"));
+}
+
+function closeImagePreview() {
+  if (!els.imagePreviewModal || els.imagePreviewModal.hidden) return;
+  clearTimeout(imagePreviewTransitionTimer);
+  els.imagePreviewModal.classList.remove("is-open");
+  els.imagePreviewModal.classList.add("is-closing");
+  imagePreviewTransitionTimer = setTimeout(() => {
+    const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
+    image.removeAttribute("src");
+    image.alt = "";
+    els.imagePreviewModal.hidden = true;
+    els.imagePreviewModal.classList.remove("is-closing");
+  }, 180);
+}
+
+function handleImagePreviewClick(event) {
+  const link = event.target.closest?.("a[data-image-preview]");
+  if (!link) return;
+  event.preventDefault();
+  openImagePreview(link.href, link.dataset.imagePreviewAlt || link.querySelector("img")?.alt || "");
 }
 
 function diffLineClass(line) {
@@ -3322,6 +3358,10 @@ els.diffModal?.querySelector(".diff-modal-close")?.addEventListener("click", clo
 els.diffModal?.addEventListener("click", (event) => {
   if (event.target === els.diffModal) closeDiffViewer();
 });
+els.imagePreviewModal?.addEventListener("click", (event) => {
+  if (event.target === els.imagePreviewModal) closeImagePreview();
+});
+els.flowPane.addEventListener("click", handleImagePreviewClick);
 
 let titleResizeFrame = 0;
 window.addEventListener("resize", () => {
@@ -3330,6 +3370,11 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden) {
+    event.preventDefault();
+    closeImagePreview();
+    return;
+  }
   if (event.key === "Escape" && state.diffModalFlowId) {
     event.preventDefault();
     closeDiffViewer();

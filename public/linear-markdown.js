@@ -343,7 +343,7 @@ export function renderInlineMarkdown(value, options = {}) {
       html += `<strong>${escapeHtml(bold)}</strong>`;
     } else if (imageMarker && images) {
       const imageSrc = linearImageSource(url);
-      html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" target="_blank" rel="noreferrer"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;
+      html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" data-image-preview data-image-preview-alt="${escapeAttribute(label || "Linear attachment")}"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;
     } else if (links) {
       html += `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(label || url)}</a>`;
     } else {

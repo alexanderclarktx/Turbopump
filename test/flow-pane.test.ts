@@ -560,6 +560,25 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain(".linear-comment {\n  display: grid;\n  justify-items: start;\n  gap: 7px;\n  border-top:");
   });
 
+  test("opens Markdown images in an in-app preview modal", () => {
+    expect(html).toContain('class="image-preview-backdrop" id="imagePreviewModal" hidden');
+    expect(html).toContain('class="image-preview-modal" role="dialog" aria-modal="true" aria-labelledby="imagePreviewTitle"');
+    expect(html).not.toContain("image-preview-close");
+    expect(markdown).toContain("data-image-preview");
+    expect(markdown).not.toContain('target="_blank" rel="noreferrer"><img src="${escapeAttribute(imageSrc)}"');
+    expect(app).toContain("imagePreviewModal: document.querySelector");
+    expect(app).toContain("function openImagePreview(src, alt = \"\")");
+    expect(app).toContain('const link = event.target.closest?.("a[data-image-preview]");');
+    expect(app).toContain('els.flowPane.addEventListener("click", handleImagePreviewClick);');
+    expect(app).not.toContain(".image-preview-close");
+    expect(app).toContain('if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden)');
+    expect(css).toContain(".image-preview-backdrop");
+    expect(css).toContain(".image-preview-backdrop.is-open");
+    expect(css).toContain("padding: 8px 14px;");
+    expect(css).toContain(".image-preview-frame img");
+    expect(css).toContain("cursor: zoom-in;");
+  });
+
   test("renders Markdown headings, inline formatting, and code blocks in Linear and Agent panes", () => {
     expect(app).toContain('import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js";');
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");

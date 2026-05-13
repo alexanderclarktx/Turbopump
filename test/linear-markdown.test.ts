@@ -32,7 +32,9 @@ describe("renderLinearMarkdown", () => {
 
     expect(html).toContain('<figure class="linear-image">');
     expect(html).toContain(`src="${proxied}"`);
+    expect(html).toContain(`href="${proxied}" data-image-preview data-image-preview-alt="Screenshot"`);
     expect(html).toContain('alt="Screenshot"');
+    expect(html).not.toContain('target="_blank"');
     expect(html).not.toContain("\n        <figure");
   });
 
