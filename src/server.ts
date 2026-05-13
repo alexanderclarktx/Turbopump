@@ -430,6 +430,7 @@ function listCheckouts() {
 
 async function refreshCheckoutLinearStatuses() {
   if (!linearAuthHeader()) return;
+  if (linearBackoffRemainingMs() > 0) return;
   const flowsByCheckout = checkoutFlowMap();
   const checkoutNames = new Set(
     readdirSync(checkoutDir, { withFileTypes: true })
@@ -439,7 +440,14 @@ async function refreshCheckoutLinearStatuses() {
   const flows = [...flowsByCheckout.entries()]
     .filter(([name]) => checkoutNames.has(name))
     .map(([, flow]) => flow);
-  await Promise.allSettled(flows.map((flow) => syncLinearStatus(flow)));
+  for (const flow of flows) {
+    try {
+      await syncLinearStatus(flow);
+    } catch (error) {
+      if (error instanceof LinearUnavailableError) return;
+      throw error;
+    }
+  }
 }
 
 function checkoutPathForName(name: string) {
@@ -700,6 +708,42 @@ function linearAuthHeader(apiKey = getSetting("linearApiKey")) {
   return apiKey;
 }
 
+class LinearUnavailableError extends Error {
+  status = 503;
+}
+
+const linearUnavailableBackoffMs = 30_000;
+let linearUnavailableUntil = 0;
+let lastLinearUnavailableWarningAt = 0;
+
+function isLinearNetworkError(error: unknown) {
+  const value = error as { code?: unknown; message?: unknown; path?: unknown };
+  const text = `${String(value?.code || "")} ${String(value?.message || "")} ${String(value?.path || "")}`;
+  return /api\.linear\.app|FailedToOpenSocket|ConnectionRefused|Unable to connect/i.test(text);
+}
+
+function linearBackoffRemainingMs() {
+  return Math.max(0, linearUnavailableUntil - Date.now());
+}
+
+function markLinearUnavailable() {
+  linearUnavailableUntil = Date.now() + linearUnavailableBackoffMs;
+}
+
+function throwIfLinearUnavailable() {
+  const remaining = linearBackoffRemainingMs();
+  if (remaining > 0) {
+    throw new LinearUnavailableError(`Linear is temporarily unreachable. Retrying allowed in ${Math.ceil(remaining / 1000)}s.`);
+  }
+}
+
+function logLinearUnavailable(error: unknown) {
+  const nowMs = Date.now();
+  if (nowMs - lastLinearUnavailableWarningAt < linearUnavailableBackoffMs) return;
+  lastLinearUnavailableWarningAt = nowMs;
+  console.warn(error instanceof Error ? error.message : String(error));
+}
+
 function linearConfigPayload() {
   const hasApiKey = Boolean(getSetting("linearApiKey"));
   return {
@@ -715,15 +759,25 @@ async function linearGraphql<T>(query: string, variables: Record<string, unknown
     throw new Error("Linear is not connected. Add your Linear API key in the top-right Linear configuration.");
   }
 
-  const response = await fetch("https://api.linear.app/graphql", {
-    method: "POST",
-    headers: {
-      authorization,
-      "content-type": "application/json",
-      "public-file-urls-expire-in": "3600",
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  throwIfLinearUnavailable();
+  let response: Response;
+  try {
+    response = await fetch("https://api.linear.app/graphql", {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+        "public-file-urls-expire-in": "3600",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+  } catch (error) {
+    if (isLinearNetworkError(error)) {
+      markLinearUnavailable();
+      throw new LinearUnavailableError("Linear is unreachable. Check your network connection.");
+    }
+    throw error;
+  }
   const body = (await response.json().catch(() => ({}))) as {
     data?: T;
     errors?: { message: string }[];
@@ -1728,6 +1782,7 @@ async function syncLinearStatus(flow: Flow) {
       linearStatus: issue.state?.name || "",
     });
   } catch (error) {
+    if (error instanceof LinearUnavailableError) throw error;
     insertLog(flow.id, "linear", `[linear sync failed] ${String(error)}\n`);
   }
 }
@@ -2226,8 +2281,15 @@ Bun.serve({
       if (url.pathname.startsWith("/api/")) return await handleApi(request, url);
       return await serveStatic(url);
     } catch (error) {
-      console.error(error);
-      return json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+      if (error instanceof LinearUnavailableError) {
+        logLinearUnavailable(error);
+      } else {
+        console.error(error);
+      }
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: error instanceof LinearUnavailableError ? error.status : 500 },
+      );
     }
   },
   websocket: {

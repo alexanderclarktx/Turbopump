@@ -247,11 +247,27 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("Date.parse(a.lastPromptAt || a.createdAt || \"\")");
     expect(server).toContain("async function refreshCheckoutLinearStatuses()");
     expect(server).toContain("await refreshCheckoutLinearStatuses();");
+    expect(server).toContain("if (linearBackoffRemainingMs() > 0) return;");
+    expect(server).toContain("for (const flow of flows) {");
+    expect(server).toContain("if (error instanceof LinearUnavailableError) return;");
     expect(server).toContain("latestPromptTimestamp(flow.id)");
     expect(server).toContain('url.pathname === "/api/checkouts"');
     expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
     expect(server).toContain("function deleteCheckout(name: string)");
     expect(server).toContain("rmSync(target, { recursive: true, force: true });");
+  });
+
+  test("backs off noisy Linear connectivity failures", () => {
+    expect(server).toContain("class LinearUnavailableError extends Error");
+    expect(server).toContain("const linearUnavailableBackoffMs = 30_000;");
+    expect(server).toContain("function isLinearNetworkError(error: unknown)");
+    expect(server).toContain("FailedToOpenSocket|ConnectionRefused|Unable to connect");
+    expect(server).toContain("function throwIfLinearUnavailable()");
+    expect(server).toContain("markLinearUnavailable();");
+    expect(server).toContain('throw new LinearUnavailableError("Linear is unreachable. Check your network connection.");');
+    expect(server).toContain("function logLinearUnavailable(error: unknown)");
+    expect(server).toContain("if (error instanceof LinearUnavailableError) {\n        logLinearUnavailable(error);");
+    expect(server).toContain("{ status: error instanceof LinearUnavailableError ? error.status : 500 }");
   });
 
   test("keeps refresh buttons visually quiet", () => {
