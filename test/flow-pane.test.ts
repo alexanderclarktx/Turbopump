@@ -1054,7 +1054,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function scrollTerminalToLatest(terminal)");
     expect(app).toContain("requestAnimationFrame(() =>");
     expect(app).toContain("terminal.scrollTop = terminal.scrollHeight;");
-    expect(app).toContain('hour: "numeric"');
+    expect(app).toContain("function formatTerminalTimestamp(value)");
+    expect(app).toContain("function terminalDateLabel(date, now = new Date())");
+    expect(app).toContain("return `${days}d ago`;");
+    expect(app).toContain('return dateLabel ? `${time} (${dateLabel})` : time;');
+    expect(app).toContain("time.textContent = formatTerminalTimestamp(group.createdAt);");
     expect(css).toContain(".terminal-entry-time {\n  margin-left: auto;\n  color: #94a3b8;\n  font-size: 11px;");
     expect(app).toContain("function terminalDistanceFromBottom(terminal)");
     expect(app).toContain("return terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;");

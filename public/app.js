@@ -2419,6 +2419,27 @@ function formatTerminalMessage(source, message) {
   return text.replace(/^\n+/, "").replace(/\n+$/, "");
 }
 
+function localDayStart(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function terminalDateLabel(date, now = new Date()) {
+  const days = Math.floor((localDayStart(now) - localDayStart(date)) / 86_400_000);
+  if (days <= 0) return "";
+  return `${days}d ago`;
+}
+
+function formatTerminalTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  }).replace(/\s+([AP]M)$/i, "$1").toLowerCase();
+  const dateLabel = terminalDateLabel(date);
+  return dateLabel ? `${time} (${dateLabel})` : time;
+}
+
 function usesTerminalBlockMarkdown(source) {
   return ["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
@@ -2571,11 +2592,7 @@ function appendTerminalBlock(fragment, group) {
     time = document.createElement("time");
     time.className = "terminal-entry-time";
     time.dateTime = group.createdAt;
-    time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    time.textContent = formatTerminalTimestamp(group.createdAt);
   }
 
   const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
@@ -2666,11 +2683,7 @@ function appendTerminalTraceGroup(fragment, group) {
   const time = document.createElement("time");
   time.className = "terminal-entry-time";
   time.dateTime = group.createdAt;
-  time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  time.textContent = formatTerminalTimestamp(group.createdAt);
 
   summary.addEventListener("click", (event) => {
     event.preventDefault();
