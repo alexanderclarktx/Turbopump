@@ -586,6 +586,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-markdown a,\n.terminal-entry-body a");
     expect(css).toContain("color: #3b82f6;\n  font-weight: 700;\n  overflow-wrap: anywhere;\n  text-decoration: none;");
     expect(css).toContain("body.theme-dark .linear-markdown a,\nbody.theme-dark .terminal-entry-body a {\n  color: #93c5fd;\n}");
+    expect(css).toContain(".linear-markdown table {\n  display: block;");
+    expect(css).toContain(".linear-markdown th,\n.linear-markdown td");
+    expect(css).toContain("body.theme-dark .linear-markdown th");
     expect(css).toContain(".linear-markdown ul,\n.linear-markdown ol {\n  margin: 4px 0 4px 18px;");
     expect(css).toContain(".terminal-entry-body ul,\n.terminal-entry-body ol {\n  margin: 4px 0;\n  padding-left: 3ch;");
     expect(css).toContain(".terminal-entry-body ul {\n  padding-left: 2ch;");

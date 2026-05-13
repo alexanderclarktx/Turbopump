@@ -82,6 +82,26 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("1. first");
   });
 
+  test("renders Markdown tables", () => {
+    const html = renderLinearMarkdown("confirmed\n| before | after |\n| -- | -- |\n| one | **two** |");
+
+    expect(html).toContain("confirmed<table>");
+    expect(html).toContain("<thead><tr><th>before</th><th>after</th></tr></thead>");
+    expect(html).toContain("<tbody><tr><td>one</td><td><strong>two</strong></td></tr></tbody>");
+    expect(html).not.toContain("| before | after |");
+    expect(html).not.toContain("| -- | -- |");
+  });
+
+  test("renders images inside Markdown table cells", () => {
+    const url = "https://uploads.linear.app/workspace/file/before.png";
+    const html = renderLinearMarkdown(`| before | after |\n| -- | -- |\n| ![Before](${url}) | done |`);
+
+    expect(html).toContain("<table>");
+    expect(html).toContain("<td><figure class=\"linear-image\">");
+    expect(html).toContain(`src="/api/linear/attachment?url=${encodeURIComponent(url)}"`);
+    expect(html).toContain("<td>done</td>");
+  });
+
   test("keeps repeated ordered list markers numbered across nested bullets", () => {
     const html = renderLinearMarkdown("Plan:\n1. Add\n   - legacy\n   - image\n\n1. Update\n   - top\n\n1. Validate");
 

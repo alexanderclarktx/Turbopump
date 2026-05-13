@@ -25,6 +25,13 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
       continue;
     }
 
+    if (isTableStart(lines, index)) {
+      const parsed = renderTable(lines, index, { images, links });
+      blocks.push(parsed.html);
+      index = parsed.index;
+      continue;
+    }
+
     const list = matchListLine(line);
     if (list) {
       const orderedKey = String(list.indent);
@@ -49,6 +56,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
         !current.trim() ||
         matchCodeFenceStart(current) ||
         /^(#{1,6})\s+(.+)$/.test(current) ||
+        isTableStart(lines, index) ||
         /^\s*(?:[-*+]|\d+[.)])\s+(.+)$/.test(current)
       ) {
         break;
@@ -110,6 +118,93 @@ function prismLanguageName(language) {
     yml: "yaml",
   };
   return aliases[normalized] ?? normalized;
+}
+
+function isTableStart(lines, index) {
+  if (index + 1 >= lines.length) return false;
+  const header = parseTableRow(lines[index]);
+  const delimiter = parseTableDelimiter(lines[index + 1]);
+  return Boolean(header && delimiter && header.length === delimiter.length);
+}
+
+function renderTable(lines, startIndex, options) {
+  const header = parseTableRow(lines[startIndex]);
+  const alignments = parseTableDelimiter(lines[startIndex + 1]);
+  const rows = [];
+  let index = startIndex + 2;
+
+  while (index < lines.length) {
+    const row = parseTableRow(lines[index]);
+    if (!row) break;
+    rows.push(row);
+    index += 1;
+  }
+
+  const headerHtml = header
+    .map((cell, cellIndex) => renderTableCell("th", cell, alignments[cellIndex], options))
+    .join("");
+  const bodyHtml = rows
+    .map((row) => {
+      const cells = alignments.map((alignment, cellIndex) =>
+        renderTableCell("td", row[cellIndex] || "", alignment, options),
+      );
+      return `<tr>${cells.join("")}</tr>`;
+    })
+    .join("");
+
+  return {
+    html: `<table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
+    index,
+  };
+}
+
+function renderTableCell(tag, value, alignment, options) {
+  const align = alignment ? ` style="text-align: ${alignment}"` : "";
+  return `<${tag}${align}>${renderInlineMarkdown(value.trim(), options)}</${tag}>`;
+}
+
+function parseTableRow(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("|")) return null;
+  const cells = splitTableCells(trimmed);
+  return cells.length >= 2 ? cells : null;
+}
+
+function parseTableDelimiter(line) {
+  const row = parseTableRow(line);
+  if (!row) return null;
+  const alignments = [];
+  for (const cell of row) {
+    const value = cell.trim();
+    if (!/^:?-{2,}:?$/.test(value)) return null;
+    alignments.push(value.startsWith(":") && value.endsWith(":") ? "center" : value.endsWith(":") ? "right" : "");
+  }
+  return alignments;
+}
+
+function splitTableCells(line) {
+  const cells = [];
+  let cell = "";
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === "\\" && line[index + 1] === "|") {
+      cell += "|";
+      index += 1;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(cell);
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+  cells.push(cell);
+
+  if (!cells[0].trim()) cells.shift();
+  if (cells.length && !cells[cells.length - 1].trim()) cells.pop();
+  return cells.map((value) => value.trim());
 }
 
 function renderList(lines, startIndex, indent, ordered, options, startNumber = 1) {
