@@ -5,7 +5,6 @@ const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
 const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
-const TICKET_DRAWER_HIDDEN_KEY = "flow.ticketDrawerHidden";
 const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
 const THEME_KEY = "flow.theme";
 const PROMPT_HISTORY_KEY = "flow.promptHistory";
@@ -168,7 +167,7 @@ const state = {
   pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
   shellOutputSplitSize: initialShellOutputSplitSize(),
-  ticketDrawerHidden: initialBooleanSetting(TICKET_DRAWER_HIDDEN_KEY),
+  ticketDrawerHidden: false,
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
   messageSubmitting: false,
@@ -670,6 +669,10 @@ function handleInputPaneTabKeydown(event) {
   if (!canSwitchInputPane()) return false;
   event.preventDefault();
   if (event.repeat) return true;
+  if (focusedInputPaneKind() === "prompt" && state.shellPaneHidden) {
+    revealShellPaneForInputFocus();
+    return true;
+  }
   toggleFocusedInputPane();
   return true;
 }
@@ -984,7 +987,6 @@ function setSettingsCollapsed(collapsed) {
 function setTicketDrawerHidden(hidden) {
   state.ticketDrawerHidden = hidden;
   document.body.classList.toggle("tickets-collapsed", hidden);
-  localStorage.setItem(TICKET_DRAWER_HIDDEN_KEY, String(hidden));
   applyFlowSplitSize();
 }
 
@@ -992,19 +994,32 @@ function toggleTicketDrawerHidden() {
   setTicketDrawerHidden(!state.ticketDrawerHidden);
 }
 
-function setShellPaneHidden(hidden) {
+function setShellPaneHidden(hidden, options = {}) {
   state.shellPaneHidden = hidden;
   document.body.classList.toggle("shell-pane-hidden", hidden);
   const shellPanel = els.flowPane.querySelector(".shell-command-panel");
   if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));
   if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");
   localStorage.setItem(SHELL_PANE_HIDDEN_KEY, String(hidden));
+  if (options.syncLayout === false) return;
   renderShellOutputPane(state.selectedFlowId);
   applyFlowSplitSize();
 }
 
 function toggleShellPaneHidden() {
   setShellPaneHidden(!state.shellPaneHidden);
+}
+
+function revealShellPaneForInputFocus() {
+  document.body.classList.add("shell-pane-instant-reveal");
+  setShellPaneHidden(false, { syncLayout: false });
+  focusInputPane("shell");
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.body.classList.remove("shell-pane-instant-reveal");
+      applyFlowSplitSize();
+    });
+  });
 }
 
 function applyTheme(theme) {
@@ -1121,6 +1136,7 @@ async function bootstrap() {
   setShellPaneHidden(state.shellPaneHidden);
   setFlowSplitSize(state.flowSplitSize);
   setShellOutputSplitSize(state.shellOutputSplitSize);
+  requestAnimationFrame(() => document.body.classList.remove("app-booting"));
   const data = await api("/api/bootstrap");
   state.stages = data.stages;
   setFlows(data.flows);

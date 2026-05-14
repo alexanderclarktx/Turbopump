@@ -30,7 +30,7 @@ describe("Turbopump pane markup", () => {
   });
 
   test("shows a cogwheel icon for collapsed settings", () => {
-    expect(html).toContain('<body class="settings-collapsed">');
+    expect(html).toContain('<body class="settings-collapsed app-booting">');
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('class="settings-collapsed-icon"');
     expect(css).toContain(".settings-collapsed-icon");
@@ -51,15 +51,19 @@ describe("Turbopump pane markup", () => {
   });
 
   test("can hide the Linear tickets pane from the keyboard", () => {
-    expect(app).toContain('const TICKET_DRAWER_HIDDEN_KEY = "flow.ticketDrawerHidden";');
-    expect(app).toContain("ticketDrawerHidden: initialBooleanSetting(TICKET_DRAWER_HIDDEN_KEY)");
+    expect(app).not.toContain("flow.ticketDrawerHidden");
+    expect(app).toContain("ticketDrawerHidden: false");
+    expect(html).toContain("app-booting");
     expect(app).toContain("function setTicketDrawerHidden(hidden)");
     expect(app).toContain('document.body.classList.toggle("tickets-collapsed", hidden);');
+    expect(app).not.toContain("localStorage.setItem(TICKET_DRAWER_HIDDEN_KEY");
+    expect(app).toContain('requestAnimationFrame(() => document.body.classList.remove("app-booting"));');
     expect(app).toContain("function toggleTicketDrawerHidden()");
     expect(app).toContain('event.code === "Backquote" || key === "`"');
     expect(css).toContain("--ticket-drawer-size: 320px;");
     expect(css).toContain("transition: --ticket-drawer-size var(--motion-pane);");
     expect(css).toContain("body.tickets-collapsed main {\n  --ticket-drawer-size: 0px;\n}");
+    expect(css).toContain("body.app-booting main,\nbody.app-booting .ticket-drawer {\n  transition: none;\n}");
     expect(css).toContain("body.tickets-collapsed .ticket-drawer");
     expect(css).toContain("visibility 0ms linear 160ms;");
   });
@@ -1415,12 +1419,17 @@ describe("Turbopump pane markup", () => {
   test("toggles the shell pane with Cmd+Backslash", () => {
     expect(app).toContain('const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";');
     expect(app).toContain("shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY)");
-    expect(app).toContain("function setShellPaneHidden(hidden)");
+    expect(app).toContain("function setShellPaneHidden(hidden, options = {})");
     expect(app).toContain('document.body.classList.toggle("shell-pane-hidden", hidden);');
     expect(app).toContain('const shellPanel = els.flowPane.querySelector(".shell-command-panel");');
     expect(app).toContain('if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));');
     expect(app).toContain('if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");');
+    expect(app).toContain("if (options.syncLayout === false) return;");
     expect(app).toContain("function toggleShellPaneHidden()");
+    expect(app).toContain("function revealShellPaneForInputFocus()");
+    expect(app).toContain('document.body.classList.add("shell-pane-instant-reveal");');
+    expect(app).toContain("setShellPaneHidden(false, { syncLayout: false });");
+    expect(app).toContain('document.body.classList.remove("shell-pane-instant-reveal");');
     expect(app).toContain("function handlePaneVisibilityShortcuts(event)");
     expect(app).toContain('event.code === "Backslash" || key === "\\\\"');
     expect(app).toContain('document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);');
@@ -1433,6 +1442,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("--shell-resizer-size: 0px;");
     expect(css).toContain("body.shell-pane-hidden .terminal-panel.shell-output-visible");
     expect(css).toContain("body.shell-pane-hidden .terminal-panel.shell-output-visible .shell-output-resizer,\nbody.shell-pane-hidden .shell-output-pane {\n  opacity: 0;");
+    expect(css).toContain("body.shell-pane-instant-reveal .terminal-panel,\nbody.shell-pane-instant-reveal .shell-command-panel,\nbody.shell-pane-instant-reveal .shell-output-pane {\n  transition: none;\n}");
   });
 
   test("supports separate reverse search histories for prompts and shell commands", () => {
@@ -1519,7 +1529,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (event.defaultPrevented) return false;");
     expect(app).toContain('if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;');
     expect(app).toContain("if (!canSwitchInputPane()) return false;");
-    expect(app).toContain("event.preventDefault();\n  if (event.repeat) return true;\n  toggleFocusedInputPane();");
+    expect(app).toContain("event.preventDefault();\n  if (event.repeat) return true;");
+    expect(app).toContain('if (focusedInputPaneKind() === "prompt" && state.shellPaneHidden) {');
+    expect(app).toContain("revealShellPaneForInputFocus();");
+    expect(app).toContain("toggleFocusedInputPane();");
     expect(app).toContain('shellInput().addEventListener("keydown"');
     const messageInputKeydown = app.slice(app.indexOf('promptInput().addEventListener("keydown"'));
     expect(messageInputKeydown).toContain("if (handleInputHistoryNavigationKeydown(event)) return;");

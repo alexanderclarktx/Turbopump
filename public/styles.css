@@ -234,6 +234,11 @@ body.tickets-collapsed .ticket-drawer {
     visibility 0ms linear 160ms;
 }
 
+body.app-booting main,
+body.app-booting .ticket-drawer {
+  transition: none;
+}
+
 .sidebar {
   position: relative;
   box-sizing: border-box;
@@ -1468,6 +1473,12 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 body.shell-pane-hidden .terminal-panel {
   --shell-pane-size: 0px !important;
   --shell-resizer-size: 0px;
+}
+
+body.shell-pane-instant-reveal .terminal-panel,
+body.shell-pane-instant-reveal .shell-command-panel,
+body.shell-pane-instant-reveal .shell-output-pane {
+  transition: none;
 }
 
 .shell-output-resizer {
