@@ -40,7 +40,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("body.settings-collapsed .settings-header {\n  display: grid;");
     expect(css).toContain("gap: 0;");
     expect(css).toContain("justify-self: center;");
-    expect(css).toContain("grid-template-columns: 26px 320px minmax(0, 1fr);");
+    expect(css).toContain("--settings-pane-size: 26px;");
     expect(css).toContain("width: 26px;");
   });
 
@@ -48,6 +48,20 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("@media (max-width: 980px)");
     expect(css).toContain("  .ticket-drawer {\n    display: none;\n  }");
     expect(css).not.toContain("max-height: 360px;");
+  });
+
+  test("can hide the Linear tickets pane from the keyboard", () => {
+    expect(app).toContain('const TICKET_DRAWER_HIDDEN_KEY = "flow.ticketDrawerHidden";');
+    expect(app).toContain("ticketDrawerHidden: initialBooleanSetting(TICKET_DRAWER_HIDDEN_KEY)");
+    expect(app).toContain("function setTicketDrawerHidden(hidden)");
+    expect(app).toContain('document.body.classList.toggle("tickets-collapsed", hidden);');
+    expect(app).toContain("function toggleTicketDrawerHidden()");
+    expect(app).toContain('event.code === "Backquote" || key === "`"');
+    expect(css).toContain("--ticket-drawer-size: 320px;");
+    expect(css).toContain("transition: --ticket-drawer-size var(--motion-pane);");
+    expect(css).toContain("body.tickets-collapsed main {\n  --ticket-drawer-size: 0px;\n}");
+    expect(css).toContain("body.tickets-collapsed .ticket-drawer");
+    expect(css).toContain("visibility 0ms linear 160ms;");
   });
 
   test("hides the settings pane entirely on narrow screens", () => {
@@ -768,7 +782,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : \"\";");
     expect(app).not.toContain("titleCase");
     expect(app).toContain("renderAgentContext(flow);");
-    expect(css).toContain("grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));");
+    expect(css).toContain("grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);");
     expect(css).toContain("padding: 4px 0;");
     expect(css).not.toContain(".agent-context-window::before");
     expect(css).not.toContain('content: "context ";');
@@ -913,7 +927,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function hasVisibleTerminalOutput(message)");
     expect(app).toContain("!hasVisibleTerminalOutput(log.message)");
     expect(app).toContain("if (!isRoutineShellExitLog(log)) appendTerminalGroup(groups, log);");
-    expect(app).toContain('agentPanel?.classList.toggle("shell-output-visible", Boolean(groups.length));');
+    expect(app).toContain('agentPanel?.classList.toggle("shell-output-visible", hasGroups);');
     expect(app).toContain("async function interruptSelectedFlow()");
     expect(app).toContain("function flowRuntimeActive(flow)");
     expect(app).toContain("function flowRuntimeKind(flow)");
@@ -963,14 +977,14 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function listClientFlows()");
     expect(app).not.toContain("agentActionIcon");
     expect(css).toContain("[hidden] {\n  display: none !important;");
-    expect(css).toContain("grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));");
+    expect(css).toContain("grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);");
     expect(css).toContain("grid-template-rows: minmax(0, 1fr) auto;");
     expect(css).toContain("border-top: 1px solid var(--line);");
     expect(css).toContain(".agent-working");
     expect(css).toContain(".agent-working.shell-working");
     expect(css).toContain(".terminal-panel.shell-output-visible");
     expect(css).toContain(
-      "grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));",
+      "grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);",
     );
     expect(css).toContain('grid-template-areas:\n    "terminal shell-resizer shell"\n    "form form form";');
     expect(css).toContain('"input . shell"');
@@ -988,7 +1002,7 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain("padding: 0 14px 6px;");
     expect(css).toContain("@keyframes agent-working-dot");
     expect(css).toContain(".prompt-input-pane {\n  grid-area: input;");
-    expect(css).toContain("  padding-left: 14px;\n}\n\n.agent-context {\n  grid-area: context;\n  padding-left: 14px;");
+    expect(css).toContain("  padding-left: 14px;\n}\n\nbody.shell-pane-hidden .prompt-input-pane {\n  padding-right: 14px;\n}\n\n.agent-context {\n  grid-area: context;\n  padding-left: 14px;");
     expect(css).toContain(".shell-command-panel {\n  position: relative;\n  grid-area: shell;\n  min-width: 0;\n  align-self: start;\n  padding-right: 14px;");
     expect(css).toContain(".input-pane-prefix");
     expect(css).toContain("pointer-events: none;\n  color: var(--muted);");
@@ -1018,7 +1032,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".slash-menu");
     expect(css).toContain("width: max-content;");
     expect(css).toContain(
-      "max-width: min(720px, calc(100% - var(--shell-pane-size, max(180px, 28%)) - 18px), calc(100vw - 40px));",
+      "max-width: min(720px, calc(100% - var(--shell-pane-size, 28%) - 18px), calc(100vw - 40px));",
     );
     expect(css).toContain("grid-template-columns: minmax(210px, max-content) minmax(0, auto);");
     expect(css).toContain(".slash-command-name {\n  min-width: 0;");
@@ -1392,6 +1406,29 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("event.stopImmediatePropagation();");
     expect(app).toContain('if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");');
     expect(app).toContain('document.addEventListener("keydown", handleCommandK, true);');
+  });
+
+  test("toggles the shell pane with Cmd+Backslash", () => {
+    expect(app).toContain('const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";');
+    expect(app).toContain("shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY)");
+    expect(app).toContain("function setShellPaneHidden(hidden)");
+    expect(app).toContain('document.body.classList.toggle("shell-pane-hidden", hidden);');
+    expect(app).toContain('const shellPanel = els.flowPane.querySelector(".shell-command-panel");');
+    expect(app).toContain('if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));');
+    expect(app).toContain('if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");');
+    expect(app).toContain("function toggleShellPaneHidden()");
+    expect(app).toContain("function handlePaneVisibilityShortcuts(event)");
+    expect(app).toContain('event.code === "Backslash" || key === "\\\\"');
+    expect(app).toContain('document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);');
+    expect(app).toContain("const hasGroups = Boolean(groups.length);");
+    expect(app).toContain('if (kind === "shell" && state.shellPaneHidden) return false;');
+    expect(app).toContain("if (state.shellPaneHidden) promptInput()?.focus();\n    else shellInput()?.focus();");
+    expect(css).toContain("body.shell-pane-hidden .prompt-input-pane {\n  padding-right: 14px;\n}");
+    expect(css).toContain("body.shell-pane-hidden .shell-command-panel {\n  opacity: 0;");
+    expect(css).toContain("--shell-pane-size: 0px !important;");
+    expect(css).toContain("--shell-resizer-size: 0px;");
+    expect(css).toContain("body.shell-pane-hidden .terminal-panel.shell-output-visible");
+    expect(css).toContain("body.shell-pane-hidden .terminal-panel.shell-output-visible .shell-output-resizer,\nbody.shell-pane-hidden .shell-output-pane {\n  opacity: 0;");
   });
 
   test("supports separate reverse search histories for prompts and shell commands", () => {

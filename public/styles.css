@@ -14,6 +14,25 @@
   --terminal: #fbfcfe;
   --terminal-ink: #1f2937;
   --motion-fast: 100ms ease-out;
+  --motion-pane: 160ms ease;
+}
+
+@property --ticket-drawer-size {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 320px;
+}
+
+@property --shell-pane-size {
+  syntax: "<length-percentage>";
+  inherits: true;
+  initial-value: 28%;
+}
+
+@property --shell-resizer-size {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 8px;
 }
 
 body.theme-dark {
@@ -183,14 +202,36 @@ label {
 }
 
 main {
+  --settings-pane-size: 320px;
+  --ticket-drawer-size: 320px;
   display: grid;
-  grid-template-columns: 320px 320px minmax(0, 1fr);
+  grid-template-columns: var(--settings-pane-size) var(--ticket-drawer-size) minmax(0, 1fr);
   height: 100vh;
   min-height: 0;
+  transition: --ticket-drawer-size var(--motion-pane);
 }
 
 body.settings-collapsed main {
-  grid-template-columns: 26px 320px minmax(0, 1fr);
+  --settings-pane-size: 26px;
+}
+
+body.tickets-collapsed main {
+  --ticket-drawer-size: 0px;
+}
+
+body.tickets-collapsed .ticket-drawer {
+  padding-right: 0;
+  padding-left: 0;
+  border-right-width: 0;
+  border-left-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity var(--motion-pane),
+    padding var(--motion-pane),
+    border-color var(--motion-pane),
+    visibility 0ms linear 160ms;
 }
 
 .sidebar {
@@ -924,6 +965,12 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  opacity: 1;
+  transition:
+    opacity var(--motion-pane),
+    padding var(--motion-pane),
+    border-color var(--motion-pane),
+    visibility 0ms linear 0ms;
 }
 
 .ticket-drawer-header {
@@ -1401,17 +1448,26 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .terminal-panel {
+  --shell-resizer-size: 8px;
   grid-template-areas:
     "terminal"
     "form";
   grid-template-rows: minmax(0, 1fr) auto;
+  transition:
+    --shell-pane-size var(--motion-pane),
+    --shell-resizer-size var(--motion-pane);
 }
 
 .terminal-panel.shell-output-visible {
-  grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));
+  grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);
   grid-template-areas:
     "terminal shell-resizer shell"
     "form form form";
+}
+
+body.shell-pane-hidden .terminal-panel {
+  --shell-pane-size: 0px !important;
+  --shell-resizer-size: 0px;
 }
 
 .shell-output-resizer {
@@ -1428,6 +1484,12 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 
 .terminal-panel.shell-output-visible .shell-output-resizer {
   display: block;
+}
+
+body.shell-pane-hidden .terminal-panel.shell-output-visible .shell-output-resizer,
+body.shell-pane-hidden .shell-output-pane {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .shell-output-resizer::before {
@@ -2341,7 +2403,7 @@ body.theme-dark .terminal-entry-body a {
   grid-area: form;
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));
+  grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);
   grid-template-areas:
     "search search search"
     "images images images"
@@ -2354,6 +2416,9 @@ body.theme-dark .terminal-entry-body a {
   border-top: 1px solid var(--line);
   background: var(--panel);
   z-index: 1;
+  transition:
+    --shell-pane-size var(--motion-pane),
+    --shell-resizer-size var(--motion-pane);
 }
 
 .history-search-indicator {
@@ -2468,6 +2533,10 @@ body.theme-dark .terminal-entry-body a {
   padding-left: 14px;
 }
 
+body.shell-pane-hidden .prompt-input-pane {
+  padding-right: 14px;
+}
+
 .agent-context {
   grid-area: context;
   padding-left: 14px;
@@ -2479,6 +2548,14 @@ body.theme-dark .terminal-entry-body a {
   min-width: 0;
   align-self: start;
   padding-right: 14px;
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity var(--motion-pane);
+}
+
+body.shell-pane-hidden .shell-command-panel {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .shell-input-pane {
@@ -2628,6 +2705,8 @@ body.theme-dark .terminal-entry-body a {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
+  opacity: 1;
+  transition: opacity var(--motion-pane);
 }
 
 .shell-output-pane[hidden] {
@@ -2955,7 +3034,7 @@ body.theme-dark .diff-modal-code .diff-line-deleted {
   bottom: calc(100% - 4px);
   left: 8px;
   width: max-content;
-  max-width: min(720px, calc(100% - var(--shell-pane-size, max(180px, 28%)) - 18px), calc(100vw - 40px));
+  max-width: min(720px, calc(100% - var(--shell-pane-size, 28%) - 18px), calc(100vw - 40px));
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -3045,6 +3124,13 @@ body.theme-dark .diff-modal-code .diff-line-deleted {
     grid-template-rows: minmax(0, 1fr) minmax(140px, 32%) auto;
   }
 
+  body.shell-pane-hidden .terminal-panel.shell-output-visible {
+    grid-template-areas:
+      "terminal"
+      "form";
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
   .terminal-panel.shell-output-visible .shell-output-resizer {
     display: none;
   }
@@ -3058,6 +3144,11 @@ body.theme-dark .diff-modal-code .diff-line-deleted {
 @media (prefers-reduced-motion: reduce) {
   main,
   .sidebar,
+  .ticket-drawer,
+  .terminal-panel,
+  .message-form,
+  .shell-command-panel,
+  .shell-output-pane,
   .settings-header h2,
   .settings-content {
     transition: none;

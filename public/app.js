@@ -5,6 +5,8 @@ const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
 const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
+const TICKET_DRAWER_HIDDEN_KEY = "flow.ticketDrawerHidden";
+const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
 const THEME_KEY = "flow.theme";
 const PROMPT_HISTORY_KEY = "flow.promptHistory";
 const SHELL_HISTORY_KEY = "flow.shellHistory";
@@ -137,6 +139,10 @@ function initialShellOutputSplitSize() {
   return clampShellOutputSplitSize(Number.isFinite(value) ? value : 28);
 }
 
+function initialBooleanSetting(key) {
+  return localStorage.getItem(key) === "true";
+}
+
 const state = {
   stages: [],
   flows: [],
@@ -161,6 +167,8 @@ const state = {
   pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
   shellOutputSplitSize: initialShellOutputSplitSize(),
+  ticketDrawerHidden: initialBooleanSetting(TICKET_DRAWER_HIDDEN_KEY),
+  shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
   messageSubmitting: false,
   shellSubmitting: false,
@@ -576,6 +584,7 @@ function shellInput() {
 }
 
 function focusInputPane(kind) {
+  if (kind === "shell" && state.shellPaneHidden) return false;
   const input = kind === "shell" ? shellInput() : promptInput();
   if (!input) return false;
   cancelHistorySearch();
@@ -723,6 +732,19 @@ function handleCommandK(event) {
   event.stopImmediatePropagation();
   if (event.repeat) return true;
   if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");
+  return true;
+}
+
+function handlePaneVisibilityShortcuts(event) {
+  const key = event.key.toLowerCase();
+  const togglesTickets = event.ctrlKey && !event.metaKey && !event.altKey && (event.code === "Backquote" || key === "`");
+  const togglesShell = event.metaKey && !event.ctrlKey && !event.altKey && (event.code === "Backslash" || key === "\\");
+  if (!togglesTickets && !togglesShell) return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (event.repeat) return true;
+  if (togglesTickets) toggleTicketDrawerHidden();
+  if (togglesShell) toggleShellPaneHidden();
   return true;
 }
 
@@ -958,6 +980,32 @@ function setSettingsCollapsed(collapsed) {
   }
 }
 
+function setTicketDrawerHidden(hidden) {
+  state.ticketDrawerHidden = hidden;
+  document.body.classList.toggle("tickets-collapsed", hidden);
+  localStorage.setItem(TICKET_DRAWER_HIDDEN_KEY, String(hidden));
+  applyFlowSplitSize();
+}
+
+function toggleTicketDrawerHidden() {
+  setTicketDrawerHidden(!state.ticketDrawerHidden);
+}
+
+function setShellPaneHidden(hidden) {
+  state.shellPaneHidden = hidden;
+  document.body.classList.toggle("shell-pane-hidden", hidden);
+  const shellPanel = els.flowPane.querySelector(".shell-command-panel");
+  if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));
+  if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");
+  localStorage.setItem(SHELL_PANE_HIDDEN_KEY, String(hidden));
+  renderShellOutputPane(state.selectedFlowId);
+  applyFlowSplitSize();
+}
+
+function toggleShellPaneHidden() {
+  setShellPaneHidden(!state.shellPaneHidden);
+}
+
 function applyTheme(theme) {
   state.theme = theme;
   const dark = theme === "dark";
@@ -1053,7 +1101,7 @@ function applyShellOutputSplitSize() {
     resizer.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
   }
   resizer.setAttribute("aria-valuenow", String(Math.round(applied)));
-  panel.style.setProperty("--shell-pane-size", `max(180px, ${applied}%)`);
+  panel.style.setProperty("--shell-pane-size", `${applied}%`);
   return applied;
 }
 
@@ -1068,6 +1116,8 @@ async function bootstrap() {
   applyTheme(state.theme);
   renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
+  setTicketDrawerHidden(state.ticketDrawerHidden);
+  setShellPaneHidden(state.shellPaneHidden);
   setFlowSplitSize(state.flowSplitSize);
   setShellOutputSplitSize(state.shellOutputSplitSize);
   const data = await api("/api/bootstrap");
@@ -2623,10 +2673,11 @@ function renderShellOutputPane(flowId) {
   if (flowId !== state.selectedFlowId) return;
   const flow = state.flows.find((item) => item.id === flowId) || null;
   const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
-  pane.hidden = !groups.length;
-  agentPanel?.classList.toggle("shell-output-visible", Boolean(groups.length));
-  if (groups.length) applyShellOutputSplitSize();
-  if (!groups.length) {
+  const hasGroups = Boolean(groups.length);
+  pane.hidden = !hasGroups;
+  agentPanel?.classList.toggle("shell-output-visible", hasGroups);
+  if (hasGroups) applyShellOutputSplitSize();
+  if (!hasGroups) {
     pane.replaceChildren();
     pane._shellOutputSignature = "";
     return;
@@ -3531,7 +3582,8 @@ async function submitShellCommand(value) {
     if (submittedFlowId) await loadLogs(submittedFlowId);
     renderTickets();
     renderFlowPane();
-    shellInput()?.focus();
+    if (state.shellPaneHidden) promptInput()?.focus();
+    else shellInput()?.focus();
   }
 }
 
@@ -3620,6 +3672,7 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", handleCommandK, true);
+document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden) {
