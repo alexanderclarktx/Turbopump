@@ -1696,7 +1696,7 @@ async function startAgent(flow: Flow, userMessage = "") {
   }
 }
 
-async function runShellCommand(flow: Flow, userCommand: string) {
+function startShellCommand(flow: Flow, userCommand: string) {
   flow = repairFlowCheckoutPath(flow);
   const command = userCommand.trim();
   if (!command) throw new Error("Type a shell command after $.");
@@ -1723,21 +1723,29 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   );
   void Promise.all([stdoutDone, stderrDone]);
 
-  try {
-    const code = await proc.exited;
-    await Promise.all([stdoutDone, stderrDone]);
-    const resultLogId = insertLog(flow.id, "shell:result", `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`);
-    createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");
-    updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
-  } finally {
-    if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
-  }
+  void (async () => {
+    try {
+      const code = await proc.exited;
+      if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
+      await Promise.all([stdoutDone, stderrDone]);
+      const resultLogId = insertLog(
+        flow.id,
+        "shell:result",
+        `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`,
+      );
+      createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");
+      updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
+    } catch (error) {
+      if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
+      insertLog(flow.id, "shell:stderr", `shell command failed: ${String(error)}\n`);
+      updateFlow(flow.id, { agentStatus: "failed" });
+    }
+  })();
 }
 
 function interruptShellCommand(flowId: string) {
   const runtime = shellProcesses.get(flowId);
   if (!runtime) return false;
-  updateFlow(flowId, { agentStatus: "interrupting" });
   insertLog(flowId, "shell:status", "shell interrupt requested");
   runtime.stopping = true;
   try {
@@ -2295,10 +2303,15 @@ async function handleApi(request: Request, url: URL) {
       return json({ ok: true });
     }
 
+    if (parts[3] === "command" && parts[4] === "interrupt" && request.method === "POST") {
+      interruptShellCommand(id);
+      return json({ ok: true, flow: runtimeAdjustedFlow(getFlow(id) ?? flow) });
+    }
+
     if (parts[3] === "command" && request.method === "POST") {
       const body = await readJson<{ command: string }>(request);
-      await runShellCommand(flow, body.command);
-      return json({ ok: true });
+      startShellCommand(flow, body.command);
+      return json({ ok: true, flow: runtimeAdjustedFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "serve" && request.method === "POST") {

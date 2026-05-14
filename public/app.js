@@ -568,6 +568,15 @@ function handleHistorySearchKeydown(event) {
     cancelHistorySearch();
     return false;
   }
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    cancelHistorySearch();
+    return false;
+  }
+  if (event.key === "Tab") {
+    event.preventDefault();
+    cancelHistorySearch();
+    return true;
+  }
   if (event.key.length === 1) {
     event.preventDefault();
     updateHistorySearchMatches(input, state.historySearch.query + event.key);
@@ -703,6 +712,21 @@ async function interruptSelectedFlow() {
   return true;
 }
 
+async function interruptSelectedShellCommand() {
+  if (state.interruptSubmitting) return false;
+  const selected = selectedFlow();
+  if (!flowShellRunning(selected)) return false;
+  state.interruptSubmitting = true;
+  try {
+    const data = await api(`/api/flows/${selected.id}/command/interrupt`, { method: "POST" });
+    if (data.flow) upsertFlow(data.flow);
+  } finally {
+    state.interruptSubmitting = false;
+    shellInput()?.focus({ preventScroll: true });
+  }
+  return true;
+}
+
 function isEditableKeyTarget(target) {
   if (!(target instanceof Element)) return false;
   if (target.closest("input, textarea, select")) return true;
@@ -728,6 +752,15 @@ function focusMessageInputForKey(event) {
   input.focus();
   input.setRangeText(event.key, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+}
+
+function handleShellInterruptKeydown(event) {
+  if (event.defaultPrevented || event.isComposing) return false;
+  if (!event.ctrlKey || event.metaKey || event.altKey || event.key.toLowerCase() !== "c") return false;
+  if (!flowShellRunning(selectedFlow())) return false;
+  event.preventDefault();
+  void interruptSelectedShellCommand();
   return true;
 }
 
@@ -1171,6 +1204,22 @@ function render() {
 function setFlows(flows) {
   state.flows = flows || [];
   syncLinearTicketsWithFlows();
+}
+
+function runtimeOnlyFlowChanges(previousFlows, nextFlows) {
+  const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);
+  if ((previousFlows || []).length !== (nextFlows || []).length) return false;
+  const previousById = new Map((previousFlows || []).map((flow) => [flow.id, flow]));
+  for (const next of nextFlows || []) {
+    const previous = previousById.get(next.id);
+    if (!previous) return false;
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+    for (const key of keys) {
+      if (ignoredKeys.has(key)) continue;
+      if (previous[key] !== next[key]) return false;
+    }
+  }
+  return true;
 }
 
 function setCheckouts(checkouts) {
@@ -2311,9 +2360,10 @@ async function ensureSelectedFlow() {
   return createFlowFromTicket(ticket);
 }
 
-async function loadLogs(id) {
+async function loadLogs(id, options = {}) {
   if (!state.logs.has(id)) state.logs.set(id, []);
 
+  const appendedLogs = [];
   while (true) {
     const after = state.lastLogId.get(id) || 0;
     const data = await api(`/api/flows/${id}/logs?after=${after}`);
@@ -2322,13 +2372,17 @@ async function loadLogs(id) {
     let highestLogId = after;
     for (const log of data.logs) {
       highestLogId = Math.max(highestLogId, log.id);
-      appendLogEntry(log);
+      if (appendLogEntry(log)) appendedLogs.push(log);
     }
 
     state.lastLogId.set(id, highestLogId);
     if (data.logs.length < 1000) break;
   }
 
+  if (options.shellOnly || (appendedLogs.length && appendedLogs.every(isShellOnlyRenderLog))) {
+    renderShellOutputPane(id);
+    return;
+  }
   renderLogs(id);
 }
 
@@ -2634,6 +2688,15 @@ function isShellTraceGroupLog(log) {
   if (log.source === "shell:trace-group") return true;
   if (log.source !== "agent:trace-group") return false;
   return parseTraceGroup(log)?.kind === "shell";
+}
+
+function isShellOnlyRenderLog(log) {
+  const normalized = normalizeTerminalLog(log);
+  return (
+    String(normalized.source || "").startsWith("shell:") ||
+    isShellTraceGroupLog(normalized) ||
+    isLegacyShellOutputLog(normalized)
+  );
 }
 
 function runningShellGroups(logs, flow, clearAfterLogId = 0) {
@@ -3260,11 +3323,11 @@ function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
   block.setAttribute("aria-live", "polite");
 
   const body = document.createElement("div");
-  body.className = `terminal-entry-body agent-working ${runtimeKind === "shell" ? "shell-working" : "agent-turn-working"}`;
+  body.className = "terminal-entry-body agent-working agent-turn-working";
 
   const dots = document.createElement("span");
   dots.className = "agent-working-dots";
-  dots.setAttribute("aria-label", runtimeKind === "shell" ? "Shell command running" : "Agent working");
+  dots.setAttribute("aria-label", "Agent working");
   dots.innerHTML = "<span>.</span><span>.</span><span>.</span>";
 
   body.replaceChildren(dots);
@@ -3291,8 +3354,7 @@ function renderLogs(id, options = {}) {
   const logs = state.logs.get(id) || [];
   const groups = terminalGroups(logs, flow);
   const agentWorking = agentWorkingForFlow(flow);
-  const runtimeKind = flowRuntimeKind(flow);
-  const agentWorkingKind = agentWorking ? runtimeKind : "idle";
+  const agentWorkingKind = agentWorking ? "agent" : "idle";
   syncAgentWorkingPoll(id, agentWorking);
   const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${agentWorkingKind}`;
   if (terminal._flowLogFlowId === id && terminal._flowLogSignature === signature && !options.force) {
@@ -3303,7 +3365,7 @@ function renderLogs(id, options = {}) {
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
-  if (agentWorking) appendTerminalWorkingBlock(fragment, agentWorkingKind);
+  if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
@@ -3338,7 +3400,12 @@ function connectWs() {
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "flows") {
+      const previousFlows = state.flows;
       setFlows(message.payload);
+      if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {
+        renderTickets();
+        return;
+      }
       render();
       const flow = selectedFlow();
       if (flow) void loadFlowDiff(flow.id, { force: true });
@@ -3350,15 +3417,19 @@ function connectWs() {
       renderCheckouts();
     }
     if (message.event === "log") {
-      const { id, flowId, source, message: chunk, createdAt } = message.payload;
-      appendLogEntry({
-        id,
-        flowId,
-        source,
-        message: chunk,
-        createdAt,
-      });
-      renderLogs(flowId);
+      const log = {
+        id: message.payload.id,
+        flowId: message.payload.flowId,
+        source: message.payload.source,
+        message: message.payload.message,
+        createdAt: message.payload.createdAt,
+      };
+      appendLogEntry(log);
+      if (isShellOnlyRenderLog(log)) {
+        renderShellOutputPane(log.flowId);
+        return;
+      }
+      renderLogs(log.flowId);
     }
     if (message.event === "logs-deleted") {
       removeLogEntries(message.payload.flowId, message.payload.ids || []);
@@ -3646,6 +3717,7 @@ promptInput().addEventListener("keydown", (event) => {
 
 shellInput().addEventListener("keydown", (event) => {
   const input = event.currentTarget;
+  if (handleShellInterruptKeydown(event)) return;
   if (handleHistorySearchKeydown(event)) return;
   if (handleInputPaneTabKeydown(event)) return;
   if (handleInputHistoryNavigationKeydown(event)) return;
@@ -3684,22 +3756,23 @@ async function submitShellCommand(value) {
   input.value = "";
   hideSlashMenu();
   renderTickets();
-  renderFlowPane();
+  renderShellOutputPane(selectedFlow()?.id || "");
   let submittedFlowId = "";
   try {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
     submittedFlowId = flow.id;
-    renderFlowPane();
-    await api(`/api/flows/${flow.id}/command`, {
+    renderShellOutputPane(flow.id);
+    const data = await api(`/api/flows/${flow.id}/command`, {
       method: "POST",
       body: JSON.stringify({ command }),
     });
+    if (data.flow) upsertFlow(data.flow);
   } finally {
     state.shellSubmitting = false;
-    if (submittedFlowId) await loadLogs(submittedFlowId);
+    if (submittedFlowId) await loadLogs(submittedFlowId, { shellOnly: true });
     renderTickets();
-    renderFlowPane();
+    renderShellOutputPane(submittedFlowId);
     if (state.shellPaneHidden) promptInput()?.focus();
     else shellInput()?.focus();
   }

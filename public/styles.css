@@ -695,10 +695,6 @@ body.theme-dark .agent-working {
   color: #c084fc;
 }
 
-body.theme-dark .agent-working.shell-working {
-  color: #22c55e;
-}
-
 body.theme-dark .terminal-entry-error .terminal-entry-marker,
 body.theme-dark .terminal-entry-error .terminal-entry-label,
 body.theme-dark .terminal-entry-error .terminal-entry-body {
@@ -2620,10 +2616,6 @@ body.shell-pane-hidden .shell-command-panel {
   font-size: 18px;
   font-weight: 700;
   line-height: 1;
-}
-
-.agent-working.shell-working {
-  color: #22c55e;
 }
 
 .agent-working-dots {
