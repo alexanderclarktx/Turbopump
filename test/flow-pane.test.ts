@@ -924,7 +924,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function pollAgentWorkingFlow()");
     expect(app).toContain('const data = await api(`/api/flows/${flowId}/agent/status`);');
     expect(app).toContain(
-      "if (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting) {\n    state.agentWorkingPollInFlight = true;",
+      "if (state.messageSubmitting || state.interruptSubmitting) {\n    state.agentWorkingPollInFlight = true;",
     );
     expect(app).toContain("await loadLogs(flowId);");
     expect(app).toContain("terminal-entry-working-${runtimeKind}");
@@ -932,16 +932,25 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('runtimeKind === "shell" ? "Shell command running" : "Agent working"');
     expect(app).toContain("syncAgentWorkingPoll(id, agentWorking);");
     expect(app).toContain("const runtimeKind = flowRuntimeKind(flow);");
-    expect(app).toContain('if (agentWorking && runtimeKind !== "shell") appendTerminalWorkingBlock(fragment, runtimeKind);');
+    expect(app).toContain('const agentWorkingKind = agentWorking ? runtimeKind : "idle";');
+    expect(app).toContain("if (agentWorking) appendTerminalWorkingBlock(fragment, agentWorkingKind);");
     expect(app).not.toContain('els.flowPane.querySelector(".agent-working").hidden = !agentWorking;');
-    expect(app).toContain("function latestShellGroups(logs)");
+    expect(app).toContain("shellOutputClearAfterLogId: new Map()");
+    expect(app).toContain("function latestShellGroups(logs, clearAfterLogId = 0)");
+    expect(app).toContain("filter((log) => Number(log.id) > clearAfterLogId)");
     expect(app).toContain("function isShellOutputLog(log)");
     expect(app).toContain('if (!isShellOutputLog(log)) continue;');
-    expect(app).toContain('log.source === "agent:cmd" || log.source === "agent:stderr"');
-    expect(app).toContain('/^shell interrupt requested\\b/');
+    expect(app).toContain('return log.source === "shell:output" || log.source === "shell:stderr" || log.source === "shell:status";');
+    expect(app).toContain("function isShellOwnedLog(log)");
+    expect(app).toContain('String(log.source || "").startsWith("shell:") && log.source !== "shell:command"');
+    expect(app).toContain("function isLegacyShellOutputLog(log)");
+    expect(app).toContain("function isShellTraceGroupLog(log)");
     expect(app).toContain("function shellOutputPane()");
     expect(app).toContain("function shellOutputGroups(logs, flow)");
-    expect(app).toContain("return latestShellGroups(logs);");
+    expect(app).toContain("const clearAfterLogId = state.shellOutputClearAfterLogId.get(flow?.id || state.selectedFlowId) || 0;");
+    expect(app).toContain("return latestShellGroups(logs, clearAfterLogId);");
+    expect(app).toContain("function clearShellOutputPane()");
+    expect(app).toContain("state.shellOutputClearAfterLogId.set(flowId, state.lastLogId.get(flowId) || 0);");
     expect(app).toContain("function hasVisibleTerminalOutput(message)");
     expect(app).toContain("!hasVisibleTerminalOutput(log.message)");
     expect(app).toContain("if (!isRoutineShellExitLog(log)) appendTerminalGroup(groups, log);");
@@ -960,8 +969,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('flow?.agentStatus === "running" || flow?.agentStatus === "interrupting"');
     expect(app).toContain("state.interruptSubmitting = true;");
     expect(app).toContain('await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });');
-    expect(app).toContain('event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c"');
-    expect(app).toContain("void interruptSelectedFlow();");
+    expect(app).not.toContain('event.key.toLowerCase() === "c"');
+    expect(app).not.toContain('focusedInputPaneKind() === "shell" &&\n    flowShellRunning(selectedFlow())');
+    expect(app).not.toContain("void interruptSelectedFlow();");
     expect(app).not.toContain('els.flowPane.querySelector(".agent-interrupt").addEventListener("click"');
     expect(app).toContain("function canSubmitPromptMessage()");
     expect(app).toContain("function canSubmitShellCommand()");
@@ -973,10 +983,14 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function agentMessageWithImages(message)");
     expect(app).toContain('document.addEventListener("drop"');
     expect(css).not.toContain(".agent-image-drop-overlay");
+    expect(css).toContain("  display: inline-grid;\n  place-items: center;\n  width: 20px;");
+    expect(css).toContain("  margin-left: 2px;\n  padding: 0;\n  border: 0;\n  border-radius: 3px;");
     expect(server).toContain("async function saveFlowContextImages(flow: Flow, formData: FormData)");
     expect(server).toContain('parts[3] === "context-images" && request.method === "POST"');
     expect(app).toContain("if (!canSubmitPromptMessage()) {\n    flashBlockedInput(input);\n    return;\n  }");
     expect(app).toContain("state.messageSubmitting = true;");
+    expect(app).toContain('if (command === "clear") {');
+    expect(app).toContain("clearShellOutputPane();");
     expect(app).toContain("state.shellSubmitting = true;");
     expect(app).toContain("const flow = await ensureSelectedFlow();");
     expect(app).toContain("submittedFlowId = flow.id;");
@@ -1022,6 +1036,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("body.theme-dark .agent-working.shell-working");
     expect(css).not.toContain("padding: 0 14px 6px;");
     expect(css).toContain("@keyframes agent-working-dot");
+    expect(css).toContain(".agent-image-context {\n  grid-area: images;");
+    expect(css).toContain("  padding-left: 14px;\n  transform: translateY(4px);");
+    expect(css).toContain("  border: 1px solid #d97706;");
     expect(css).toContain(".prompt-input-pane {\n  grid-area: input;");
     expect(css).toContain("  padding-left: 14px;\n}\n\nbody.shell-pane-hidden .prompt-input-pane {\n  padding-right: 14px;\n}\n\n.agent-context {\n  grid-area: context;\n  padding-left: 16px;");
     expect(css).toContain(".shell-command-panel {\n  position: relative;\n  grid-area: shell;\n  min-width: 0;\n  align-self: start;\n  padding-right: 14px;");
@@ -1073,13 +1090,15 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal)");
     expect(server).toContain("process.kill(-runtime.proc.pid, signal);");
     expect(server).toContain("function scheduleShellInterruptEscalation(flowId: string, runtime: RuntimeProcess)");
-    expect(server).toContain('insertLog(flowId, "agent:status", "shell interrupt escalated");');
-    expect(server).toContain('insertLog(flowId, "agent:status", "shell interrupt forced cleanup");');
+    expect(server).toContain('insertLog(flowId, "shell:status", "shell interrupt escalated");');
+    expect(server).toContain('insertLog(flowId, "shell:status", "shell interrupt forced cleanup");');
     expect(server).toContain('detached: true,');
     expect(server).toContain('shellProcesses.set(flow.id, runtime);');
     expect(server).toContain('const commandLogId = insertLog(flow.id, "shell:command", command);');
+    expect(server).toContain('streamProcessOutput(flow.id, "shell:output", proc.stdout)');
+    expect(server).toContain('streamProcessOutput(flow.id, "shell:stderr", proc.stderr)');
     expect(server).toContain("await Promise.all([stdoutDone, stderrDone]);");
-    expect(server).toContain('const resultLogId = insertLog(flow.id, "agent:tool-result"');
+    expect(server).toContain('const resultLogId = insertLog(flow.id, "shell:result"');
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
     expect(server).toContain('runtime.proc.stdin?.write("\\x03");');
     expect(server).toContain('signalRuntimeProcess(runtime, "SIGINT");');
@@ -1170,7 +1189,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('log.source === "agent:tool-result" && message === "failed exit 7"');
     expect(app).toContain("function isRoutineShellExitLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "completed exit 0"');
-    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log) && !isRoutineShellExitLog(log))) continue;');
+    expect(app).toContain("if (isHiddenTerminalLog(log)) continue;");
   });
 
   test("renders command execution logs as a single shell prompt line", () => {
@@ -1188,7 +1207,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function deleteOutputLogGroup(flowId, ids)");
     expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flowId)}/logs`, {');
     expect(app).toContain('if (message.event === "logs-deleted")');
-    expect(server).toContain('const allowedSources = new Set(["agent:output", "agent:cmd"]);');
+    expect(server).toContain('const allowedSources = new Set(["agent:output", "agent:cmd", "shell:output"]);');
     expect(server).toContain('broadcast("logs-deleted", { flowId, ids: uniqueIds });');
     expect(server).toContain('if (parts[3] === "logs" && request.method === "DELETE")');
     expect(app).not.toContain('renderInlineMarkdown(`$ ${formatTerminalMessage(group.source, group.message)}`');
@@ -1260,7 +1279,7 @@ describe("Turbopump pane markup", () => {
   });
 
   test("collapses completed-turn traces between the prompt and final message", () => {
-    expect(server).toContain('insertLog(\n    flowId,\n    "agent:trace-group",');
+    expect(server).toContain('kind === "shell" ? "shell:trace-group" : "agent:trace-group"');
     expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
     expect(server).toContain('function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "")');
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
@@ -1277,11 +1296,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('"agent:trace-group": { label: "trace"');
     expect(app).toContain("function parseTraceGroup(log)");
     expect(app).toContain("function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges)");
-    expect(app).toContain("function syntheticShellTraceRanges(logs, existingRanges)");
-    expect(app).toContain("function latestInputLogId(logs)");
-    expect(app).toContain('if (log.source !== "user" && log.source !== "shell:command") continue;');
-    expect(app).toContain("const latestInputId = latestInputLogId(normalizedLogs);");
-    expect(app).toContain('defaultOpen: traceRange.kind === "shell" && traceRange.afterId === latestInputId');
+    expect(app).not.toContain("function syntheticShellTraceRanges(logs, existingRanges)");
+    expect(app).not.toContain("function latestInputLogId(logs)");
+    expect(app).toContain('if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;');
+    expect(app).toContain('defaultOpen: false');
     expect(app).toContain("group.defaultOpen || (group.flowId && group.traceKey");
     expect(app).toContain("function syntheticSteerTraceRanges(logs, existingRanges)");
     expect(app).toContain("function isTurnCompletedLog(log)");
@@ -1289,13 +1307,15 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function isRoutineShellExitLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
     expect(app).toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
-    expect(app).toContain("const shellTraceRanges = syntheticShellTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]);");
+    expect(app).toContain('filter((range) => range && range.kind !== "shell")');
+    expect(app).toContain("function isShellTraceGroupLog(log)");
+    expect(app).toContain("if (isShellTraceGroupLog(log)) continue;");
     expect(app).toContain('kind: typeof payload.kind === "string" ? payload.kind : ""');
-    expect(app).toContain('ranges.push({ afterId, beforeId, count, key, kind: "shell" });');
-    expect(app).toContain('if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log) && !isRoutineShellExitLog(log))) continue;');
+    expect(app).not.toContain('ranges.push({ afterId, beforeId, count, key, kind: "shell" });');
+    expect(app).toContain("if (isHiddenTerminalLog(log)) continue;");
     expect(app).toContain("...runtimeDisappearedTraceRanges,");
-    expect(app).toContain("...shellTraceRanges,");
-    expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges, ...shellTraceRanges]),");
+    expect(app).not.toContain("...shellTraceRanges,");
+    expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
     expect(app).toContain("openTraceGroups: new Map()");
     expect(app).toContain("traceKey: traceRange.key,");

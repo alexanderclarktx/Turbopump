@@ -159,6 +159,7 @@ const state = {
   logs: new Map(),
   logIds: new Map(),
   lastLogId: new Map(),
+  shellOutputClearAfterLogId: new Map(),
   openTraceGroups: new Map(),
   settingsCollapsed: true,
   theme: initialTheme(),
@@ -2351,6 +2352,10 @@ function logMeta(source) {
     "agent:input": { label: "input", marker: "?", tone: "warning" },
     "agent:protocol": { label: "protocol", marker: "!", tone: "warning" },
     "shell:command": { label: "shell", marker: "$", tone: "shell" },
+    "shell:output": { label: "output", marker: "|", tone: "output" },
+    "shell:stderr": { label: "stderr", marker: "!", tone: "error" },
+    "shell:status": { label: "status", marker: "*", tone: "status" },
+    "shell:result": { label: "shell", marker: "ok", tone: "toolResult" },
     flow: { label: "flow", marker: "*", tone: "status" },
     linear: { label: "linear", marker: "*", tone: "status" },
     serve: { label: "serve", marker: "$", tone: "tool" },
@@ -2377,6 +2382,8 @@ function isStreamingSource(source) {
     "agent:reasoning",
     "agent:output",
     "agent:cmd",
+    "shell:output",
+    "shell:stderr",
     "agent",
     "serve",
     "serve:stderr",
@@ -2384,7 +2391,7 @@ function isStreamingSource(source) {
 }
 
 function parseTraceGroup(log) {
-  if (log.source !== "agent:trace-group") return null;
+  if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
     const payload = JSON.parse(String(log.message || "{}"));
     const afterId = Number(payload.afterId);
@@ -2411,11 +2418,21 @@ function isTurnCompletedLog(log) {
 }
 
 function isShellExitLog(log) {
-  return log.source === "agent:tool-result" && /^(completed|interrupted|failed) exit \d+\b/.test(String(log.message || "").trim());
+  return isShellResultLog(log) || isLegacyShellExitLog(log);
+}
+
+function isShellResultLog(log) {
+  return log.source === "shell:result" && /^(completed|interrupted|failed) exit \d+\b/.test(String(log.message || "").trim());
+}
+
+function isLegacyShellExitLog(log) {
+  return (
+    log.source === "agent:tool-result" && /^(completed|interrupted|failed) exit \d+\b/.test(String(log.message || "").trim())
+  );
 }
 
 function isRoutineShellExitLog(log) {
-  return log.source === "agent:tool-result" && String(log.message || "").trim() === "completed exit 0";
+  return (log.source === "shell:result" || log.source === "agent:tool-result") && String(log.message || "").trim() === "completed exit 0";
 }
 
 function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
@@ -2436,31 +2453,6 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
     if (!count) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
-  }
-  return ranges;
-}
-
-function syntheticShellTraceRanges(logs, existingRanges) {
-  const existingKeys = new Set(existingRanges.map((range) => range.key));
-  const ranges = [];
-  let latestShellCommand = null;
-  for (const log of logs) {
-    if (log.source === "shell:command") {
-      latestShellCommand = log;
-      continue;
-    }
-    if (!latestShellCommand || !isShellExitLog(log)) continue;
-    const afterId = Number(latestShellCommand.id);
-    const beforeId = Number(log.id) + 1;
-    const key = `${afterId}:${beforeId}`;
-    if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
-      const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
-      if (count) {
-        ranges.push({ afterId, beforeId, count, key, kind: "shell" });
-        existingKeys.add(key);
-      }
-    }
-    latestShellCommand = null;
   }
   return ranges;
 }
@@ -2495,16 +2487,6 @@ function syntheticSteerTraceRanges(logs, existingRanges) {
 
 function traceRangeForLog(log, ranges) {
   return ranges.find((range) => log.id > range.afterId && log.id < range.beforeId) || null;
-}
-
-function latestInputLogId(logs) {
-  let id = 0;
-  for (const log of logs) {
-    if (log.source !== "user" && log.source !== "shell:command") continue;
-    const logId = Number(log.id);
-    if (Number.isFinite(logId) && logId > id) id = logId;
-  }
-  return id;
 }
 
 function appendTerminalGroup(groups, log) {
@@ -2543,18 +2525,17 @@ function isHiddenTerminalLog(log) {
   );
 }
 
-function terminalGroups(logs) {
+function terminalGroups(logs, flow) {
   const groups = [];
-  const normalizedLogs = agentPaneLogs(logs);
-  const latestInputId = latestInputLogId(normalizedLogs);
-  const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
+  const normalizedLogs = agentPaneLogs(logs, flow);
+  const persistedTraceRanges = normalizedLogs
+    .map((log) => parseTraceGroup(log))
+    .filter((range) => range && range.kind !== "shell");
   const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
-  const shellTraceRanges = syntheticShellTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]);
   const traceRanges = [
     ...persistedTraceRanges,
     ...runtimeDisappearedTraceRanges,
-    ...shellTraceRanges,
-    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges, ...shellTraceRanges]),
+    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),
   ];
   const traceGroups = new Map();
   for (const log of normalizedLogs) {
@@ -2568,7 +2549,7 @@ function terminalGroups(logs) {
       continue;
     }
     const traceRange = traceRangeForLog(log, traceRanges);
-    if (isHiddenTerminalLog(log) && !(traceRange?.kind === "shell" && isShellExitLog(log) && !isRoutineShellExitLog(log))) continue;
+    if (isHiddenTerminalLog(log)) continue;
     if (traceRange) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
@@ -2582,7 +2563,7 @@ function terminalGroups(logs) {
           lastAt: log.createdAt,
           traceAfterId: traceRange.afterId,
           traceKind: traceRange.kind,
-          defaultOpen: traceRange.kind === "shell" && traceRange.afterId === latestInputId,
+          defaultOpen: false,
           children: [],
         };
         traceGroups.set(traceRange.key, traceGroup);
@@ -2597,22 +2578,21 @@ function terminalGroups(logs) {
   return groups;
 }
 
-function agentPaneLogs(logs) {
+function agentPaneLogs(logs, flow) {
   const result = [];
-  let inShellSpan = false;
+  let activeShellCommand = null;
+  const latestShellCommandId = latestShellCommandLogId(logs);
+  const shellRunning = flowShellRunning(flow);
   for (const rawLog of logs) {
     const log = normalizeTerminalLog(rawLog);
     if (log.source === "shell:command") {
-      inShellSpan = true;
+      activeShellCommand = log;
       continue;
     }
-    if (inShellSpan) {
-      if (log.source === "user") {
-        inShellSpan = false;
-        result.push(log);
-        continue;
-      }
-      if (isShellExitLog(log)) inShellSpan = false;
+    if (isShellTraceGroupLog(log)) continue;
+    if (isShellOwnedLog(log)) continue;
+    if (activeShellCommand && isShellPaneLog(log, activeShellCommand)) {
+      if (isShellExitLog(log) && (!shellRunning || Number(activeShellCommand.id) !== latestShellCommandId)) activeShellCommand = null;
       continue;
     }
     result.push(log);
@@ -2620,21 +2600,57 @@ function agentPaneLogs(logs) {
   return result;
 }
 
-function runningShellGroups(logs, flow) {
-  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") return [];
-  return latestShellGroups(logs);
+function isShellPaneLog(log, command) {
+  if (isShellOwnedLog(log)) return true;
+  if (isShellExitLog(log)) return true;
+  if (isLegacyShellOutputLog(log)) return true;
+  return (
+    log.source === "agent:tool" &&
+    formatTerminalMessage(log.source, log.message) === formatTerminalMessage(command.source, command.message)
+  );
 }
 
-function latestShellGroups(logs) {
-  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
+function latestShellCommandLogId(logs) {
+  let id = 0;
+  for (const log of logs) {
+    const normalized = normalizeTerminalLog(log);
+    if (normalized.source !== "shell:command") continue;
+    const logId = Number(normalized.id);
+    if (Number.isFinite(logId) && logId > id) id = logId;
+  }
+  return id;
+}
+
+function isShellOwnedLog(log) {
+  return String(log.source || "").startsWith("shell:") && log.source !== "shell:command";
+}
+
+function isLegacyShellOutputLog(log) {
+  if (log.source === "agent:cmd" || log.source === "agent:stderr") return true;
+  return log.source === "agent:status" && /^shell interrupt (requested|escalated|forced cleanup)\b/.test(String(log.message || "").trim());
+}
+
+function isShellTraceGroupLog(log) {
+  if (log.source === "shell:trace-group") return true;
+  if (log.source !== "agent:trace-group") return false;
+  return parseTraceGroup(log)?.kind === "shell";
+}
+
+function runningShellGroups(logs, flow, clearAfterLogId = 0) {
+  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") return [];
+  return latestShellGroups(logs, clearAfterLogId);
+}
+
+function latestShellGroups(logs, clearAfterLogId = 0) {
+  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log)).filter((log) => Number(log.id) > clearAfterLogId);
   const lastCommandIndex = normalizedLogs.findLastIndex((log) => log.source === "shell:command");
   if (lastCommandIndex < 0) return [];
   const groups = [];
   const command = normalizedLogs[lastCommandIndex];
   appendTerminalGroup(groups, command);
   for (const log of normalizedLogs.slice(lastCommandIndex + 1)) {
-    if (log.source === "agent:trace-group") continue;
-    if (isShellExitLog(log)) {
+    if (log.source === "agent:trace-group" || log.source === "shell:trace-group") continue;
+    if (isShellResultLog(log)) {
       if (!isRoutineShellExitLog(log)) appendTerminalGroup(groups, log);
       break;
     }
@@ -2645,7 +2661,7 @@ function latestShellGroups(logs) {
       continue;
     }
     if (!isShellOutputLog(log)) continue;
-    if ((log.source === "agent:cmd" || log.source === "agent:stderr") && !hasVisibleTerminalOutput(log.message)) continue;
+    if ((log.source === "shell:output" || log.source === "shell:stderr") && !hasVisibleTerminalOutput(log.message)) continue;
     appendTerminalGroup(groups, log);
   }
   return groups;
@@ -2661,8 +2677,7 @@ function hasVisibleTerminalOutput(message) {
 }
 
 function isShellOutputLog(log) {
-  if (log.source === "agent:cmd" || log.source === "agent:stderr") return true;
-  return log.source === "agent:status" && /^shell interrupt requested\b/.test(String(log.message || "").trim());
+  return log.source === "shell:output" || log.source === "shell:stderr" || log.source === "shell:status";
 }
 
 function shellOutputPane() {
@@ -2670,9 +2685,10 @@ function shellOutputPane() {
 }
 
 function shellOutputGroups(logs, flow) {
-  const runningGroups = runningShellGroups(logs, flow);
+  const clearAfterLogId = state.shellOutputClearAfterLogId.get(flow?.id || state.selectedFlowId) || 0;
+  const runningGroups = runningShellGroups(logs, flow, clearAfterLogId);
   if (runningGroups.length) return runningGroups;
-  return latestShellGroups(logs);
+  return latestShellGroups(logs, clearAfterLogId);
 }
 
 function renderShellOutputPane(flowId) {
@@ -2706,6 +2722,15 @@ function renderShellOutputPane(flowId) {
   pane.replaceChildren(fragment);
   pane._shellOutputSignature = signature;
   pane.scrollTop = pane.scrollHeight;
+}
+
+function clearShellOutputPane() {
+  const flowId = state.selectedFlowId;
+  if (flowId) state.shellOutputClearAfterLogId.set(flowId, state.lastLogId.get(flowId) || 0);
+  const pane = shellOutputPane();
+  pane?.replaceChildren();
+  if (pane) pane._shellOutputSignature = "";
+  renderShellOutputPane(flowId);
 }
 
 function formatTerminalMessage(source, message) {
@@ -3157,7 +3182,9 @@ function agentWorkingForFlow(flow) {
   return Boolean(
     agentEnabled &&
       flow &&
-      (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting || flowRuntimeActive(flow)),
+      (state.messageSubmitting ||
+        flowAgentRunning(flow) ||
+        (state.interruptSubmitting && flowRuntimeKind(flow) === "agent")),
   );
 }
 
@@ -3195,7 +3222,7 @@ async function pollAgentWorkingFlow() {
     stopAgentWorkingPoll(flowId);
     return;
   }
-  if (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting) {
+  if (state.messageSubmitting || state.interruptSubmitting) {
     state.agentWorkingPollInFlight = true;
     try {
       await loadLogs(flowId);
@@ -3260,13 +3287,14 @@ function renderLogs(id, options = {}) {
     return;
   }
 
-  const logs = state.logs.get(id) || [];
-  const groups = terminalGroups(logs);
   const flow = state.flows.find((item) => item.id === id) || null;
+  const logs = state.logs.get(id) || [];
+  const groups = terminalGroups(logs, flow);
   const agentWorking = agentWorkingForFlow(flow);
   const runtimeKind = flowRuntimeKind(flow);
+  const agentWorkingKind = agentWorking ? runtimeKind : "idle";
   syncAgentWorkingPoll(id, agentWorking);
-  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${runtimeKind}`;
+  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${agentWorkingKind}`;
   if (terminal._flowLogFlowId === id && terminal._flowLogSignature === signature && !options.force) {
     if (options.scrollToLatest) scrollTerminalToLatest(terminal);
     return;
@@ -3275,7 +3303,7 @@ function renderLogs(id, options = {}) {
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
-  if (agentWorking && runtimeKind !== "shell") appendTerminalWorkingBlock(fragment, runtimeKind);
+  if (agentWorking) appendTerminalWorkingBlock(fragment, agentWorkingKind);
   terminal.replaceChildren(fragment);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
@@ -3632,6 +3660,15 @@ async function submitShellCommand(value) {
   if (!input) return;
   const command = String(value || "").trim();
   if (!command) return;
+  if (command === "clear") {
+    rememberInputHistory(command, "shell");
+    cancelHistorySearch();
+    resetInputHistoryNavigation();
+    input.value = "";
+    clearShellOutputPane();
+    input.focus({ preventScroll: true });
+    return;
+  }
   if (!canSubmitShellCommand()) {
     flashBlockedInput(input);
     return;
@@ -3654,7 +3691,6 @@ async function submitShellCommand(value) {
     if (!flow) return;
     submittedFlowId = flow.id;
     renderFlowPane();
-    scheduleAgentWorkingPoll(flow.id);
     await api(`/api/flows/${flow.id}/command`, {
       method: "POST",
       body: JSON.stringify({ command }),
@@ -3765,11 +3801,6 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.diffModalFlowId) {
     event.preventDefault();
     closeDiffViewer();
-    return;
-  }
-  if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c" && flowRuntimeActive(selectedFlow())) {
-    event.preventDefault();
-    void interruptSelectedFlow();
     return;
   }
   if (handleInputPaneTabKeydown(event)) return;

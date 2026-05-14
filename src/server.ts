@@ -336,7 +336,7 @@ function deleteOutputLogs(flowId: string, ids: number[]) {
   if (!uniqueIds.length) throw new Error("No log ids provided.");
 
   const rows = uniqueIds.map((id) => logByIdStmt.get(id) as LogRow | null);
-  const allowedSources = new Set(["agent:output", "agent:cmd"]);
+  const allowedSources = new Set(["agent:output", "agent:cmd", "shell:output"]);
   if (rows.some((row) => !row || row.flowId !== flowId || !allowedSources.has(row.source))) {
     throw new Error("Only output logs for this flow can be deleted.");
   }
@@ -929,12 +929,12 @@ function cleanupFailedRuntimeProcess(runtime: RuntimeProcess, reason: string) {
 function scheduleShellInterruptEscalation(flowId: string, runtime: RuntimeProcess) {
   setTimeout(() => {
     if (shellProcesses.get(flowId) !== runtime) return;
-    insertLog(flowId, "agent:status", "shell interrupt escalated");
+    insertLog(flowId, "shell:status", "shell interrupt escalated");
     signalRuntimeProcess(runtime, "SIGTERM");
   }, 1500);
   setTimeout(() => {
     if (shellProcesses.get(flowId) !== runtime) return;
-    insertLog(flowId, "agent:status", "shell interrupt forced cleanup");
+    insertLog(flowId, "shell:status", "shell interrupt forced cleanup");
     signalRuntimeProcess(runtime, "SIGKILL");
     shellProcesses.delete(flowId);
     updateFlow(flowId, { agentStatus: "idle" });
@@ -1210,7 +1210,7 @@ function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: 
 
   insertLog(
     flowId,
-    "agent:trace-group",
+    kind === "shell" ? "shell:trace-group" : "agent:trace-group",
     JSON.stringify({
       afterId,
       beforeId,
@@ -1715,18 +1715,18 @@ async function runShellCommand(flow: Flow, userCommand: string) {
   updateFlow(flow.id, { agentStatus: "running" });
   const commandLogId = insertLog(flow.id, "shell:command", command);
 
-  const stdoutDone = streamProcessOutput(flow.id, "agent:cmd", proc.stdout).catch((error) =>
-    insertLog(flow.id, "agent:stderr", `stdout read failed: ${String(error)}\n`),
+  const stdoutDone = streamProcessOutput(flow.id, "shell:output", proc.stdout).catch((error) =>
+    insertLog(flow.id, "shell:stderr", `stdout read failed: ${String(error)}\n`),
   );
-  const stderrDone = streamProcessOutput(flow.id, "agent:stderr", proc.stderr).catch((error) =>
-    insertLog(flow.id, "agent:stderr", `stderr read failed: ${String(error)}\n`),
+  const stderrDone = streamProcessOutput(flow.id, "shell:stderr", proc.stderr).catch((error) =>
+    insertLog(flow.id, "shell:stderr", `stderr read failed: ${String(error)}\n`),
   );
   void Promise.all([stdoutDone, stderrDone]);
 
   try {
     const code = await proc.exited;
     await Promise.all([stdoutDone, stderrDone]);
-    const resultLogId = insertLog(flow.id, "agent:tool-result", `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`);
+    const resultLogId = insertLog(flow.id, "shell:result", `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`);
     createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");
     updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
   } finally {
@@ -1738,7 +1738,7 @@ function interruptShellCommand(flowId: string) {
   const runtime = shellProcesses.get(flowId);
   if (!runtime) return false;
   updateFlow(flowId, { agentStatus: "interrupting" });
-  insertLog(flowId, "agent:status", "shell interrupt requested");
+  insertLog(flowId, "shell:status", "shell interrupt requested");
   runtime.stopping = true;
   try {
     runtime.proc.stdin?.write("\x03");
