@@ -1848,7 +1848,7 @@ function renderDiffSummary(summary, diff, loading) {
     deletions.textContent = diffCountLabel(file.deletions, "-");
 
     counts.append(additions, deletions);
-    row.append(path, counts);
+    row.append(counts, path);
     fragment.appendChild(row);
   }
   summary.appendChild(fragment);
@@ -3006,7 +3006,6 @@ function renderShellOutputPane(flowId) {
   if (!pane) return;
   if (!flowId) {
     pane.hidden = true;
-    pane.classList.remove("live");
     pane.replaceChildren();
     pane._shellOutputSignature = "";
     agentPanel?.classList.remove("shell-output-visible");
@@ -3019,18 +3018,18 @@ function renderShellOutputPane(flowId) {
   const showPane = !state.shellPaneHidden;
   const shellLive = showPane && flowShellLive(flow);
   pane.hidden = !showPane;
-  pane.classList.toggle("live", shellLive);
   agentPanel?.classList.toggle("shell-output-visible", showPane);
   if (showPane) applyShellOutputSplitSize();
-  if (!hasGroups) {
+  if (!hasGroups && !shellLive) {
     pane.replaceChildren();
     pane._shellOutputSignature = "";
     return;
   }
-  const signature = groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f");
+  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fshell-live:${shellLive}`;
   if (pane._shellOutputSignature === signature) return;
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
+  if (shellLive) appendTerminalWorkingBlock(fragment, "shell");
   pane.replaceChildren(fragment);
   pane._shellOutputSignature = signature;
   pane.scrollTop = pane.scrollHeight;
@@ -3716,17 +3715,6 @@ function renderLogs(id, options = {}) {
   if (id !== state.selectedFlowId) return;
   const terminal = els.flowPane.querySelector(".terminal");
   renderShellOutputPane(id);
-  if (
-    terminal._flowLogFlowId === id &&
-    terminal._flowLogSignature &&
-    !options.force &&
-    !options.scrollToLatest &&
-    (state.terminalFollowPaused || !terminalAtLatest(terminal))
-  ) {
-    terminal._flowLogPending = id;
-    return;
-  }
-
   const flow = state.flows.find((item) => item.id === id) || null;
   const logs = state.logs.get(id) || [];
   const groups = terminalGroups(logs, flow);
@@ -3734,6 +3722,18 @@ function renderLogs(id, options = {}) {
   const agentWorkingKind = agentWorking ? "agent" : "idle";
   syncAgentWorkingPoll(id, agentWorking);
   const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${agentWorkingKind}`;
+  if (
+    terminal._flowLogFlowId === id &&
+    terminal._flowLogSignature &&
+    !options.force &&
+    !options.scrollToLatest &&
+    !agentWorking &&
+    (state.terminalFollowPaused || !terminalAtLatest(terminal))
+  ) {
+    terminal._flowLogPending = id;
+    return;
+  }
+
   if (terminal._flowLogFlowId === id && terminal._flowLogSignature === signature && !options.force) {
     if (options.scrollToLatest) scrollTerminalToLatest(terminal);
     return;
@@ -3781,6 +3781,8 @@ function connectWs() {
       setFlows(message.payload);
       if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {
         renderTickets();
+        const flow = selectedFlow();
+        if (flow) renderLogs(flow.id);
         return;
       }
       render();

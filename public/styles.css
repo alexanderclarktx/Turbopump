@@ -2743,6 +2743,14 @@ body.shell-pane-hidden .shell-command-panel {
   animation-delay: 0.32s;
 }
 
+.terminal-entry-working-shell .agent-working {
+  color: #16a34a;
+}
+
+body.theme-dark .terminal-entry-working-shell .agent-working {
+  color: #22c55e;
+}
+
 @keyframes agent-working-dot {
   0%,
   60%,
@@ -2823,23 +2831,7 @@ body.shell-pane-hidden .shell-command-panel {
   font-size: 12px;
   line-height: 1.55;
   opacity: 1;
-  outline: 1px solid transparent;
-  outline-offset: -1px;
-  transition:
-    opacity var(--motion-pane),
-    outline-color 120ms ease,
-    box-shadow 120ms ease;
-}
-
-.shell-output-pane.live {
-  border-radius: 2px;
-  outline-color: #16a34a;
-  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.35);
-}
-
-body.theme-dark .shell-output-pane.live {
-  outline-color: #22c55e;
-  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.42);
+  transition: opacity var(--motion-pane);
 }
 
 .shell-output-pane[hidden] {
@@ -3023,8 +3015,8 @@ body.theme-dark .agent-context-diff:focus-visible {
 
 .diff-summary-file {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
   align-items: start;
 }
 

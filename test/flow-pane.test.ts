@@ -760,13 +760,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function setFlows(flows)");
     expect(app).toContain("function runtimeOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain('const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);');
+    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) renderLogs(flow.id);\n        return;\n      }");
     expect(app).toContain("function syncLinearTicketsWithFlows()");
     expect(app).toContain("function flowUpdatedAtMs(flow)");
     expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
     expect(app).toContain("const flowsByIssue = new Map");
     expect(app).toContain("return { ...ticket, flowId, flowStage };");
     expect(app).toContain("setFlows(message.payload);");
-    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        return;\n      }");
     expect(app).toContain("upsertFlow(data.flow);");
   });
 
@@ -828,6 +828,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('row.className = "diff-summary-file";');
     expect(app).toContain('path.className = "diff-summary-path";');
     expect(app).toContain('counts.className = "diff-summary-counts";');
+    expect(app).toContain("row.append(counts, path);");
     expect(app).toContain('const lines = String(text).split("\\n");');
     expect(app).toContain('divider.className = `diff-file-divider${fileDividerCount ? "" : " is-first"}`;');
     expect(app).toContain('row.className = "diff-code-line";');
@@ -1000,6 +1001,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('body.className = "terminal-entry-body agent-working agent-turn-working";');
     expect(app).toContain('dots.setAttribute("aria-label", "Agent working");');
     expect(app).toContain("syncAgentWorkingPoll(id, agentWorking);");
+    expect(app).toContain("!agentWorking &&\n    (state.terminalFollowPaused || !terminalAtLatest(terminal))");
     expect(app).not.toContain("const runtimeKind = flowRuntimeKind(flow);");
     expect(app).toContain('const agentWorkingKind = agentWorking ? "agent" : "idle";');
     expect(app).toContain("if (agentWorking) appendTerminalWorkingBlock(fragment);");
@@ -1078,7 +1080,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("renderShellOutputPane(flow.id);");
     expect(app).toContain("renderShellOutputPane(submittedFlowId);");
     expect(app).toContain("const shellLive = showPane && flowShellLive(flow);");
-    expect(app).toContain('pane.classList.toggle("live", shellLive);');
+    expect(app).toContain("if (!hasGroups && !shellLive) {");
+    expect(app).toContain("shell-live:${shellLive}");
+    expect(app).toContain('if (shellLive) appendTerminalWorkingBlock(fragment, "shell");');
+    expect(app).not.toContain('pane.classList.toggle("live", shellLive);');
     expect(app).toContain('const data = await api(`/api/flows/${flow.id}/command`, {');
     expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
     expect(app).toContain("scheduleAgentWorkingPoll(flow.id);");
@@ -1114,9 +1119,10 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".shell-output-resizer");
     expect(css).toContain("cursor: col-resize;");
     expect(css).toContain(".shell-output-pane");
-    expect(css).toContain(".shell-output-pane.live");
-    expect(css).toContain("border-radius: 2px;\n  outline-color: #16a34a;");
-    expect(css).toContain("body.theme-dark .shell-output-pane.live");
+    expect(css).not.toContain(".shell-output-pane.live");
+    expect(css).toContain(".terminal-entry-working-shell .agent-working");
+    expect(css).toContain("color: #16a34a;");
+    expect(css).toContain("body.theme-dark .terminal-entry-working-shell .agent-working");
     expect(css).toContain(".shell-output-pane[hidden]");
     expect(css).not.toContain(".shell-output-pane .terminal-entry {\n  justify-items: end;");
     expect(css).not.toContain(".shell-output-pane .terminal-entry-body {\n  max-width: 100%;\n  padding-left: 0;\n  text-align: right;");
