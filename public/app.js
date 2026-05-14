@@ -4,6 +4,7 @@ const COLLAPSED_LINEAR_STATUSES_KEY = "flow.collapsedLinearStatuses";
 const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
+const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
 const THEME_KEY = "flow.theme";
 const PROMPT_HISTORY_KEY = "flow.promptHistory";
 const SHELL_HISTORY_KEY = "flow.shellHistory";
@@ -17,6 +18,7 @@ const SLASH_COMMANDS = [
   { name: "/effort", description: "Set Codex reasoning effort" },
   { name: "/fast", description: "Toggle fast mode for this flow" },
   { name: "/model", description: "Set the Codex model for this flow" },
+  { name: "/review", description: "Ask Codex to review the current changes" },
 ];
 const SLASH_COMMAND_EXPANSIONS = {
   "/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({
@@ -27,7 +29,14 @@ const SLASH_COMMAND_EXPANSIONS = {
     name: `/model ${model}`,
     description: "",
   })),
+  "/review": [
+    { name: "/review base", description: "Review against a base branch (PR style)" },
+    { name: "/review uncommitted", description: "Review uncommitted changes" },
+    { name: "/review commit", description: "Review a commit" },
+    { name: "/review custom", description: "Custom review instructions" },
+  ],
 };
+const SLASH_COMMANDS_WITH_ARGUMENTS = ["/review base", "/review commit", "/review custom"];
 
 function sortSlashCommands(commands) {
   return [...commands].sort((a, b) => a.name.localeCompare(b.name));
@@ -46,12 +55,20 @@ function slashCommandHasExpansions(commandName) {
   return Boolean(SLASH_COMMAND_EXPANSIONS[commandName]);
 }
 
+function slashCommandAllowsArguments(commandName) {
+  return SLASH_COMMANDS_WITH_ARGUMENTS.includes(commandName);
+}
+
 function validSlashCommand(value) {
   const commandName = value.trim();
   if (slashCommandHasExpansions(commandName)) return false;
   if (SORTED_SLASH_COMMANDS.some((command) => command.name === commandName)) return true;
   return Object.values(SLASH_COMMAND_EXPANSIONS).some((expansions) =>
-    expansions.some((command) => command.name === commandName),
+    expansions.some(
+      (command) =>
+        command.name === commandName ||
+        (slashCommandAllowsArguments(command.name) && commandName.startsWith(`${command.name} `)),
+    ),
   );
 }
 
@@ -111,6 +128,15 @@ function clampFlowSplitSize(value) {
   return Math.min(100, Math.max(0, value));
 }
 
+function clampShellOutputSplitSize(value) {
+  return Math.min(70, Math.max(18, value));
+}
+
+function initialShellOutputSplitSize() {
+  const value = Number(localStorage.getItem(SHELL_OUTPUT_SPLIT_SIZE_KEY) || 28);
+  return clampShellOutputSplitSize(Number.isFinite(value) ? value : 28);
+}
+
 const state = {
   stages: [],
   flows: [],
@@ -134,8 +160,10 @@ const state = {
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
   pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
+  shellOutputSplitSize: initialShellOutputSplitSize(),
   slashCommandIndex: 0,
   messageSubmitting: false,
+  shellSubmitting: false,
   interruptSubmitting: false,
   pendingAgentImages: [],
   agentImageUploading: false,
@@ -143,7 +171,6 @@ const state = {
   agentWorkingPollFlowId: "",
   agentWorkingPollTimer: 0,
   agentWorkingPollInFlight: false,
-  inputMode: "prompt",
   promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
   promptHistoryOrder: new Map(),
@@ -316,13 +343,8 @@ function slashCommandMatches(value) {
   return SORTED_SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
 }
 
-function commandModeCommand(value) {
-  if (state.inputMode !== "command") return null;
-  return value.trim();
-}
-
-function inputHistoryMode() {
-  return state.inputMode === "command" ? "shell" : "prompt";
+function inputHistoryMode(input = document.activeElement) {
+  return input?.classList?.contains("shell-input") ? "shell" : "prompt";
 }
 
 function inputHistoryKey(mode = inputHistoryMode()) {
@@ -401,7 +423,7 @@ function resetInputHistoryNavigation() {
 }
 
 function updateInputHistoryNavigation(input, direction) {
-  const mode = inputHistoryMode();
+  const mode = inputHistoryMode(input);
   const history = inputHistory(mode);
   if (!history.length) return false;
   if (!state.historyNavigation || state.historyNavigation.mode !== mode) {
@@ -543,34 +565,43 @@ function handleHistorySearchKeydown(event) {
   return false;
 }
 
-function enterCommandModeFromDollarKey(event) {
-  const input = event.currentTarget;
-  if (state.inputMode !== "prompt" || event.key !== "$" || event.metaKey || event.ctrlKey || event.altKey) return false;
-  if (input.value.trim()) return false;
-  event.preventDefault();
+function promptInput() {
+  return els.flowPane.querySelector(".message-input");
+}
+
+function shellInput() {
+  return els.flowPane.querySelector(".shell-input");
+}
+
+function focusInputPane(kind) {
+  const input = kind === "shell" ? shellInput() : promptInput();
+  if (!input) return false;
   cancelHistorySearch();
   resetInputHistoryNavigation();
-  state.inputMode = "command";
-  input.value = "";
-  updateMessageInputMode();
-  resizeMessageInput();
-  renderSlashMenu();
+  input.focus();
   return true;
 }
 
-function setInputMode(mode) {
-  const input = els.flowPane.querySelector(".message-input");
-  cancelHistorySearch();
-  resetInputHistoryNavigation();
-  state.inputMode = mode;
-  updateMessageInputMode();
-  resizeMessageInput();
-  renderSlashMenu();
-  input?.focus();
+function focusedInputPaneKind() {
+  if (document.activeElement === shellInput()) return "shell";
+  if (document.activeElement === promptInput()) return "prompt";
+  return "";
 }
 
-function toggleInputMode() {
-  setInputMode(state.inputMode === "command" ? "prompt" : "command");
+function toggleFocusedInputPane() {
+  const focused = focusedInputPaneKind();
+  if (focused === "shell") return focusInputPane("prompt");
+  return focusInputPane("shell") || focusInputPane("prompt");
+}
+
+function setInputMode(mode) {
+  focusInputPane(mode === "command" || mode === "shell" ? "shell" : "prompt");
+}
+
+function updateMessageInputMode() {
+  const input = promptInput();
+  if (!input) return;
+  renderSlashMenu();
 }
 
 function flowRuntimeActive(flow) {
@@ -581,20 +612,54 @@ function flowRuntimeKind(flow) {
   return flow?.agentRuntimeKind === "shell" ? "shell" : "agent";
 }
 
-function canToggleInputMode() {
-  const flow = selectedFlow();
-  const ticket = selectedTicket();
-  return Boolean(repoUrlConfigured() && !state.messageSubmitting && !state.agentImageUploading && !flowRuntimeActive(flow) && (flow || ticket));
+function flowAgentRunning(flow) {
+  return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "agent";
 }
 
-function handleInputModeTabKeydown(event) {
+function flowShellRunning(flow) {
+  return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "shell";
+}
+
+function canSubmitPromptMessage() {
+  const flow = selectedFlow();
+  const ticket = selectedTicket();
+  return Boolean(
+    repoUrlConfigured() &&
+      (flow || ticket) &&
+      !state.messageSubmitting &&
+      !state.agentImageUploading &&
+      !flowAgentRunning(flow),
+  );
+}
+
+function canSubmitShellCommand() {
+  const flow = selectedFlow();
+  const ticket = selectedTicket();
+  return Boolean(repoUrlConfigured() && (flow || ticket) && !state.shellSubmitting && !flowShellRunning(flow));
+}
+
+function canSwitchInputPane() {
+  const flow = selectedFlow();
+  const ticket = selectedTicket();
+  return Boolean(repoUrlConfigured() && (flow || ticket));
+}
+
+function handleInputPaneTabKeydown(event) {
   if (event.defaultPrevented) return false;
   if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;
-  if (!canToggleInputMode()) return false;
+  if (!canSwitchInputPane()) return false;
   event.preventDefault();
   if (event.repeat) return true;
-  toggleInputMode();
+  toggleFocusedInputPane();
   return true;
+}
+
+function flashBlockedInput(input) {
+  if (!input) return;
+  input.classList.remove("input-submit-blocked");
+  void input.offsetWidth;
+  input.classList.add("input-submit-blocked");
+  window.setTimeout(() => input.classList.remove("input-submit-blocked"), 420);
 }
 
 async function interruptSelectedFlow() {
@@ -625,27 +690,18 @@ function shouldFocusMessageInputForKey(event) {
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
   if (isEditableKeyTarget(event.target)) return false;
-  const input = els.flowPane.querySelector(".message-input");
-  return Boolean(input && !input.disabled && document.activeElement !== input);
+  const input = promptInput();
+  return Boolean(input && document.activeElement !== input);
 }
 
 function focusMessageInputForKey(event) {
   if (!shouldFocusMessageInputForKey(event)) return false;
-  const input = els.flowPane.querySelector(".message-input");
+  const input = promptInput();
   const start = input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? input.value.length;
   event.preventDefault();
+  if (event.key === "$" && focusInputPane("shell")) return true;
   input.focus();
-  if (event.key === "$" && state.inputMode === "prompt") {
-    cancelHistorySearch();
-    resetInputHistoryNavigation();
-    state.inputMode = "command";
-    input.value = "";
-    updateMessageInputMode();
-    resizeMessageInput();
-    renderSlashMenu();
-    return true;
-  }
   input.setRangeText(event.key, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
   return true;
@@ -656,8 +712,8 @@ function handleGlobalHistorySearchKeydown(event) {
   const key = event.key.toLowerCase();
   if (key !== "r" && key !== "z") return false;
   if (isEditableKeyTarget(event.target)) return false;
-  const input = els.flowPane.querySelector(".message-input");
-  if (!input || input.disabled) return false;
+  const input = document.activeElement === shellInput() ? shellInput() : promptInput();
+  if (!input) return false;
   if (key === "r") {
     event.preventDefault();
     input.focus();
@@ -677,43 +733,10 @@ function hideSlashMenu() {
   menu.replaceChildren();
 }
 
-function updateMessageInputMode() {
-  const input = els.flowPane.querySelector(".message-input");
-  if (!input) return;
-  const commandMode = state.inputMode === "command";
-  input.classList.toggle("command-mode", commandMode);
-  input.placeholder = commandMode ? "Run a shell command" : "Prompt the agent";
-  updateInputModeButton();
-}
-
-function updateInputModeButton() {
-  const button = els.flowPane.querySelector(".agent-interrupt");
-  if (!button) return;
-  const flow = selectedFlow();
-  const running = flowRuntimeActive(flow);
-  const shellRunning = running && flowRuntimeKind(flow) === "shell";
-  const commandMode = state.inputMode === "command";
-  button.classList.toggle("command-mode", commandMode && !running);
-  button.classList.toggle("prompt-mode", !commandMode && !running);
-  button.classList.toggle("running-mode", running);
-  button.classList.toggle("shell-running-mode", shellRunning);
-  button.setAttribute("aria-label", running ? "Pause agent" : commandMode ? "Switch to prompt mode" : "Switch to shell mode");
-  button.title = running ? "Pause agent" : commandMode ? "Switch to prompt mode" : "Switch to shell mode";
-  if (running) {
-    button.innerHTML = `
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M9 6v12" />
-        <path d="M15 6v12" />
-      </svg>
-    `;
-  } else {
-    button.textContent = commandMode ? "$" : ">";
-  }
-}
-
 function resizeMessageInput() {
-  const input = els.flowPane.querySelector(".message-input");
+  const input = promptInput();
   const terminal = els.flowPane.querySelector(".terminal");
+  if (!input) return;
   const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
   const currentHeight = input.getBoundingClientRect().height;
   input.style.height = "auto";
@@ -730,9 +753,9 @@ function resizeMessageInput() {
 }
 
 function renderSlashMenu() {
-  const input = els.flowPane.querySelector(".message-input");
+  const input = promptInput();
   const menu = els.flowPane.querySelector(".slash-menu");
-  if (state.inputMode === "command") {
+  if (!input || document.activeElement === shellInput()) {
     hideSlashMenu();
     return;
   }
@@ -768,7 +791,8 @@ function renderSlashMenu() {
 }
 
 function selectSlashCommand(index = state.slashCommandIndex) {
-  const input = els.flowPane.querySelector(".message-input");
+  const input = promptInput();
+  if (!input) return false;
   const matches = slashCommandMatches(input.value);
   const command = matches[index];
   if (!command) return false;
@@ -980,11 +1004,53 @@ function setFlowSplitSize(value) {
   localStorage.setItem(FLOW_SPLIT_SIZE_KEY, String(state.flowSplitSize));
 }
 
+function shellOutputSplitBounds(panel, rect) {
+  const resizer = panel.querySelector(".shell-output-resizer");
+  const resizerWidth = resizer?.getBoundingClientRect().width || 0;
+  const minShellPx = Math.min(180, Math.max(80, rect.width - resizerWidth - 180));
+  const maxShellPx = Math.max(minShellPx, rect.width - resizerWidth - 260);
+  return {
+    min: (Math.min(rect.width, Math.max(0, minShellPx)) / rect.width) * 100,
+    max: (Math.min(rect.width, Math.max(0, maxShellPx)) / rect.width) * 100,
+  };
+}
+
+function appliedShellOutputSplitSize() {
+  const panel = els.flowPane.querySelector(".terminal-panel");
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width) return state.shellOutputSplitSize;
+  const bounds = shellOutputSplitBounds(panel, rect);
+  return Math.min(bounds.max, Math.max(bounds.min, state.shellOutputSplitSize));
+}
+
+function applyShellOutputSplitSize() {
+  const panel = els.flowPane.querySelector(".terminal-panel");
+  const rect = panel.getBoundingClientRect();
+  const applied = appliedShellOutputSplitSize();
+  const resizer = panel.querySelector(".shell-output-resizer");
+  if (rect.width) {
+    const bounds = shellOutputSplitBounds(panel, rect);
+    resizer.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
+    resizer.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+  }
+  resizer.setAttribute("aria-valuenow", String(Math.round(applied)));
+  panel.style.setProperty("--shell-pane-size", `max(180px, ${applied}%)`);
+  return applied;
+}
+
+function setShellOutputSplitSize(value) {
+  state.shellOutputSplitSize = clampShellOutputSplitSize(value);
+  const applied = applyShellOutputSplitSize();
+  state.shellOutputSplitSize = applied;
+  localStorage.setItem(SHELL_OUTPUT_SPLIT_SIZE_KEY, String(state.shellOutputSplitSize));
+}
+
 async function bootstrap() {
   applyTheme(state.theme);
   renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
   setFlowSplitSize(state.flowSplitSize);
+  setShellOutputSplitSize(state.shellOutputSplitSize);
   const data = await api("/api/bootstrap");
   state.stages = data.stages;
   setFlows(data.flows);
@@ -1823,7 +1889,8 @@ function ticketAgentWorking(ticket) {
     repoUrlConfigured() &&
       flow &&
       (flowRuntimeActive(flow) ||
-        (flow.id === state.selectedFlowId && (state.messageSubmitting || state.interruptSubmitting))),
+        (flow.id === state.selectedFlowId &&
+          (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting))),
   );
 }
 
@@ -1953,7 +2020,6 @@ function renderFlowPane() {
   const issueUrl = flow?.linearIssueUrl || ticket?.url || "";
   const agentEnabled = repoUrlConfigured();
   const agentPanel = els.flowPane.querySelector(".agent-panel");
-  const agentRunning = flowRuntimeActive(flow);
 
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
@@ -1964,15 +2030,13 @@ function renderFlowPane() {
     return;
   }
 
-  const agentInterrupt = els.flowPane.querySelector(".agent-interrupt");
   const messageForm = els.flowPane.querySelector(".message-form");
-  const messageInput = els.flowPane.querySelector(".message-input");
-  const inputDisabled =
-    state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
-  agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || (!agentRunning && (!flow && !ticket));
-  messageInput.disabled = inputDisabled;
-  messageForm.classList.toggle("input-disabled", inputDisabled);
-  messageForm.setAttribute("aria-disabled", String(inputDisabled));
+  const messageInput = promptInput();
+  const commandInput = shellInput();
+  messageInput.disabled = false;
+  commandInput.disabled = false;
+  messageForm.classList.remove("input-disabled");
+  messageForm.setAttribute("aria-disabled", "false");
   updateMessageInputMode();
   resizeMessageInput();
 
@@ -1982,6 +2046,7 @@ function renderFlowPane() {
     renderLogs(flow.id);
   } else {
     stopAgentWorkingPoll();
+    renderShellOutputPane("");
     const terminal = els.flowPane.querySelector(".terminal");
     terminal._flowLogFlowId = "";
     terminal._flowLogSignature = "";
@@ -2033,7 +2098,7 @@ function eventHasDraggedFiles(event) {
 
 function setAgentImageDragActive(active) {
   document.body.classList.toggle("agent-image-drag-active", active);
-  els.flowPane.querySelector(".message-input").classList.toggle("drag-over", active);
+  promptInput().classList.toggle("drag-over", active);
 }
 
 async function uploadAgentImages(files) {
@@ -2395,7 +2460,7 @@ function isHiddenTerminalLog(log) {
 
 function terminalGroups(logs) {
   const groups = [];
-  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
+  const normalizedLogs = agentPaneLogs(logs);
   const latestInputId = latestInputLogId(normalizedLogs);
   const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
   const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
@@ -2445,6 +2510,115 @@ function terminalGroups(logs) {
     appendTerminalGroup(groups, log);
   }
   return groups;
+}
+
+function agentPaneLogs(logs) {
+  const result = [];
+  let inShellSpan = false;
+  for (const rawLog of logs) {
+    const log = normalizeTerminalLog(rawLog);
+    if (log.source === "shell:command") {
+      inShellSpan = true;
+      continue;
+    }
+    if (inShellSpan) {
+      if (log.source === "user") {
+        inShellSpan = false;
+        result.push(log);
+        continue;
+      }
+      if (isShellExitLog(log)) inShellSpan = false;
+      continue;
+    }
+    result.push(log);
+  }
+  return result;
+}
+
+function runningShellGroups(logs, flow) {
+  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") return [];
+  return latestShellGroups(logs);
+}
+
+function latestShellGroups(logs) {
+  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
+  const lastCommandIndex = normalizedLogs.findLastIndex((log) => log.source === "shell:command");
+  if (lastCommandIndex < 0) return [];
+  const groups = [];
+  const command = normalizedLogs[lastCommandIndex];
+  appendTerminalGroup(groups, command);
+  for (const log of normalizedLogs.slice(lastCommandIndex + 1)) {
+    if (log.source === "agent:trace-group") continue;
+    if (isShellExitLog(log)) {
+      if (!isRoutineShellExitLog(log)) appendTerminalGroup(groups, log);
+      break;
+    }
+    if (
+      log.source === "agent:tool" &&
+      formatTerminalMessage(log.source, log.message) === formatTerminalMessage(command.source, command.message)
+    ) {
+      continue;
+    }
+    if (!isShellOutputLog(log)) continue;
+    if ((log.source === "agent:cmd" || log.source === "agent:stderr") && !hasVisibleTerminalOutput(log.message)) continue;
+    appendTerminalGroup(groups, log);
+  }
+  return groups;
+}
+
+function hasVisibleTerminalOutput(message) {
+  return Boolean(
+    String(message || "")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\[(\d{1,3}(?:;\d{1,3})*)m/g, "")
+      .trim(),
+  );
+}
+
+function isShellOutputLog(log) {
+  if (log.source === "agent:cmd" || log.source === "agent:stderr") return true;
+  return log.source === "agent:status" && /^shell interrupt requested\b/.test(String(log.message || "").trim());
+}
+
+function shellOutputPane() {
+  return els.flowPane.querySelector(".shell-output-pane");
+}
+
+function shellOutputGroups(logs, flow) {
+  const runningGroups = runningShellGroups(logs, flow);
+  if (runningGroups.length) return runningGroups;
+  return latestShellGroups(logs);
+}
+
+function renderShellOutputPane(flowId) {
+  const pane = shellOutputPane();
+  const agentPanel = els.flowPane.querySelector(".agent-panel");
+  if (!pane) return;
+  if (!flowId) {
+    pane.hidden = true;
+    pane.replaceChildren();
+    pane._shellOutputSignature = "";
+    agentPanel?.classList.remove("shell-output-visible");
+    return;
+  }
+  if (flowId !== state.selectedFlowId) return;
+  const flow = state.flows.find((item) => item.id === flowId) || null;
+  const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
+  pane.hidden = !groups.length;
+  agentPanel?.classList.toggle("shell-output-visible", Boolean(groups.length));
+  if (groups.length) applyShellOutputSplitSize();
+  if (!groups.length) {
+    pane.replaceChildren();
+    pane._shellOutputSignature = "";
+    return;
+  }
+  const signature = groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f");
+  if (pane._shellOutputSignature === signature) return;
+  const fragment = document.createDocumentFragment();
+  for (const group of groups) appendTerminalBlock(fragment, group);
+  pane.replaceChildren(fragment);
+  pane._shellOutputSignature = signature;
+  pane.scrollTop = pane.scrollHeight;
 }
 
 function formatTerminalMessage(source, message) {
@@ -2834,7 +3008,11 @@ function followTerminalToLatestDuringLayout(terminal, durationMs) {
 
 function agentWorkingForFlow(flow) {
   const agentEnabled = repoUrlConfigured();
-  return Boolean(agentEnabled && flow && (state.messageSubmitting || state.interruptSubmitting || flowRuntimeActive(flow)));
+  return Boolean(
+    agentEnabled &&
+      flow &&
+      (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting || flowRuntimeActive(flow)),
+  );
 }
 
 function stopAgentWorkingPoll(flowId = "") {
@@ -2871,7 +3049,7 @@ async function pollAgentWorkingFlow() {
     stopAgentWorkingPoll(flowId);
     return;
   }
-  if (state.messageSubmitting || state.interruptSubmitting) {
+  if (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting) {
     state.agentWorkingPollInFlight = true;
     try {
       await loadLogs(flowId);
@@ -2924,6 +3102,7 @@ function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
 function renderLogs(id, options = {}) {
   if (id !== state.selectedFlowId) return;
   const terminal = els.flowPane.querySelector(".terminal");
+  renderShellOutputPane(id);
   if (
     terminal._flowLogFlowId === id &&
     terminal._flowLogSignature &&
@@ -2950,12 +3129,13 @@ function renderLogs(id, options = {}) {
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
-  if (agentWorking) appendTerminalWorkingBlock(fragment, runtimeKind);
+  if (agentWorking && runtimeKind !== "shell") appendTerminalWorkingBlock(fragment, runtimeKind);
   terminal.replaceChildren(fragment);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
   terminal._flowLogPending = "";
   if (atLatest) scrollTerminalToLatest(terminal);
+  renderShellOutputPane(id);
 }
 
 function escapeHtml(value) {
@@ -3037,6 +3217,29 @@ function startFlowSplitResize(event) {
   window.addEventListener("pointerup", onPointerUp, { once: true });
 }
 
+function resizeShellOutputSplitFromPointer(clientX) {
+  const panel = els.flowPane.querySelector(".terminal-panel");
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width) return;
+  setShellOutputSplitSize(((rect.right - clientX) / rect.width) * 100);
+}
+
+function startShellOutputSplitResize(event) {
+  event.preventDefault();
+  document.body.classList.add("shell-output-resizing");
+  resizeShellOutputSplitFromPointer(event.clientX);
+
+  const onPointerMove = (moveEvent) => resizeShellOutputSplitFromPointer(moveEvent.clientX);
+  const onPointerUp = () => {
+    document.body.classList.remove("shell-output-resizing");
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
 els.settingsToggle.addEventListener("click", (event) => {
   event.stopPropagation();
   setSettingsCollapsed(!state.settingsCollapsed);
@@ -3109,6 +3312,13 @@ els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) 
   setFlowSplitSize(state.flowSplitSize + (event.key === "ArrowDown" ? 5 : -5));
 });
 
+els.flowPane.querySelector(".shell-output-resizer").addEventListener("pointerdown", startShellOutputSplitResize);
+els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  setShellOutputSplitSize(state.shellOutputSplitSize + (event.key === "ArrowLeft" ? 5 : -5));
+});
+
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
   if (terminalAtLatest(terminal)) resumeTerminalFollow();
@@ -3142,27 +3352,18 @@ els.flowPane.querySelector(".terminal").addEventListener(
   { passive: true },
 );
 
-els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async () => {
-  if (!(await interruptSelectedFlow())) {
-    toggleInputMode();
-  }
-});
-
-els.flowPane.querySelector(".message-input").addEventListener("input", () => {
-  const input = els.flowPane.querySelector(".message-input");
+promptInput().addEventListener("input", () => {
   cancelHistorySearch();
   resetInputHistoryNavigation();
-  if (state.inputMode === "prompt" && input.value.trimStart().startsWith("$")) {
-    const dollarIndex = input.value.indexOf("$");
-    cancelHistorySearch();
-    resetInputHistoryNavigation();
-    state.inputMode = "command";
-    input.value = input.value.slice(dollarIndex + 1).trimStart();
-  }
   state.slashCommandIndex = 0;
   updateMessageInputMode();
   resizeMessageInput();
   renderSlashMenu();
+});
+
+shellInput().addEventListener("input", () => {
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
 });
 
 els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
@@ -3207,23 +3408,12 @@ document.addEventListener("drop", (event) => {
   if (files.length) void uploadAgentImages(files);
 }, true);
 
-els.flowPane.querySelector(".message-input").addEventListener("keydown", (event) => {
+promptInput().addEventListener("keydown", (event) => {
   const input = event.currentTarget;
   const menu = els.flowPane.querySelector(".slash-menu");
   const matches = slashCommandMatches(input.value);
 
-  if (enterCommandModeFromDollarKey(event)) return;
   if (handleHistorySearchKeydown(event)) return;
-
-  if (event.key === "Backspace" && state.inputMode === "command" && input.value.length === 0) {
-    event.preventDefault();
-    cancelHistorySearch();
-    resetInputHistoryNavigation();
-    state.inputMode = "prompt";
-    updateMessageInputMode();
-    renderSlashMenu();
-    return;
-  }
 
   if (!menu.hidden && matches.length) {
     if (event.key === "ArrowDown") {
@@ -3237,8 +3427,7 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
       renderSlashMenu();
       return;
     } else if (event.key === "Tab") {
-      event.preventDefault();
-      selectSlashCommand();
+      handleInputPaneTabKeydown(event);
       return;
     } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -3264,17 +3453,68 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
     }
   }
 
-  if (handleInputModeTabKeydown(event)) return;
+  if (handleInputPaneTabKeydown(event)) return;
   if (handleInputHistoryNavigationKeydown(event)) return;
 
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    if (commandModeCommand(input.value) !== null && !commandModeCommand(input.value)) return;
     if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;
     hideSlashMenu();
     input.form?.requestSubmit();
   }
 });
+
+shellInput().addEventListener("keydown", (event) => {
+  const input = event.currentTarget;
+  if (handleHistorySearchKeydown(event)) return;
+  if (handleInputPaneTabKeydown(event)) return;
+  if (handleInputHistoryNavigationKeydown(event)) return;
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    void submitShellCommand(input.value);
+  }
+});
+
+async function submitShellCommand(value) {
+  const input = shellInput();
+  if (!input) return;
+  const command = String(value || "").trim();
+  if (!command) return;
+  if (!canSubmitShellCommand()) {
+    flashBlockedInput(input);
+    return;
+  }
+  if (state.pendingAgentImages.length) {
+    alert("Shell commands do not support image attachments.");
+    return;
+  }
+  rememberInputHistory(command, "shell");
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
+  state.shellSubmitting = true;
+  input.value = "";
+  hideSlashMenu();
+  renderTickets();
+  renderFlowPane();
+  let submittedFlowId = "";
+  try {
+    const flow = await ensureSelectedFlow();
+    if (!flow) return;
+    submittedFlowId = flow.id;
+    renderFlowPane();
+    scheduleAgentWorkingPoll(flow.id);
+    await api(`/api/flows/${flow.id}/command`, {
+      method: "POST",
+      body: JSON.stringify({ command }),
+    });
+  } finally {
+    state.shellSubmitting = false;
+    if (submittedFlowId) await loadLogs(submittedFlowId);
+    renderTickets();
+    renderFlowPane();
+    shellInput()?.focus();
+  }
+}
 
 els.flowPane.querySelector(".slash-menu").addEventListener("mouseover", (event) => {
   const button = event.target.closest(".slash-command");
@@ -3290,7 +3530,7 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   const command = event.target.closest(".slash-command")?.dataset.command;
   if (!command) return;
   event.preventDefault();
-  els.flowPane.querySelector(".message-input").value = command;
+  promptInput().value = command;
   resizeMessageInput();
   if (slashCommandHasExpansions(command)) {
     state.slashCommandIndex = 0;
@@ -3298,25 +3538,20 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   } else {
     hideSlashMenu();
   }
-  els.flowPane.querySelector(".message-input").focus();
+  promptInput().focus();
 });
 
 els.flowPane.querySelector(".message-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (state.messageSubmitting) return;
-  const input = els.flowPane.querySelector(".message-input");
-  if (input.disabled) return;
+  const input = promptInput();
   const message = input.value.trim();
-  const command = commandModeCommand(input.value);
-  const mode = command === null ? "prompt" : "shell";
-  if (command !== null && state.pendingAgentImages.length) {
-    alert("Command mode does not support image attachments.");
+  if (!message && !state.pendingAgentImages.length) return;
+  if (!canSubmitPromptMessage()) {
+    flashBlockedInput(input);
     return;
   }
-  if (command !== null && !command) return;
-  if (!message && !state.pendingAgentImages.length) return;
-  const agentMessage = command === null ? agentMessageWithImages(message || "Use the attached image context.") : "";
-  rememberInputHistory(command ?? message, mode);
+  const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
+  rememberInputHistory(message, "prompt");
   cancelHistorySearch();
   resetInputHistoryNavigation();
   state.messageSubmitting = true;
@@ -3333,24 +3568,17 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     submittedFlowId = flow.id;
     renderFlowPane();
     scheduleAgentWorkingPoll(flow.id);
-    if (command === null) {
-      await api(`/api/flows/${flow.id}/message`, {
-        method: "POST",
-        body: JSON.stringify({ message: agentMessage }),
-      });
-    } else {
-      await api(`/api/flows/${flow.id}/command`, {
-        method: "POST",
-        body: JSON.stringify({ command }),
-      });
-    }
+    await api(`/api/flows/${flow.id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message: agentMessage }),
+    });
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
     if (submittedFlowId) await loadLogs(submittedFlowId);
     renderTickets();
     renderFlowPane();
-    els.flowPane.querySelector(".message-input").focus();
+    promptInput().focus();
   }
 });
 
@@ -3366,7 +3594,10 @@ els.flowPane.addEventListener("click", handleImagePreviewClick);
 let titleResizeFrame = 0;
 window.addEventListener("resize", () => {
   cancelAnimationFrame(titleResizeFrame);
-  titleResizeFrame = requestAnimationFrame(renderFlowPane);
+  titleResizeFrame = requestAnimationFrame(() => {
+    applyShellOutputSplitSize();
+    renderFlowPane();
+  });
 });
 
 document.addEventListener("keydown", (event) => {
@@ -3385,7 +3616,7 @@ document.addEventListener("keydown", (event) => {
     void interruptSelectedFlow();
     return;
   }
-  if (handleInputModeTabKeydown(event)) return;
+  if (handleInputPaneTabKeydown(event)) return;
   if (handleGlobalHistorySearchKeydown(event)) return;
   if (focusMessageInputForKey(event)) return;
   if (event.key === "Escape") event.preventDefault();

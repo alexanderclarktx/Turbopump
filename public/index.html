@@ -163,15 +163,28 @@
             <div class="agent-panel terminal-panel">
               <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
               <div class="terminal" role="log" aria-live="polite"></div>
+              <div
+                class="shell-output-resizer"
+                role="separator"
+                aria-label="Resize agent and shell output panes"
+                aria-orientation="vertical"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                tabindex="0"
+              ></div>
+              <div class="shell-output-pane" role="log" aria-live="polite" hidden></div>
               <form class="message-form">
                 <div class="history-search-indicator" aria-live="polite" aria-hidden="true"></div>
-                <button class="agent-interrupt icon-button" type="button" aria-label="Pause agent" title="Pause agent" disabled>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M9 6v12" />
-                    <path d="M15 6v12" />
-                  </svg>
-                </button>
-                <textarea class="message-input" placeholder="Prompt the agent" rows="1"></textarea>
+                <div class="prompt-input-pane">
+                  <span class="input-pane-prefix prompt-input-prefix" aria-hidden="true">&gt;</span>
+                  <textarea class="message-input" rows="1"></textarea>
+                </div>
+                <div class="shell-command-panel">
+                  <div class="shell-input-pane">
+                    <span class="input-pane-prefix shell-input-prefix" aria-hidden="true">$</span>
+                    <input class="shell-input" autocomplete="off" />
+                  </div>
+                </div>
                 <div class="agent-context" aria-label="Current flow context" hidden>
                   <span class="agent-context-window"></span>
                   <span class="agent-context-model"></span>

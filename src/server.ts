@@ -104,6 +104,8 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
+const reviewFindingInstructions =
+  "Focus on bugs, behavioral regressions, missing tests, and risks. Report findings first with file and line references.";
 const defaultAgentDeveloperInstructions = [
   "You are running inside Turbopump, a local coding-agent workflow system.",
   "",
@@ -908,6 +910,22 @@ function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
   return signaled;
 }
 
+function forgetRuntimeProcess(runtime: RuntimeProcess) {
+  if (runtime.kind === "agent" && agentProcesses.get(runtime.flowId) === runtime) agentProcesses.delete(runtime.flowId);
+  if (runtime.kind === "shell" && shellProcesses.get(runtime.flowId) === runtime) shellProcesses.delete(runtime.flowId);
+  if (runtime.kind === "serve" && serveProcess === runtime) serveProcess = null;
+}
+
+function cleanupFailedRuntimeProcess(runtime: RuntimeProcess, reason: string) {
+  runtime.stopping = true;
+  rejectCodexPending(runtime, new Error(reason));
+  forgetRuntimeProcess(runtime);
+  signalRuntimeProcess(runtime, "SIGTERM");
+  setTimeout(() => {
+    if (runtime.proc.exitCode === null) signalRuntimeProcess(runtime, "SIGKILL");
+  }, 1500);
+}
+
 function scheduleShellInterruptEscalation(flowId: string, runtime: RuntimeProcess) {
   setTimeout(() => {
     if (shellProcesses.get(flowId) !== runtime) return;
@@ -1378,6 +1396,7 @@ function spawnLoggedProcess(
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
     env: runtimeEnv(flow),
+    detached: true,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -1415,6 +1434,7 @@ async function startCodexAppServer(flow: Flow) {
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: activeFlow.checkoutPath,
     env,
+    detached: true,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -1446,46 +1466,52 @@ async function startCodexAppServer(flow: Flow) {
     insertLog(activeFlow.id, "agent:status", `app-server exited with code ${code}`);
   });
 
-  await sendCodexRequest(runtime, "initialize", {
-    clientInfo: {
-      name: "turbopump",
-      title: "Turbopump",
-      version: "0.1.0",
-    },
-    capabilities: {
-      experimentalApi: true,
-    },
-  });
-  sendCodexNotification(runtime, "initialized");
+  try {
+    await sendCodexRequest(runtime, "initialize", {
+      clientInfo: {
+        name: "turbopump",
+        title: "Turbopump",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+      },
+    });
+    sendCodexNotification(runtime, "initialized");
 
-  const savedThreadId = getSetting(codexThreadSettingKey(activeFlow.id));
-  let threadResponse: unknown;
-  if (savedThreadId) {
-    try {
-      threadResponse = await sendCodexRequest(runtime, "thread/resume", {
-        ...codexThreadResumeParams(activeFlow, savedThreadId),
-      });
-    } catch (error) {
-      insertLog(activeFlow.id, "agent:status", `could not resume Codex thread ${savedThreadId}: ${String(error)}`);
+    const savedThreadId = getSetting(codexThreadSettingKey(activeFlow.id));
+    let threadResponse: unknown;
+    if (savedThreadId) {
+      try {
+        threadResponse = await sendCodexRequest(runtime, "thread/resume", {
+          ...codexThreadResumeParams(activeFlow, savedThreadId),
+        });
+      } catch (error) {
+        insertLog(activeFlow.id, "agent:status", `could not resume Codex thread ${savedThreadId}: ${String(error)}`);
+      }
     }
-  }
-  if (!threadResponse) {
-    threadResponse = await sendCodexRequest(runtime, "thread/start", codexThreadParams(activeFlow));
-  }
+    if (!threadResponse) {
+      threadResponse = await sendCodexRequest(runtime, "thread/start", codexThreadParams(activeFlow));
+    }
 
-  const threadPayload = threadResponse as {
-    thread?: { id?: string };
-    model?: string;
-    reasoningEffort?: string | null;
-    serviceTier?: string | null;
-  };
-  const thread = threadPayload.thread;
-  if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
-  runtime.threadId = thread.id;
-  setSetting(codexThreadSettingKey(activeFlow.id), thread.id);
-  updateFlow(activeFlow.id, { ...codexThreadMetadata(threadPayload), ...configuredAgentMetadata(activeFlow) });
-  insertLog(activeFlow.id, "agent:status", `Codex thread ${thread.id} ready`);
-  return runtime;
+    const threadPayload = threadResponse as {
+      thread?: { id?: string };
+      model?: string;
+      reasoningEffort?: string | null;
+      serviceTier?: string | null;
+    };
+    const thread = threadPayload.thread;
+    if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
+    runtime.threadId = thread.id;
+    setSetting(codexThreadSettingKey(activeFlow.id), thread.id);
+    updateFlow(activeFlow.id, { ...codexThreadMetadata(threadPayload), ...configuredAgentMetadata(activeFlow) });
+    insertLog(activeFlow.id, "agent:status", `Codex thread ${thread.id} ready`);
+    return runtime;
+  } catch (error) {
+    insertLog(activeFlow.id, "agent:status", `cleaning up failed app-server startup: ${String(error)}`);
+    cleanupFailedRuntimeProcess(runtime, `codex app-server startup failed: ${String(error)}`);
+    throw error;
+  }
 }
 
 async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: string) {
@@ -1519,6 +1545,27 @@ function slashCommandArgs(message: string) {
   return trimmed.slice(firstSpace).trim();
 }
 
+function reviewPromptForSlashCommand(message: string) {
+  const [preset = "", ...rest] = slashCommandArgs(message).split(/\s+/);
+  const detail = rest.join(" ").trim();
+  if (preset === "base") {
+    const base = detail ? ` against base branch/ref ${detail}` : " against the base branch";
+    return `Review the current changes${base}. Treat this as a PR-style review. ${reviewFindingInstructions}`;
+  }
+  if (preset === "uncommitted") {
+    return `Review the uncommitted changes in the working tree. ${reviewFindingInstructions}`;
+  }
+  if (preset === "commit") {
+    const target = detail ? ` ${detail}` : "";
+    return `Review commit${target}. If no commit ref is specified, ask the user which commit to review. ${reviewFindingInstructions}`;
+  }
+  if (preset === "custom") {
+    if (!detail) return "Ask the user for custom review instructions before reviewing.";
+    return `Review the current changes using these custom review instructions:\n\n${detail}\n\n${reviewFindingInstructions}`;
+  }
+  throw new Error("Usage: /review base [branch]|uncommitted|commit [ref]|custom [instructions]");
+}
+
 async function ensureCodexRuntime(flow: Flow) {
   return agentProcesses.get(flow.id) ?? (await startCodexAppServer(flow));
 }
@@ -1549,11 +1596,36 @@ async function compactCodexThread(runtime: RuntimeProcess, flow: Flow) {
   await sendCodexRequest(runtime, "thread/compact/start", { threadId: runtime.threadId });
 }
 
+async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMessage: string) {
+  updateFlow(flow.id, { agentStatus: "running" });
+  const updated = getFlow(flow.id);
+  if (!updated) throw new Error("Flow disappeared while starting agent.");
+
+  const existingRuntime = agentProcesses.get(flow.id);
+  const isSteerMessage = Boolean(existingRuntime?.activeTurnId);
+  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
+  let runtime: RuntimeProcess | undefined;
+  let createdRuntime = false;
+  try {
+    runtime = existingRuntime;
+    if (!runtime) {
+      runtime = await startCodexAppServer(updated);
+      createdRuntime = true;
+    }
+    await sendAgentTurn(runtime, updated, agentMessage);
+  } catch (error) {
+    if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
+    updateFlow(flow.id, { agentStatus: "failed" });
+    insertLog(flow.id, "agent:error", `${String(error)}\n`);
+    throw error;
+  }
+}
+
 async function handleSlashCommand(flow: Flow, message: string) {
   flow = repairFlowCheckoutPath(flow);
   const command = parseSlashCommand(message);
   if (!command) return false;
-  insertLog(flow.id, "user", `${message.trim()}\n`);
+  const userLogId = insertLog(flow.id, "user", `${message.trim()}\n`);
 
   if (command === "/fast") {
     const serviceTier = flow.agentServiceTier === "fast" ? "" : "fast";
@@ -1573,6 +1645,10 @@ async function handleSlashCommand(flow: Flow, message: string) {
     if (!agentModels.has(model)) throw new Error("Usage: /model gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2");
     updateFlow(flow.id, { agentModel: model });
     insertLog(flow.id, "agent:status", `model set to ${model}`);
+    return true;
+  }
+  if (command === "/review") {
+    await startAgentTurnAfterUserLog(flow, userLogId, reviewPromptForSlashCommand(message));
     return true;
   }
 
@@ -1602,11 +1678,18 @@ async function startAgent(flow: Flow, userMessage = "") {
   const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);
   const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\n`) : 0;
   if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
+  let runtime: RuntimeProcess | undefined;
+  let createdRuntime = false;
   try {
-    const runtime = existingRuntime ?? (await startCodexAppServer(updated));
+    runtime = existingRuntime;
+    if (!runtime) {
+      runtime = await startCodexAppServer(updated);
+      createdRuntime = true;
+    }
     if (!message) return;
     await sendAgentTurn(runtime, updated, userMessage);
   } catch (error) {
+    if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
     updateFlow(flow.id, { agentStatus: "failed" });
     insertLog(flow.id, "agent:error", `${String(error)}\n`);
     throw error;
@@ -1689,7 +1772,7 @@ function stopIdleAgentRuntimesForEnvUpdate() {
     if (runtime.activeTurnId) continue;
     runtime.stopping = true;
     agentProcesses.delete(runtime.flowId);
-    runtime.proc.kill();
+    signalRuntimeProcess(runtime, "SIGTERM");
     updateFlow(runtime.flowId, { agentStatus: "idle" });
     insertLog(runtime.flowId, "agent:status", "agent environment updated");
   }
@@ -1699,7 +1782,7 @@ function stopServe() {
   if (!serveProcess) return;
   const previous = serveProcess;
   serveProcess = null;
-  previous.proc.kill();
+  signalRuntimeProcess(previous, "SIGTERM");
   db.query("update flows set serving = 0").run();
   insertLog(previous.flowId, "serve", "\n[serve stopped by Turbopump]\n");
   broadcast("flows", listClientFlows());
