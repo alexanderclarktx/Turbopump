@@ -49,6 +49,12 @@ type LogRow = {
   createdAt: string;
 };
 
+type DiffFile = {
+  path: string;
+  additions: number | null;
+  deletions: number | null;
+};
+
 type UploadedImage = File;
 
 type LinearIssue = {
@@ -2005,7 +2011,7 @@ async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   try {
     flow = repairFlowCheckoutPath(flow);
   } catch (error) {
-    return { status: "", stat: "", names: "", patch: String(error), count: 0, additions: 0, deletions: 0, baseRef: "" };
+    return { status: "", stat: "", names: "", patch: String(error), count: 0, additions: 0, deletions: 0, baseRef: "", files: [] };
   }
   const run = async (args: string[], options: { trim?: boolean } = {}) => {
     const result = Bun.spawn({
@@ -2048,13 +2054,22 @@ async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   const names = namesResult.ok ? namesResult.text : "";
   let additions = 0;
   let deletions = 0;
+  const files: DiffFile[] = [];
   if (numstatResult.ok) {
     for (const line of numstatResult.text.split("\n")) {
       const [added, deleted] = line.split("\t");
+      const path = line.split("\t").slice(2).join("\t").trim();
       const addedCount = Number(added);
       const deletedCount = Number(deleted);
       if (Number.isFinite(addedCount)) additions += addedCount;
       if (Number.isFinite(deletedCount)) deletions += deletedCount;
+      if (path) {
+        files.push({
+          path,
+          additions: Number.isFinite(addedCount) ? addedCount : null,
+          deletions: Number.isFinite(deletedCount) ? deletedCount : null,
+        });
+      }
     }
   }
   const diff = {
@@ -2064,6 +2079,7 @@ async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
     additions,
     deletions,
     baseRef,
+    files,
   };
   if (!options.patch) return { ...diff, stat: "", patch: "" };
   const combinedResult = await run(["diff", "--find-renames", "--stat", "--patch", baseRef], { trim: false });

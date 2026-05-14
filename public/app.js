@@ -174,6 +174,7 @@ const state = {
   messageSubmitting: false,
   shellSubmitting: false,
   interruptSubmitting: false,
+  shellInterruptingFlowIds: new Set(),
   pendingAgentImages: [],
   agentImageUploading: false,
   agentImageDragDepth: 0,
@@ -649,6 +650,14 @@ function flowShellRunning(flow) {
   return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "shell";
 }
 
+function flowShellLive(flow) {
+  return (
+    flow?.agentStatus === "running" &&
+    flowRuntimeKind(flow) === "shell" &&
+    !state.shellInterruptingFlowIds.has(flow.id)
+  );
+}
+
 function canSubmitPromptMessage() {
   const flow = selectedFlow();
   const ticket = selectedTicket();
@@ -717,6 +726,8 @@ async function interruptSelectedShellCommand() {
   const selected = selectedFlow();
   if (!flowShellRunning(selected)) return false;
   state.interruptSubmitting = true;
+  state.shellInterruptingFlowIds.add(selected.id);
+  renderShellOutputPane(selected.id);
   try {
     const data = await api(`/api/flows/${selected.id}/command/interrupt`, { method: "POST" });
     if (data.flow) upsertFlow(data.flow);
@@ -1531,6 +1542,7 @@ function normalizeDiff(data) {
     names: data?.names || "",
     patch: data?.patch || "",
     error: data?.error || "",
+    files: Array.isArray(data?.files) ? data.files : [],
     count: Number(data?.count || 0),
     additions: Number(data?.additions || 0),
     deletions: Number(data?.deletions || 0),
@@ -1547,6 +1559,7 @@ function diffHasChanges(diff) {
 }
 
 function diffFileCount(diff) {
+  if (Array.isArray(diff?.files) && diff.files.length) return diff.files.length;
   if (Number.isFinite(diff?.count) && diff.count > 0) return diff.count;
   const paths = new Set();
   for (const line of `${diff?.status || ""}\n${String(diff?.names || "").replaceAll("\0", "\n")}`.split("\n")) {
@@ -1562,6 +1575,12 @@ function diffIndicatorLabel(diff) {
   const deletions = Number(diff?.deletions || 0);
   if (!additions && !deletions && !diffFileCount(diff)) return "";
   return `<span class="diff-additions">+${additions}</span><span class="diff-deletions">-${deletions}</span>`;
+}
+
+function diffCountLabel(value, prefix) {
+  if (value === null || value === undefined || value === "") return "";
+  const count = Number(value);
+  return Number.isFinite(count) ? `${prefix}${count}` : "";
 }
 
 function diffLoadingKey(flowId, options = {}) {
@@ -1716,27 +1735,123 @@ function diffLineClass(line) {
   return "";
 }
 
+function shouldHideDiffLine(line) {
+  return /^(diff --git|index |\+\+\+ |--- |new file mode|deleted file mode|similarity index|rename from|rename to)/.test(line);
+}
+
+function diffFilePathFromHeader(line) {
+  const pathStart = line.lastIndexOf(" b/");
+  return pathStart >= 0 ? line.slice(pathStart + 3).trim() : "";
+}
+
+function diffHunkLineState(line) {
+  const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+  if (!match) return null;
+  return { oldLine: Number(match[1]), newLine: Number(match[2]) };
+}
+
+function appendDiffLine(fragment, line, lineState) {
+  const row = document.createElement("span");
+  row.className = "diff-code-line";
+
+  const oldNumber = document.createElement("span");
+  oldNumber.className = "diff-line-number";
+
+  const newNumber = document.createElement("span");
+  newNumber.className = "diff-line-number";
+
+  const text = document.createElement("span");
+  const className = diffLineClass(line);
+  text.className = `diff-line-text${className ? ` ${className}` : ""}`;
+  text.textContent = line;
+
+  if (lineState && line.startsWith("@@")) {
+    const hunkState = diffHunkLineState(line);
+    if (hunkState) {
+      lineState.oldLine = hunkState.oldLine;
+      lineState.newLine = hunkState.newLine;
+    }
+  } else if (lineState && line.startsWith("+")) {
+    newNumber.textContent = String(lineState.newLine);
+    lineState.newLine += 1;
+  } else if (lineState && line.startsWith("-")) {
+    oldNumber.textContent = String(lineState.oldLine);
+    lineState.oldLine += 1;
+  } else if (lineState && lineState.oldLine && lineState.newLine) {
+    oldNumber.textContent = String(lineState.oldLine);
+    newNumber.textContent = String(lineState.newLine);
+    lineState.oldLine += 1;
+    lineState.newLine += 1;
+  }
+
+  row.append(oldNumber, newNumber, text);
+  fragment.appendChild(row);
+}
+
 function renderDiffCode(code, text) {
   code.className = "language-diff diff-code";
   code.replaceChildren();
   if (!text) return;
   const fragment = document.createDocumentFragment();
-  for (const line of String(text).split(/(\n)/)) {
-    if (line === "\n") {
-      fragment.appendChild(document.createTextNode(line));
+  const lines = String(text).split("\n");
+  let fileDividerCount = 0;
+  const lineState = { oldLine: 0, newLine: 0 };
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      const filePath = diffFilePathFromHeader(line);
+      if (filePath) {
+        const divider = document.createElement("span");
+        divider.className = `diff-file-divider${fileDividerCount ? "" : " is-first"}`;
+        divider.textContent = filePath;
+        fragment.appendChild(divider);
+        fileDividerCount += 1;
+        lineState.oldLine = 0;
+        lineState.newLine = 0;
+      }
       continue;
     }
-    const className = diffLineClass(line);
-    if (!className) {
-      fragment.appendChild(document.createTextNode(line));
-      continue;
-    }
-    const span = document.createElement("span");
-    span.className = className;
-    span.textContent = line;
-    fragment.appendChild(span);
+    if (shouldHideDiffLine(line)) continue;
+    appendDiffLine(fragment, line, lineState);
   }
   code.appendChild(fragment);
+}
+
+function renderDiffSummary(summary, diff, loading) {
+  summary.replaceChildren();
+  if (loading || diff?.error) {
+    summary.textContent = loading ? "Loading diff..." : diff.error;
+    return;
+  }
+  const files = Array.isArray(diff?.files) ? diff.files.filter((file) => file?.path) : [];
+  if (!files.length) {
+    summary.textContent = diff?.stat?.trim() || diff?.names?.trim() || diff?.status?.trim() || "No diff.";
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const file of files) {
+    const row = document.createElement("div");
+    row.className = "diff-summary-file";
+
+    const path = document.createElement("span");
+    path.className = "diff-summary-path";
+    path.textContent = file.path;
+
+    const counts = document.createElement("span");
+    counts.className = "diff-summary-counts";
+
+    const additions = document.createElement("span");
+    additions.className = "diff-additions";
+    additions.textContent = diffCountLabel(file.additions, "+");
+
+    const deletions = document.createElement("span");
+    deletions.className = "diff-deletions";
+    deletions.textContent = diffCountLabel(file.deletions, "-");
+
+    counts.append(additions, deletions);
+    row.append(path, counts);
+    fragment.appendChild(row);
+  }
+  summary.appendChild(fragment);
 }
 
 function renderDiffModal() {
@@ -1750,15 +1865,10 @@ function renderDiffModal() {
   const flow = state.flows.find((item) => item.id === flowId);
   const diff = state.diffModalDiff;
   const loading = state.diffModalLoadingFlowId === flowId && !diff?.patch;
-  const title = els.diffModal.querySelector("#diffModalTitle");
   const summary = els.diffModal.querySelector(".diff-modal-summary");
   const code = els.diffModal.querySelector(".diff-modal-code code");
-  title.textContent = `${flow?.linearIssueId || "Flow"} diff`;
-  summary.textContent = loading
-    ? "Loading diff..."
-    : diff?.error
-      ? diff.error
-      : diff?.stat?.trim() || diff?.names?.trim() || diff?.status?.trim() || "No diff.";
+  els.diffModal.querySelector(".diff-modal")?.setAttribute("aria-label", `${flow?.linearIssueId || "Flow"} diff`);
+  renderDiffSummary(summary, diff, loading);
   renderDiffCode(code, loading ? "" : diff?.patch?.trim() || diff?.names?.trim() || diff?.status?.trim() || "");
 }
 
@@ -1787,6 +1897,9 @@ function appendLogEntry(log) {
 
 function upsertFlow(flow) {
   if (!flow?.id) return;
+  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") {
+    state.shellInterruptingFlowIds.delete(flow.id);
+  }
   const next = [...state.flows];
   const index = next.findIndex((item) => item.id === flow.id);
   if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;
@@ -2893,6 +3006,7 @@ function renderShellOutputPane(flowId) {
   if (!pane) return;
   if (!flowId) {
     pane.hidden = true;
+    pane.classList.remove("live");
     pane.replaceChildren();
     pane._shellOutputSignature = "";
     agentPanel?.classList.remove("shell-output-visible");
@@ -2903,7 +3017,9 @@ function renderShellOutputPane(flowId) {
   const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
   const hasGroups = Boolean(groups.length);
   const showPane = !state.shellPaneHidden;
+  const shellLive = showPane && flowShellLive(flow);
   pane.hidden = !showPane;
+  pane.classList.toggle("live", shellLive);
   agentPanel?.classList.toggle("shell-output-visible", showPane);
   if (showPane) applyShellOutputSplitSize();
   if (!hasGroups) {
@@ -4025,6 +4141,7 @@ async function submitShellCommand(value) {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
     submittedFlowId = flow.id;
+    state.shellInterruptingFlowIds.delete(flow.id);
     renderShellOutputPane(flow.id);
     const data = await api(`/api/flows/${flow.id}/command`, {
       method: "POST",

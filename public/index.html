@@ -220,17 +220,14 @@
       </svg>
     </button>
     <div class="diff-modal-backdrop" id="diffModal" hidden>
-      <section class="diff-modal" role="dialog" aria-modal="true" aria-labelledby="diffModalTitle">
-        <header class="diff-modal-header">
-          <h2 id="diffModalTitle">Diff</h2>
-          <button class="diff-modal-close icon-button" type="button" aria-label="Close diff viewer" title="Close diff viewer">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M18 6 6 18" />
-              <path d="m6 6 12 12" />
-            </svg>
-          </button>
-        </header>
-        <pre class="diff-modal-summary"></pre>
+      <section class="diff-modal" role="dialog" aria-modal="true" aria-label="Diff viewer">
+        <button class="diff-modal-close icon-button" type="button" aria-label="Close diff viewer" title="Close diff viewer">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+          </svg>
+        </button>
+        <div class="diff-modal-summary"></div>
         <pre class="diff-modal-code"><code class="language-diff"></code></pre>
       </section>
     </div>
