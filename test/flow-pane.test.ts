@@ -768,13 +768,15 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : \"\";");
     expect(app).not.toContain("titleCase");
     expect(app).toContain("renderAgentContext(flow);");
-    expect(css).toContain("grid-template-columns: minmax(0, 1fr) var(--shell-pane-size, max(180px, 28%));");
+    expect(css).toContain("grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));");
+    expect(css).toContain("padding: 4px 0;");
     expect(css).not.toContain(".agent-context-window::before");
     expect(css).not.toContain('content: "context ";');
     expect(css).not.toContain(".agent-context-model::before");
     expect(css).not.toContain('content: "model ";');
     expect(css).not.toContain(".agent-context-branch::before");
     expect(css).not.toContain('content: "branch ";');
+    expect(css).toContain("padding-block: 2px;");
     expect(css).toContain(".agent-context-diff {\n  display: inline-flex;");
     expect(css).toContain("min-height: 0;\n  height: 1.2em;");
     expect(css).toContain(".agent-context-diff:hover,\n.agent-context-diff:focus-visible {\n  text-decoration: none;\n}");
@@ -915,6 +917,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("async function interruptSelectedFlow()");
     expect(app).toContain("function flowRuntimeActive(flow)");
     expect(app).toContain("function flowRuntimeKind(flow)");
+    expect(app).toContain("state.shellSubmitting &&");
+    expect(app).toContain('flow.agentStatus !== "running" &&');
+    expect(app).toContain('flow.agentStatus !== "interrupting"');
     expect(app).toContain('flow?.agentRuntimeKind === "shell" ? "shell" : "agent"');
     expect(app).toContain("if (state.interruptSubmitting) return false;");
     expect(app).toContain('flow?.agentStatus === "running" || flow?.agentStatus === "interrupting"');
@@ -958,7 +963,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function listClientFlows()");
     expect(app).not.toContain("agentActionIcon");
     expect(css).toContain("[hidden] {\n  display: none !important;");
-    expect(css).toContain("grid-template-columns: minmax(0, 1fr) var(--shell-pane-size, max(180px, 28%));");
+    expect(css).toContain("grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));");
     expect(css).toContain("grid-template-rows: minmax(0, 1fr) auto;");
     expect(css).toContain("border-top: 1px solid var(--line);");
     expect(css).toContain(".agent-working");
@@ -968,19 +973,30 @@ describe("Turbopump pane markup", () => {
       "grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));",
     );
     expect(css).toContain('grid-template-areas:\n    "terminal shell-resizer shell"\n    "form form form";');
+    expect(css).toContain('"input . shell"');
+    expect(css).toContain('"context . shell"');
     expect(css).toContain(".shell-output-resizer");
     expect(css).toContain("cursor: col-resize;");
     expect(css).toContain(".shell-output-pane");
     expect(css).toContain(".shell-output-pane[hidden]");
     expect(css).not.toContain(".shell-output-pane .terminal-entry {\n  justify-items: end;");
     expect(css).not.toContain(".shell-output-pane .terminal-entry-body {\n  max-width: 100%;\n  padding-left: 0;\n  text-align: right;");
+    expect(css).toContain(
+      ".shell-output-pane .terminal-entry-output .terminal-entry-body,\n.shell-output-pane .terminal-entry-error .terminal-entry-body {\n  overflow-x: visible;\n  overflow-wrap: anywhere;\n  white-space: pre-wrap;\n}",
+    );
     expect(css).toContain("body.theme-dark .agent-working.shell-working");
     expect(css).not.toContain("padding: 0 14px 6px;");
     expect(css).toContain("@keyframes agent-working-dot");
     expect(css).toContain(".prompt-input-pane {\n  grid-area: input;");
+    expect(css).toContain("  padding-left: 14px;\n}\n\n.agent-context {\n  grid-area: context;\n  padding-left: 14px;");
+    expect(css).toContain(".shell-command-panel {\n  position: relative;\n  grid-area: shell;\n  min-width: 0;\n  align-self: start;\n  padding-right: 14px;");
     expect(css).toContain(".input-pane-prefix");
-    expect(css).toContain(".prompt-input-prefix {\n  top: 12px;\n  color: #d97706;");
-    expect(css).toContain(".shell-input-prefix {\n  top: 50%;\n  color: #22c55e;");
+    expect(css).toContain("pointer-events: none;\n  color: var(--muted);");
+    expect(css).toContain("transition: color var(--motion-fast);");
+    expect(css).toContain(".prompt-input-prefix {\n  left: 24px;\n  top: 12px;\n}");
+    expect(css).toContain(".prompt-input-pane:focus-within .prompt-input-prefix {\n  color: #d97706;\n}");
+    expect(css).toContain(".shell-input-prefix {\n  top: 50%;\n  transform: translateY(-50%);");
+    expect(css).toContain(".shell-input-pane:focus-within .shell-input-prefix {\n  color: #22c55e;\n}");
     expect(css).toContain(".message-input {\n  min-width: 0;\n  min-height: 36px;");
     expect(css).toContain("padding: 10px 10px 6px 30px;");
     expect(css).toContain(".message-input:focus {\n  border-color: #d97706;");
@@ -991,7 +1007,11 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("overflow-y: auto;");
     expect(css).toContain("transition: height 120ms ease;");
     expect(css).toContain(".history-search-indicator");
+    expect(css).toContain("  margin-bottom: 0;\n  padding-left: 14px;\n  opacity: 0;");
+    expect(css).toContain('.history-search-indicator[data-mode="prompt"] strong {\n  color: #d97706;\n}');
+    expect(css).toContain('.history-search-indicator[data-mode="shell"] strong {\n  color: #22c55e;\n}');
     expect(css).toContain(".message-form.history-searching");
+    expect(css).toContain("max-height: 22px;\n  margin-bottom: 8px;\n  opacity: 1;\n  transform: translateY(4px);");
     expect(css).toContain("max-height 120ms ease");
     expect(css).toContain(".message-form.history-searching .history-search-indicator");
     expect(css).toContain("bottom: calc(100% - 4px);");
@@ -1067,6 +1087,10 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".flow-resizer");
     expect(css).toContain("cursor: row-resize;");
     expect(css).toContain("body.flow-resizing");
+    expect(css).toContain(".flow-resizer:hover,\n.flow-resizer:focus-visible,\nbody.flow-resizing .flow-resizer {\n  background: #e2e7ee;\n}");
+    expect(css).toContain(
+      "body.theme-dark .flow-resizer:hover,\nbody.theme-dark .flow-resizer:focus-visible,\nbody.theme-dark.flow-resizing .flow-resizer,",
+    );
     expect(app).toContain('const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";');
     expect(app).toContain("function flowSplitBounds(content, rect)");
     expect(app).toContain("const minTopPx = 0;");
@@ -1086,6 +1110,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function startShellOutputSplitResize(event)");
     expect(app).toContain('els.flowPane.querySelector(".shell-output-resizer").addEventListener("pointerdown"');
     expect(app).toContain('els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown"');
+    expect(css).toContain(
+      ".shell-output-resizer:hover,\n.shell-output-resizer:focus-visible,\nbody.shell-output-resizing .shell-output-resizer {\n  background: #e2e7ee;\n}",
+    );
+    expect(css).toContain(
+      "body.theme-dark .shell-output-resizer:hover,\nbody.theme-dark .shell-output-resizer:focus-visible,\nbody.theme-dark.shell-output-resizing .shell-output-resizer,",
+    );
   });
 
   test("hides routine turn status logs from the terminal", () => {
@@ -1355,6 +1385,15 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (focusMessageInputForKey(event)) return;");
   });
 
+  test("suppresses Cmd+K and clears the shell when the shell pane is focused", () => {
+    expect(app).toContain("function handleCommandK(event)");
+    expect(app).toContain('event.key.toLowerCase() !== "k"');
+    expect(app).toContain("event.preventDefault();");
+    expect(app).toContain("event.stopImmediatePropagation();");
+    expect(app).toContain('if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");');
+    expect(app).toContain('document.addEventListener("keydown", handleCommandK, true);');
+  });
+
   test("supports separate reverse search histories for prompts and shell commands", () => {
     expect(app).toContain('const PROMPT_HISTORY_KEY = "flow.promptHistory";');
     expect(app).toContain('const SHELL_HISTORY_KEY = "flow.shellHistory";');
@@ -1396,6 +1435,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);");
     expect(app).toContain("applyFlowSplitSize();");
     expect(app).toContain("if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);");
+    expect(app).toContain('indicator.dataset.mode = "";');
+    expect(app).toContain("indicator.dataset.mode = search.mode;");
     expect(app).toContain('indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;');
     expect(app).toContain("function scrollTerminalToLatestNow(terminal)");
     expect(app).toContain("function followTerminalToLatestDuringLayout(terminal, durationMs)");

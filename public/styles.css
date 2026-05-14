@@ -568,8 +568,10 @@ body.theme-dark .flow-resizer {
 
 body.theme-dark .flow-resizer:hover,
 body.theme-dark .flow-resizer:focus-visible,
+body.theme-dark.flow-resizing .flow-resizer,
 body.theme-dark .shell-output-resizer:hover,
 body.theme-dark .shell-output-resizer:focus-visible,
+body.theme-dark.shell-output-resizing .shell-output-resizer,
 body.theme-dark .slash-command.active,
 body.theme-dark .slash-command:hover {
   background: #202b36;
@@ -1437,7 +1439,8 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .shell-output-resizer:hover,
-.shell-output-resizer:focus-visible {
+.shell-output-resizer:focus-visible,
+body.shell-output-resizing .shell-output-resizer {
   background: #e2e7ee;
 }
 
@@ -1495,7 +1498,8 @@ body.shell-output-resizing {
 }
 
 .flow-resizer:hover,
-.flow-resizer:focus-visible {
+.flow-resizer:focus-visible,
+body.flow-resizing .flow-resizer {
   background: #e2e7ee;
 }
 
@@ -2337,17 +2341,16 @@ body.theme-dark .terminal-entry-body a {
   grid-area: form;
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--shell-pane-size, max(180px, 28%));
+  grid-template-columns: minmax(0, 1fr) 8px var(--shell-pane-size, max(180px, 28%));
   grid-template-areas:
-    "search search"
-    "images images"
-    "input shell"
-    "context shell";
+    "search search search"
+    "images images images"
+    "input . shell"
+    "context . shell";
   align-items: start;
-  column-gap: 8px;
   row-gap: 4px;
   min-width: 0;
-  padding: 10px;
+  padding: 4px 0;
   border-top: 1px solid var(--line);
   background: var(--panel);
   z-index: 1;
@@ -2358,6 +2361,7 @@ body.theme-dark .terminal-entry-body a {
   min-width: 0;
   max-height: 0;
   margin-bottom: 0;
+  padding-left: 14px;
   opacity: 0;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -2375,15 +2379,22 @@ body.theme-dark .terminal-entry-body a {
 }
 
 .message-form.history-searching .history-search-indicator {
-  max-height: 18px;
+  max-height: 22px;
   margin-bottom: 8px;
   opacity: 1;
-  transform: translateY(0);
+  transform: translateY(4px);
 }
 
 .history-search-indicator strong {
-  color: #22c55e;
   font-weight: 700;
+}
+
+.history-search-indicator[data-mode="prompt"] strong {
+  color: #d97706;
+}
+
+.history-search-indicator[data-mode="shell"] strong {
+  color: #22c55e;
 }
 
 .message-input.drag-over {
@@ -2454,10 +2465,12 @@ body.theme-dark .terminal-entry-body a {
   grid-area: input;
   position: relative;
   min-width: 0;
+  padding-left: 14px;
 }
 
 .agent-context {
   grid-area: context;
+  padding-left: 14px;
 }
 
 .shell-command-panel {
@@ -2465,6 +2478,7 @@ body.theme-dark .terminal-entry-body a {
   grid-area: shell;
   min-width: 0;
   align-self: start;
+  padding-right: 14px;
 }
 
 .shell-input-pane {
@@ -2477,21 +2491,30 @@ body.theme-dark .terminal-entry-body a {
   left: 10px;
   z-index: 1;
   pointer-events: none;
+  color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
+  transition: color var(--motion-fast);
 }
 
 .prompt-input-prefix {
+  left: 24px;
   top: 12px;
+}
+
+.prompt-input-pane:focus-within .prompt-input-prefix {
   color: #d97706;
 }
 
 .shell-input-prefix {
   top: 50%;
-  color: #22c55e;
   transform: translateY(-50%);
+}
+
+.shell-input-pane:focus-within .shell-input-prefix {
+  color: #22c55e;
 }
 
 .agent-working {
@@ -2623,6 +2646,13 @@ body.theme-dark .terminal-entry-body a {
   display: none;
 }
 
+.shell-output-pane .terminal-entry-output .terminal-entry-body,
+.shell-output-pane .terminal-entry-error .terminal-entry-body {
+  overflow-x: visible;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .agent-context {
   display: inline-flex;
   align-items: center;
@@ -2630,6 +2660,7 @@ body.theme-dark .terminal-entry-body a {
   gap: 6px;
   min-width: 0;
   max-width: 100%;
+  padding-block: 2px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;

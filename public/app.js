@@ -481,8 +481,10 @@ function renderHistorySearchIndicator() {
   if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);
   if (!search) {
     indicator.textContent = "";
+    indicator.dataset.mode = "";
     return;
   }
+  indicator.dataset.mode = search.mode;
   const label = search.mode === "shell" ? "shell" : "prompt";
   const resultText = search.query && !search.matches.length ? " no match" : "";
   indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;
@@ -609,6 +611,14 @@ function flowRuntimeActive(flow) {
 }
 
 function flowRuntimeKind(flow) {
+  if (
+    flow?.id === state.selectedFlowId &&
+    state.shellSubmitting &&
+    flow.agentStatus !== "running" &&
+    flow.agentStatus !== "interrupting"
+  ) {
+    return "shell";
+  }
   return flow?.agentRuntimeKind === "shell" ? "shell" : "agent";
 }
 
@@ -704,6 +714,15 @@ function focusMessageInputForKey(event) {
   input.focus();
   input.setRangeText(event.key, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+}
+
+function handleCommandK(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "k") return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (event.repeat) return true;
+  if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");
   return true;
 }
 
@@ -3599,6 +3618,8 @@ window.addEventListener("resize", () => {
     renderFlowPane();
   });
 });
+
+document.addEventListener("keydown", handleCommandK, true);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden) {
