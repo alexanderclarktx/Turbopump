@@ -61,7 +61,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function toggleTicketDrawerHidden()");
     expect(app).toContain('event.code === "Backquote" || key === "`"');
     expect(css).toContain("--ticket-drawer-size: 320px;");
-    expect(css).toContain("transition: --ticket-drawer-size var(--motion-pane);");
+    expect(css).toContain("--settings-pane-size var(--motion-pane),\n    --ticket-drawer-size var(--motion-pane);");
     expect(css).toContain("body.tickets-collapsed main {\n  --ticket-drawer-size: 0px;\n}");
     expect(css).toContain("body.app-booting main,\nbody.app-booting .ticket-drawer {\n  transition: none;\n}");
     expect(css).toContain("body.tickets-collapsed .ticket-drawer");
@@ -360,6 +360,8 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain("transition: grid-template-columns");
     expect(css).not.toContain("grid-template-rows 180ms ease");
     expect(css).not.toContain("padding 180ms ease");
+    expect(css).toContain("@property --settings-pane-size {\n  syntax: \"<length>\";");
+    expect(css).toContain("--settings-pane-size var(--motion-pane)");
     expect(css).toContain(".sidebar {\n  position: relative;\n  box-sizing: border-box;");
     expect(css).toContain("contain: layout style;");
     expect(css).toContain("contain: layout paint style;");

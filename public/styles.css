@@ -23,6 +23,12 @@
   initial-value: 320px;
 }
 
+@property --settings-pane-size {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 320px;
+}
+
 @property --shell-pane-size {
   syntax: "<length-percentage>";
   inherits: true;
@@ -208,7 +214,9 @@ main {
   grid-template-columns: var(--settings-pane-size) var(--ticket-drawer-size) minmax(0, 1fr);
   height: 100vh;
   min-height: 0;
-  transition: --ticket-drawer-size var(--motion-pane);
+  transition:
+    --settings-pane-size var(--motion-pane),
+    --ticket-drawer-size var(--motion-pane);
 }
 
 body.settings-collapsed main {
