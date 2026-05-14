@@ -301,6 +301,20 @@ function runtimeEnv(flow?: Flow) {
   } as Record<string, string>;
 }
 
+function shellRuntimeEnv(flow: Flow) {
+  const env = runtimeEnv(flow);
+  delete env.NO_COLOR;
+  delete env.NODE_DISABLE_COLORS;
+  return {
+    ...env,
+    TERM: process.env.TERM || "xterm-256color",
+    COLORTERM: process.env.COLORTERM || "truecolor",
+    FORCE_COLOR: process.env.FORCE_COLOR || "3",
+    CLICOLOR: "1",
+    CLICOLOR_FORCE: "1",
+  } as Record<string, string>;
+}
+
 function json(data: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(data), {
     ...init,
@@ -1712,7 +1726,7 @@ function startShellCommand(flow: Flow, userCommand: string) {
 
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
-    env: runtimeEnv(flow),
+    env: shellRuntimeEnv(flow),
     detached: true,
     stdin: "pipe",
     stdout: "pipe",

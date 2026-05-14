@@ -195,6 +195,12 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain("writeFileSync(envPath, body.contents ?? \"\", \"utf8\");");
     expect(server).toContain("...parseEnv(readEnvContents()),");
     expect(server).toContain("env: runtimeEnv(flow),");
+    expect(server).toContain("function shellRuntimeEnv(flow: Flow)");
+    expect(server).toContain("delete env.NO_COLOR;");
+    expect(server).toContain("delete env.NODE_DISABLE_COLORS;");
+    expect(server).toContain('FORCE_COLOR: process.env.FORCE_COLOR || "3",');
+    expect(server).toContain('CLICOLOR_FORCE: "1",');
+    expect(server).toContain("env: shellRuntimeEnv(flow),");
     expect(server).toContain("function stopIdleAgentRuntimesForEnvUpdate()");
     expect(server).toContain("if (runtime.activeTurnId) continue;");
     expect(server).toContain("stopIdleAgentRuntimesForEnvUpdate();");
@@ -1274,13 +1280,22 @@ describe("Turbopump pane markup", () => {
 
   test("renders terminal output with ANSI styling instead of leaking escape codes", () => {
     expect(app).toContain("function renderAnsiText(root, message)");
-    expect(app).toContain('const pattern = /\\x1b\\[([0-?]*)([ -/]*)([@-~])|\\[(\\d{1,3}(?:;\\d{1,3})*)m/g;');
+    expect(app).toContain("function ansiParams(value)");
+    expect(app).toContain('const pattern = /\\x1b\\[([0-?]*)([ -/]*)([@-~])|\\[((?:\\d{1,3}|[;:])+)m/g;');
     expect(app).toContain('span.classList.add("ansi-bold");');
+    expect(app).toContain("function ansi256ColorValue(value)");
+    expect(app).toContain("function ansiTrueColorValue(red, green, blue)");
+    expect(app).toContain("span.style.color = inlineColor;");
+    expect(app).toContain("span.style.backgroundColor = backgroundColor;");
     expect(app).toContain('renderAnsiText(body, message);');
     expect(app).toContain('meta.tone === "output" || meta.tone === "error"');
     expect(css).toContain(".terminal-entry-output .terminal-entry-body,\n.terminal-entry-error .terminal-entry-body {\n  overflow-x: auto;\n  overflow-wrap: normal;\n  white-space: pre;\n}");
     expect(css).toContain(".terminal-entry-body .ansi-fg-bright-black");
     expect(css).toContain(".terminal-entry-body .ansi-fg-green");
+    expect(css).toContain("body.theme-dark .terminal-entry-body .ansi-fg-cyan");
+    expect(css).toContain("body.theme-dark .terminal-entry-body .ansi-fg-yellow");
+    expect(css).toContain(".terminal-entry-body .ansi-dim");
+    expect(css).toContain(".terminal-entry-body .ansi-underline");
   });
 
   test("drains paginated logs on selected flow refresh without global log warmup", () => {

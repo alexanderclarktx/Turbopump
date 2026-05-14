@@ -2225,6 +2225,18 @@ body.theme-dark .terminal-entry-body a {
   font-weight: 700;
 }
 
+.terminal-entry-body .ansi-dim {
+  opacity: 0.68;
+}
+
+.terminal-entry-body .ansi-italic {
+  font-style: italic;
+}
+
+.terminal-entry-body .ansi-underline {
+  text-decoration: underline;
+}
+
 .terminal-entry-body .ansi-fg-black {
   color: #111827;
 }
@@ -2287,6 +2299,70 @@ body.theme-dark .terminal-entry-body a {
 
 .terminal-entry-body .ansi-fg-bright-white {
   color: #334155;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-black {
+  color: #111827;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-red {
+  color: #ff6b6b;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-green {
+  color: #1dd189;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-yellow {
+  color: #f5f505;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-blue {
+  color: #4b9cff;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-magenta {
+  color: #d58cff;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-cyan {
+  color: #22d3ee;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-white {
+  color: #f1f5f9;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-black {
+  color: #9ca3af;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-red {
+  color: #ff7a7a;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-green {
+  color: #34d399;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-yellow {
+  color: #ffff00;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-blue {
+  color: #60a5fa;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-magenta {
+  color: #e879f9;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-cyan {
+  color: #67e8f9;
+}
+
+body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
+  color: #ffffff;
 }
 
 .terminal-output-delete {
