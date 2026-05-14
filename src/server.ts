@@ -715,6 +715,7 @@ class LinearUnavailableError extends Error {
 }
 
 const linearUnavailableBackoffMs = 30_000;
+const linearRequestTimeoutMs = 500_000;
 let linearUnavailableUntil = 0;
 let lastLinearUnavailableWarningAt = 0;
 
@@ -772,6 +773,7 @@ async function linearGraphql<T>(query: string, variables: Record<string, unknown
         "public-file-urls-expire-in": "3600",
       },
       body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(linearRequestTimeoutMs),
     });
   } catch (error) {
     if (isLinearNetworkError(error)) {
@@ -813,6 +815,7 @@ async function fetchLinearAttachment(rawUrl: string) {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     },
     redirect: "manual",
+    signal: AbortSignal.timeout(linearRequestTimeoutMs),
   });
 
   if (response.status >= 300 && response.status < 400) {

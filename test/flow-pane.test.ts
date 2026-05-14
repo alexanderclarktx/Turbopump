@@ -290,6 +290,8 @@ describe("Turbopump pane markup", () => {
   test("backs off noisy Linear connectivity failures", () => {
     expect(server).toContain("class LinearUnavailableError extends Error");
     expect(server).toContain("const linearUnavailableBackoffMs = 30_000;");
+    expect(server).toContain("const linearRequestTimeoutMs = 500_000;");
+    expect(server).toContain("signal: AbortSignal.timeout(linearRequestTimeoutMs),");
     expect(server).toContain("function isLinearNetworkError(error: unknown)");
     expect(server).toContain("FailedToOpenSocket|ConnectionRefused|Unable to connect");
     expect(server).toContain("function throwIfLinearUnavailable()");
