@@ -158,6 +158,7 @@ const state = {
   selectedFlowId: localStorage.getItem("flow.selectedFlowId") || "",
   linearDetails: new Map(),
   logs: new Map(),
+  logIds: new Map(),
   lastLogId: new Map(),
   openTraceGroups: new Map(),
   settingsCollapsed: true,
@@ -1141,7 +1142,6 @@ async function bootstrap() {
     await loadLogs(flow.id);
     void loadFlowDiff(flow.id, { force: true });
   }
-  void loadAllLogs();
   if (state.linearSignedIn) await loadLinearTickets();
   connectWs();
 }
@@ -1574,8 +1574,12 @@ function appendLogEntry(log) {
   const flowId = log.flowId;
   const id = Number(log.id || Date.now());
   if (!state.logs.has(flowId)) state.logs.set(flowId, []);
+  if (!state.logIds.has(flowId)) {
+    state.logIds.set(flowId, new Set((state.logs.get(flowId) || []).map((entry) => Number(entry.id))));
+  }
   const list = state.logs.get(flowId);
-  if (list.some((entry) => entry.id === id)) return false;
+  const ids = state.logIds.get(flowId);
+  if (ids.has(id)) return false;
   list.push({
     id,
     flowId,
@@ -1583,6 +1587,7 @@ function appendLogEntry(log) {
     message: log.message,
     createdAt: log.createdAt || new Date().toISOString(),
   });
+  ids.add(id);
   rememberLogHistory(log);
   state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
   return true;
@@ -2290,10 +2295,6 @@ async function ensureSelectedFlow() {
   return createFlowFromTicket(ticket);
 }
 
-async function loadAllLogs() {
-  await Promise.all(state.flows.map((flow) => loadLogs(flow.id)));
-}
-
 async function loadLogs(id) {
   if (!state.logs.has(id)) state.logs.set(id, []);
 
@@ -2921,6 +2922,10 @@ function removeLogEntries(flowId, ids) {
     flowId,
     (state.logs.get(flowId) || []).filter((log) => !idSet.has(Number(log.id))),
   );
+  const knownIds = state.logIds.get(flowId);
+  if (knownIds) {
+    for (const id of idSet) knownIds.delete(id);
+  }
 }
 
 async function deleteOutputLogGroup(flowId, ids) {
@@ -3238,7 +3243,7 @@ function connectWs() {
       render();
       const flow = selectedFlow();
       if (flow) void loadFlowDiff(flow.id, { force: true });
-      await loadAllLogs();
+      if (flow) await loadLogs(flow.id);
     }
     if (message.event === "checkouts") {
       setCheckouts(message.payload);

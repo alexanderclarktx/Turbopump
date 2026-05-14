@@ -1190,17 +1190,21 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".terminal-entry-body .ansi-fg-green");
   });
 
-  test("drains paginated logs on refresh", () => {
+  test("drains paginated logs on selected flow refresh without global log warmup", () => {
     expect(app).toContain("if (flow) {\n    await loadLogs(flow.id);");
-    expect(app).toContain("void loadAllLogs();");
+    expect(app).not.toContain("loadAllLogs");
     expect(app).toContain("function appendLogEntry(log)");
-    expect(app).toContain("if (list.some((entry) => entry.id === id)) return false;");
+    expect(app).toContain("logIds: new Map()");
+    expect(app).toContain("state.logIds.set(flowId, new Set((state.logs.get(flowId) || []).map((entry) => Number(entry.id))));");
+    expect(app).toContain("if (ids.has(id)) return false;");
+    expect(app).toContain("ids.add(id);");
     expect(app).toContain("appendLogEntry(log);");
     expect(app).toContain("appendLogEntry({\n        id,");
     expect(app).toContain("while (true)");
     expect(app).toContain("if (!data.logs.length) break;");
     expect(app).toContain("if (data.logs.length < 1000) break;");
     expect(app).toContain("state.lastLogId.set(id, highestLogId);");
+    expect(app).toContain("if (flow) await loadLogs(flow.id);");
   });
 
   test("renders logs in chronological order in the Agent pane", () => {
