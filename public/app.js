@@ -2690,9 +2690,10 @@ function renderShellOutputPane(flowId) {
   const flow = state.flows.find((item) => item.id === flowId) || null;
   const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
   const hasGroups = Boolean(groups.length);
-  pane.hidden = !hasGroups;
-  agentPanel?.classList.toggle("shell-output-visible", hasGroups);
-  if (hasGroups) applyShellOutputSplitSize();
+  const showPane = !state.shellPaneHidden;
+  pane.hidden = !showPane;
+  agentPanel?.classList.toggle("shell-output-visible", showPane);
+  if (showPane) applyShellOutputSplitSize();
   if (!hasGroups) {
     pane.replaceChildren();
     pane._shellOutputSignature = "";
@@ -3089,22 +3090,56 @@ function scrollTerminalToLatestNow(terminal) {
 function terminalBottomRestorer() {
   const terminal = els.flowPane.querySelector(".terminal");
   if (!terminal) return () => {};
-  const terminalRect = terminal.getBoundingClientRect();
-  const anchor = [...terminal.children]
-    .reverse()
-    .find((child) => {
-      const rect = child.getBoundingClientRect();
-      return rect.top < terminalRect.bottom && rect.bottom > terminalRect.top;
-    });
-  const anchorBottom = anchor?.getBoundingClientRect().bottom ?? 0;
   const distanceFromBottom = terminalDistanceFromBottom(terminal);
+  if (terminalAtLatest(terminal)) {
+    return () => {
+      terminal.scrollTop = terminal.scrollHeight;
+    };
+  }
+  const anchor = terminalBottomTextAnchor(terminal);
   return () => {
-    if (anchor?.isConnected) {
-      terminal.scrollTop += anchor.getBoundingClientRect().bottom - anchorBottom;
+    const anchorBottom = terminalTextAnchorBottom(anchor);
+    if (anchorBottom !== null) {
+      terminal.scrollTop += anchorBottom - anchor.bottom;
       return;
     }
     terminal.scrollTop = terminal.scrollHeight - terminal.clientHeight - distanceFromBottom;
   };
+}
+
+function terminalBottomTextAnchor(terminal) {
+  const terminalRect = terminal.getBoundingClientRect();
+  const textNodes = [];
+  const walker = document.createTreeWalker(terminal, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return node.nodeValue?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+  for (let nodeIndex = textNodes.length - 1; nodeIndex >= 0; nodeIndex -= 1) {
+    const range = document.createRange();
+    range.selectNodeContents(textNodes[nodeIndex]);
+    const rects = [...range.getClientRects()];
+    range.detach();
+    for (let rectIndex = rects.length - 1; rectIndex >= 0; rectIndex -= 1) {
+      const rect = rects[rectIndex];
+      if (rect.width > 0 && rect.height > 0 && rect.top < terminalRect.bottom && rect.bottom > terminalRect.top) {
+        return { node: textNodes[nodeIndex], rectIndex, bottom: rect.bottom };
+      }
+    }
+  }
+
+  return null;
+}
+
+function terminalTextAnchorBottom(anchor) {
+  if (!anchor?.node?.isConnected) return null;
+  const range = document.createRange();
+  range.selectNodeContents(anchor.node);
+  const rects = [...range.getClientRects()];
+  range.detach();
+  return rects[anchor.rectIndex]?.bottom ?? null;
 }
 
 function followTerminalToLatestDuringLayout(terminal, durationMs) {
@@ -3332,7 +3367,13 @@ function resizeShellOutputSplitFromPointer(clientX) {
   const panel = els.flowPane.querySelector(".terminal-panel");
   const rect = panel.getBoundingClientRect();
   if (!rect.width) return;
-  setShellOutputSplitSize(((rect.right - clientX) / rect.width) * 100);
+  setShellOutputSplitSizeKeepingTerminalBottom(((rect.right - clientX) / rect.width) * 100);
+}
+
+function setShellOutputSplitSizeKeepingTerminalBottom(value) {
+  const restoreTerminalBottom = terminalBottomRestorer();
+  setShellOutputSplitSize(value);
+  restoreTerminalBottom();
 }
 
 function startShellOutputSplitResize(event) {
@@ -3427,7 +3468,7 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("pointerdow
 els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", (event) => {
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
-  setShellOutputSplitSize(state.shellOutputSplitSize + (event.key === "ArrowLeft" ? 5 : -5));
+  setShellOutputSplitSizeKeepingTerminalBottom(state.shellOutputSplitSize + (event.key === "ArrowLeft" ? 5 : -5));
 });
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
