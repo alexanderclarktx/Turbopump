@@ -95,9 +95,21 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('localStorage.setItem("flow.settingsCollapsed"');
     expect(app).toContain("function setDefaultSettingsState(linear)");
     expect(app).toContain("setSettingsCollapsed(Boolean(linear.signedIn));");
+    expect(app).toContain("function toggleSettingsCollapsed()");
     expect(app.indexOf("setDefaultSettingsState(data.linear);")).toBeLessThan(
       app.indexOf("updateLinearState(data.linear);"),
     );
+  });
+
+  test("toggles settings with Cmd+Comma", () => {
+    expect(app).toContain("function handlePaneVisibilityShortcuts(event)");
+    expect(app).toContain('const togglesSettings = event.metaKey && !event.ctrlKey && !event.altKey && (event.code === "Comma" || key === ",");');
+    expect(app).toContain("if (!togglesSettings && !togglesTickets && !togglesShell) return false;");
+    expect(app).toContain("event.preventDefault();");
+    expect(app).toContain("event.stopImmediatePropagation();");
+    expect(app).toContain("if (togglesSettings) toggleSettingsCollapsed();");
+    expect(app).toContain('document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);');
+    expect(app).toContain("toggleSettingsCollapsed();\n});");
   });
 
   test("keeps the theme toggle visible outside settings expansion", () => {

@@ -741,12 +741,14 @@ function handleCommandK(event) {
 
 function handlePaneVisibilityShortcuts(event) {
   const key = event.key.toLowerCase();
+  const togglesSettings = event.metaKey && !event.ctrlKey && !event.altKey && (event.code === "Comma" || key === ",");
   const togglesTickets = event.ctrlKey && !event.metaKey && !event.altKey && (event.code === "Backquote" || key === "`");
   const togglesShell = event.metaKey && !event.ctrlKey && !event.altKey && (event.code === "Backslash" || key === "\\");
-  if (!togglesTickets && !togglesShell) return false;
+  if (!togglesSettings && !togglesTickets && !togglesShell) return false;
   event.preventDefault();
   event.stopImmediatePropagation();
   if (event.repeat) return true;
+  if (togglesSettings) toggleSettingsCollapsed();
   if (togglesTickets) toggleTicketDrawerHidden();
   if (togglesShell) toggleShellPaneHidden();
   return true;
@@ -982,6 +984,10 @@ function setSettingsCollapsed(collapsed) {
     renderCheckouts();
     scheduleCheckoutsLoaded();
   }
+}
+
+function toggleSettingsCollapsed() {
+  setSettingsCollapsed(!state.settingsCollapsed);
 }
 
 function setTicketDrawerHidden(hidden) {
@@ -3333,7 +3339,7 @@ function startShellOutputSplitResize(event) {
 
 els.settingsToggle.addEventListener("click", (event) => {
   event.stopPropagation();
-  setSettingsCollapsed(!state.settingsCollapsed);
+  toggleSettingsCollapsed();
 });
 
 els.themeToggle.addEventListener("click", (event) => {
