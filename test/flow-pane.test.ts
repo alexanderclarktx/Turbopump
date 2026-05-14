@@ -1020,7 +1020,7 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain("padding: 0 14px 6px;");
     expect(css).toContain("@keyframes agent-working-dot");
     expect(css).toContain(".prompt-input-pane {\n  grid-area: input;");
-    expect(css).toContain("  padding-left: 14px;\n}\n\nbody.shell-pane-hidden .prompt-input-pane {\n  padding-right: 14px;\n}\n\n.agent-context {\n  grid-area: context;\n  padding-left: 14px;");
+    expect(css).toContain("  padding-left: 14px;\n}\n\nbody.shell-pane-hidden .prompt-input-pane {\n  padding-right: 14px;\n}\n\n.agent-context {\n  grid-area: context;\n  padding-left: 16px;");
     expect(css).toContain(".shell-command-panel {\n  position: relative;\n  grid-area: shell;\n  min-width: 0;\n  align-self: start;\n  padding-right: 14px;");
     expect(css).toContain(".input-pane-prefix");
     expect(css).toContain("pointer-events: none;\n  color: var(--muted);");
@@ -1433,21 +1433,34 @@ describe("Turbopump pane markup", () => {
   test("toggles the shell pane with Cmd+Backslash", () => {
     expect(app).toContain('const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";');
     expect(app).toContain("shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY)");
-    expect(app).toContain("function setShellPaneHidden(hidden, options = {})");
+    expect(app).toContain("function setShellPaneHidden(hidden)");
+    expect(app).toContain("const restoreTerminalBottom = terminalBottomRestorer();");
     expect(app).toContain('document.body.classList.toggle("shell-pane-hidden", hidden);');
     expect(app).toContain('const shellPanel = els.flowPane.querySelector(".shell-command-panel");');
     expect(app).toContain('if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));');
     expect(app).toContain('if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");');
-    expect(app).toContain("if (options.syncLayout === false) return;");
+    expect(app).toContain("renderShellOutputPane(state.selectedFlowId);");
+    expect(app).toContain("restoreTerminalBottom();");
     expect(app).toContain("function toggleShellPaneHidden()");
     expect(app).toContain("function revealShellPaneForInputFocus()");
-    expect(app).toContain('document.body.classList.add("shell-pane-instant-reveal");');
-    expect(app).toContain("setShellPaneHidden(false, { syncLayout: false });");
-    expect(app).toContain('document.body.classList.remove("shell-pane-instant-reveal");');
+    expect(app).toContain("setShellPaneHidden(false);\n  focusInputPane(\"shell\");");
+    expect(app).not.toContain("shell-pane-instant-reveal");
+    expect(app).not.toContain("scrollRestoreDurationMs: 0");
     expect(app).toContain("function handlePaneVisibilityShortcuts(event)");
     expect(app).toContain('event.code === "Backslash" || key === "\\\\"');
     expect(app).toContain('document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);');
     expect(app).toContain("const hasGroups = Boolean(groups.length);");
+    expect(app).not.toContain("function preserveTerminalScrollTopDuringLayout");
+    expect(app).not.toContain("function freezeTerminalLayoutForPaneAnimation");
+    expect(app).not.toContain("function terminalScrollTopPreserverForPaneLayout");
+    expect(app).toContain("function terminalBottomRestorer()");
+    expect(app).toContain("const terminalRect = terminal.getBoundingClientRect();");
+    expect(app).toContain("const anchor = [...terminal.children]");
+    expect(app).toContain("const anchorBottom = anchor?.getBoundingClientRect().bottom ?? 0;");
+    expect(app).toContain("const distanceFromBottom = terminalDistanceFromBottom(terminal);");
+    expect(app).toContain("terminal.scrollTop += anchor.getBoundingClientRect().bottom - anchorBottom;");
+    expect(app).toContain("terminal.scrollTop = terminal.scrollHeight - terminal.clientHeight - distanceFromBottom;");
+    expect(app).not.toContain("[shell-pane-layout]");
     expect(app).toContain('if (kind === "shell" && state.shellPaneHidden) return false;');
     expect(app).toContain("if (state.shellPaneHidden) promptInput()?.focus();\n    else shellInput()?.focus();");
     expect(css).toContain("body.shell-pane-hidden .prompt-input-pane {\n  padding-right: 14px;\n}");
@@ -1456,7 +1469,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("--shell-resizer-size: 0px;");
     expect(css).toContain("body.shell-pane-hidden .terminal-panel.shell-output-visible");
     expect(css).toContain("body.shell-pane-hidden .terminal-panel.shell-output-visible .shell-output-resizer,\nbody.shell-pane-hidden .shell-output-pane {\n  opacity: 0;");
-    expect(css).toContain("body.shell-pane-instant-reveal .terminal-panel,\nbody.shell-pane-instant-reveal .shell-command-panel,\nbody.shell-pane-instant-reveal .shell-output-pane {\n  transition: none;\n}");
+    expect(css).not.toContain("terminal-layout-frozen");
+    expect(css).toContain("overflow-anchor: none;");
+    expect(css).not.toContain("shell-pane-instant-reveal");
   });
 
   test("supports separate reverse search histories for prompts and shell commands", () => {
@@ -1505,6 +1520,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;');
     expect(app).toContain("function scrollTerminalToLatestNow(terminal)");
     expect(app).toContain("function followTerminalToLatestDuringLayout(terminal, durationMs)");
+    expect(app).toContain("applyFlowSplitSize();");
     expect(app).toContain("if (now - startedAt < durationMs) requestAnimationFrame(follow);");
     expect(app).toContain("function startOrAdvanceHistorySearch(input)");
     expect(app).toContain('query: "",');
@@ -1535,6 +1551,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function handleHistorySearchKeydown(event)");
     expect(app).toContain("function setInputMode(mode)");
     expect(app).toContain('focusInputPane(mode === "command" || mode === "shell" ? "shell" : "prompt");');
+    expect(app).toContain("input.focus({ preventScroll: true });");
     expect(app).toContain("focusInputPane(\"prompt\");");
     expect(app).toContain("function canSwitchInputPane()");
     expect(app).toContain("const ticket = selectedTicket();");

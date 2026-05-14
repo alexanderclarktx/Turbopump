@@ -589,7 +589,7 @@ function focusInputPane(kind) {
   if (!input) return false;
   cancelHistorySearch();
   resetInputHistoryNavigation();
-  input.focus();
+  input.focus({ preventScroll: true });
   return true;
 }
 
@@ -1000,16 +1000,16 @@ function toggleTicketDrawerHidden() {
   setTicketDrawerHidden(!state.ticketDrawerHidden);
 }
 
-function setShellPaneHidden(hidden, options = {}) {
+function setShellPaneHidden(hidden) {
+  const restoreTerminalBottom = terminalBottomRestorer();
   state.shellPaneHidden = hidden;
   document.body.classList.toggle("shell-pane-hidden", hidden);
   const shellPanel = els.flowPane.querySelector(".shell-command-panel");
   if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));
   if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");
   localStorage.setItem(SHELL_PANE_HIDDEN_KEY, String(hidden));
-  if (options.syncLayout === false) return;
   renderShellOutputPane(state.selectedFlowId);
-  applyFlowSplitSize();
+  restoreTerminalBottom();
 }
 
 function toggleShellPaneHidden() {
@@ -1017,15 +1017,8 @@ function toggleShellPaneHidden() {
 }
 
 function revealShellPaneForInputFocus() {
-  document.body.classList.add("shell-pane-instant-reveal");
-  setShellPaneHidden(false, { syncLayout: false });
+  setShellPaneHidden(false);
   focusInputPane("shell");
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      document.body.classList.remove("shell-pane-instant-reveal");
-      applyFlowSplitSize();
-    });
-  });
 }
 
 function applyTheme(theme) {
@@ -3091,6 +3084,27 @@ function scrollTerminalToLatest(terminal) {
 
 function scrollTerminalToLatestNow(terminal) {
   terminal.scrollTop = terminal.scrollHeight;
+}
+
+function terminalBottomRestorer() {
+  const terminal = els.flowPane.querySelector(".terminal");
+  if (!terminal) return () => {};
+  const terminalRect = terminal.getBoundingClientRect();
+  const anchor = [...terminal.children]
+    .reverse()
+    .find((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.top < terminalRect.bottom && rect.bottom > terminalRect.top;
+    });
+  const anchorBottom = anchor?.getBoundingClientRect().bottom ?? 0;
+  const distanceFromBottom = terminalDistanceFromBottom(terminal);
+  return () => {
+    if (anchor?.isConnected) {
+      terminal.scrollTop += anchor.getBoundingClientRect().bottom - anchorBottom;
+      return;
+    }
+    terminal.scrollTop = terminal.scrollHeight - terminal.clientHeight - distanceFromBottom;
+  };
 }
 
 function followTerminalToLatestDuringLayout(terminal, durationMs) {

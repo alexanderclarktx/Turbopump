@@ -1466,9 +1466,6 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
     "terminal"
     "form";
   grid-template-rows: minmax(0, 1fr) auto;
-  transition:
-    --shell-pane-size var(--motion-pane),
-    --shell-resizer-size var(--motion-pane);
 }
 
 .terminal-panel.shell-output-visible {
@@ -1481,12 +1478,6 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 body.shell-pane-hidden .terminal-panel {
   --shell-pane-size: 0px !important;
   --shell-resizer-size: 0px;
-}
-
-body.shell-pane-instant-reveal .terminal-panel,
-body.shell-pane-instant-reveal .shell-command-panel,
-body.shell-pane-instant-reveal .shell-output-pane {
-  transition: none;
 }
 
 .shell-output-resizer {
@@ -2054,6 +2045,7 @@ body.theme-dark .terminal-entry-body a {
   min-height: 0;
   padding: 14px;
   overflow: auto;
+  overflow-anchor: none;
   background: var(--terminal);
   color: var(--terminal-ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -2558,7 +2550,7 @@ body.shell-pane-hidden .prompt-input-pane {
 
 .agent-context {
   grid-area: context;
-  padding-left: 14px;
+  padding-left: 16px;
 }
 
 .shell-command-panel {
