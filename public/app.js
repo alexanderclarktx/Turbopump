@@ -955,15 +955,142 @@ function scheduleEnvSave() {
   envSaveTimer = setTimeout(() => void saveEnv().catch(reportAutoSaveError), 900);
 }
 
+function parseEnvEditorRows(contents) {
+  return contents
+    .split(/\r?\n/)
+    .map((rawLine) => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) return null;
+      const normalizedLine = line.startsWith("export ") ? line.slice(7).trim() : line;
+      const index = normalizedLine.indexOf("=");
+      if (index === -1) return null;
+      const key = normalizedLine.slice(0, index).trim();
+      if (!key) return null;
+      let value = normalizedLine.slice(index + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      return { key, value };
+    })
+    .filter(Boolean);
+}
+
+function createEnvRow(key = "", value = "") {
+  const row = document.createElement("div");
+  row.className = "env-row";
+
+  const keyInput = document.createElement("input");
+  keyInput.className = "env-key";
+  keyInput.placeholder = "KEYNAME";
+  keyInput.autocomplete = "off";
+  keyInput.spellcheck = false;
+  keyInput.value = key;
+
+  const valueInput = document.createElement("input");
+  valueInput.className = "env-value";
+  valueInput.placeholder = "VALUE";
+  valueInput.autocomplete = "off";
+  valueInput.spellcheck = false;
+  valueInput.value = value;
+
+  row.append(keyInput, valueInput);
+  return row;
+}
+
+function envRowValues(row) {
+  return {
+    key: row.querySelector(".env-key")?.value.trim() || "",
+    value: row.querySelector(".env-value")?.value || "",
+  };
+}
+
+function envRowIsEmpty(row) {
+  const values = envRowValues(row);
+  return !values.key && !values.value;
+}
+
+function ensureTrailingEnvRow() {
+  const rows = [...els.envEditor.querySelectorAll(".env-row")];
+  if (!rows.length || !envRowIsEmpty(rows.at(-1))) {
+    els.envEditor.append(createEnvRow());
+  }
+}
+
+function renderEnvEditor(contents) {
+  els.envEditor.replaceChildren();
+  for (const row of parseEnvEditorRows(contents || "")) {
+    els.envEditor.append(createEnvRow(row.key, row.value));
+  }
+  ensureTrailingEnvRow();
+}
+
+function envEditorContents() {
+  return [...els.envEditor.querySelectorAll(".env-row")]
+    .map(envRowValues)
+    .filter((row) => row.key)
+    .map((row) => `${row.key}=${row.value}`)
+    .join("\n");
+}
+
 async function saveEnv() {
   clearTimeout(envSaveTimer);
-  if (els.envEditor.value === lastSavedEnv) return;
+  const contents = envEditorContents();
+  if (contents === lastSavedEnv) return;
   const result = await api("/api/env", {
     method: "PUT",
-    body: JSON.stringify({ contents: els.envEditor.value }),
+    body: JSON.stringify({ contents }),
   });
-  lastSavedEnv = els.envEditor.value;
+  lastSavedEnv = contents;
   toast(result.restartedServe ? "Env updated and serve restarted" : "Env updated");
+}
+
+function flushEnvSaveOnPageHide() {
+  clearTimeout(envSaveTimer);
+  const contents = envEditorContents();
+  if (contents === lastSavedEnv) return;
+  lastSavedEnv = contents;
+  void fetch("/api/env", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ contents }),
+    keepalive: true,
+  }).catch(reportAutoSaveError);
+}
+
+function handleEnvEditorInput() {
+  ensureTrailingEnvRow();
+  scheduleEnvSave();
+}
+
+function handleEnvEditorPaste(event) {
+  const input = event.target.closest(".env-key, .env-value");
+  const row = input?.closest(".env-row");
+  if (!row || !envRowIsEmpty(row)) return;
+  const pastedRows = parseEnvEditorRows(event.clipboardData?.getData("text") || "");
+  if (!pastedRows.length) return;
+
+  event.preventDefault();
+  let insertAfter = row;
+  pastedRows.forEach((envRow, index) => {
+    const targetRow = index === 0 ? row : createEnvRow();
+    targetRow.querySelector(".env-key").value = envRow.key;
+    targetRow.querySelector(".env-value").value = envRow.value;
+    if (index > 0) {
+      insertAfter.after(targetRow);
+      insertAfter = targetRow;
+    }
+  });
+  ensureTrailingEnvRow();
+  insertAfter.querySelector(".env-value")?.focus();
+  scheduleEnvSave();
+}
+
+function handleEnvEditorFocusOut(event) {
+  if (event.relatedTarget && els.envEditor.contains(event.relatedTarget)) return;
+  void saveEnv().catch(reportAutoSaveError);
 }
 
 function settingsSectionKey(section) {
@@ -1183,8 +1310,8 @@ async function bootstrap() {
   setDefaultSettingsState(data.linear);
   updateLinearState(data.linear);
   const env = await api("/api/env");
-  els.envEditor.value = env.contents || "";
-  lastSavedEnv = els.envEditor.value;
+  renderEnvEditor(env.contents || "");
+  lastSavedEnv = envEditorContents();
   render();
   const flow = selectedFlow();
   if (flow) {
@@ -1662,9 +1789,15 @@ function upsertFlow(flow) {
   if (!flow?.id) return;
   const next = [...state.flows];
   const index = next.findIndex((item) => item.id === flow.id);
+  if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;
   if (index === -1) next.push(flow);
   else next[index] = flow;
   setFlows(next);
+}
+
+function flowUpdatedAtMs(flow) {
+  const timestamp = Date.parse(flow?.updatedAt || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function syncLinearTicketsWithFlows() {
@@ -3533,8 +3666,10 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
   els.agentDeveloperInstructions.value = state.defaultAgentDeveloperInstructions;
   void saveAgentConfig().catch(reportAutoSaveError);
 });
-els.envEditor.addEventListener("input", scheduleEnvSave);
-els.envEditor.addEventListener("blur", () => void saveEnv().catch(reportAutoSaveError));
+els.envEditor.addEventListener("input", handleEnvEditorInput);
+els.envEditor.addEventListener("paste", handleEnvEditorPaste);
+els.envEditor.addEventListener("focusout", handleEnvEditorFocusOut);
+window.addEventListener("pagehide", flushEnvSaveOnPageHide);
 
 els.linearKeyForm.addEventListener("submit", async (event) => {
   event.preventDefault();

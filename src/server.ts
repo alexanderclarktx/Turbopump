@@ -49,12 +49,7 @@ type LogRow = {
   createdAt: string;
 };
 
-type UploadedImage = {
-  name: string;
-  type: string;
-  size: number;
-  arrayBuffer: () => Promise<ArrayBuffer>;
-};
+type UploadedImage = File;
 
 type LinearIssue = {
   id: string;
@@ -94,8 +89,6 @@ const checkoutDir = join(dataDir, "checkouts");
 const repoCheckoutDir = join(dataDir, "repo");
 const publicDir = join(rootDir, "public");
 const prismDir = join(rootDir, "node_modules", "prismjs");
-const envPath = join(dataDir, ".env");
-const legacyEnvPath = join(legacyDataDir, ".env");
 const dbPath = join(dataDir, "flow.sqlite");
 const legacyDbPath = join(legacyDataDir, `${"water"}flow.sqlite`);
 const port = Number(process.env.PORT ?? 3999);
@@ -128,8 +121,6 @@ const defaultAgentDeveloperInstructions = [
 
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(checkoutDir, { recursive: true });
-if (!existsSync(envPath) && existsSync(legacyEnvPath)) copyFileSync(legacyEnvPath, envPath);
-if (!existsSync(envPath)) writeFileSync(envPath, "", "utf8");
 if (!existsSync(dbPath) && existsSync(legacyDbPath)) copyFileSync(legacyDbPath, dbPath);
 
 const db = new Database(dbPath);
@@ -148,6 +139,12 @@ db.exec(`
   create table if not exists settings (
     key text primary key,
     value text not null
+  );
+
+  create table if not exists environment_variables (
+    id integer primary key check (id = 1),
+    contents text not null,
+    updatedAt text not null
   );
 
   create table if not exists flows (
@@ -226,6 +223,11 @@ const setSettingStmt = db.query(`
   insert into settings (key, value) values (?, ?)
   on conflict(key) do update set value = excluded.value
 `);
+const getEnvironmentVariablesStmt = db.query("select contents from environment_variables where id = 1");
+const setEnvironmentVariablesStmt = db.query(`
+  insert into environment_variables (id, contents, updatedAt) values (1, ?, ?)
+  on conflict(id) do update set contents = excluded.contents, updatedAt = excluded.updatedAt
+`);
 const insertLogStmt = db.query(`
   insert into logs (flowId, source, message, createdAt) values (?, ?, ?, ?)
 `);
@@ -261,10 +263,13 @@ function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
 }
 
-let sessionEnvContents = readFileSync(envPath, "utf8");
+function readEnvContents() {
+  const row = getEnvironmentVariablesStmt.get() as { contents: string } | null;
+  return row?.contents ?? "";
+}
 
-function readEnvFile() {
-  return sessionEnvContents;
+function writeEnvContents(contents: string) {
+  setEnvironmentVariablesStmt.run(contents, now());
 }
 
 function parseEnv(contents: string) {
@@ -290,7 +295,7 @@ function parseEnv(contents: string) {
 function runtimeEnv(flow?: Flow) {
   return {
     ...process.env,
-    ...parseEnv(readEnvFile()),
+    ...parseEnv(readEnvContents()),
     FLOW_API_URL: apiBaseUrl,
     FLOW_RUN_ID: flow?.id ?? "",
   } as Record<string, string>;
@@ -649,7 +654,7 @@ function tomlBasicString(value: string) {
 }
 
 function ensureCodexProjectTrusted(projectPath: string) {
-  const codexEnv = parseEnv(readEnvFile());
+  const codexEnv = parseEnv(readEnvContents());
   const codexHome = codexEnv.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");
   const configPath = join(codexHome, "config.toml");
   mkdirSync(codexHome, { recursive: true });
@@ -2119,12 +2124,12 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/env" && request.method === "GET") {
-    return json({ contents: readEnvFile() });
+    return json({ contents: readEnvContents() });
   }
 
   if (url.pathname === "/api/env" && request.method === "PUT") {
     const body = await readJson<{ contents: string }>(request);
-    sessionEnvContents = body.contents ?? "";
+    writeEnvContents(body.contents ?? "");
     setSetting("envVersion", String(Number(getSetting("envVersion", "0")) + 1));
     stopIdleAgentRuntimesForEnvUpdate();
     const activeServe = serveProcess ? getFlow(serveProcess.flowId) : null;

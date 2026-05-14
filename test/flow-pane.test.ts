@@ -163,19 +163,43 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("[hidden] {\n  display: none !important;");
   });
 
-  test("uses session-scoped environment settings for spawned commands", () => {
+  test("persists environment settings in a dedicated db table", () => {
     expect(html).toContain('<section class="settings-section environment-settings">');
     expect(html).toContain("<span>Environment</span>");
-    expect(html).toContain('id="envEditor"');
-    expect(server).toContain("let sessionEnvContents = readFileSync(envPath, \"utf8\");");
-    expect(server).toContain("return sessionEnvContents;");
-    expect(server).toContain("sessionEnvContents = body.contents ?? \"\";");
+    expect(html).toContain('<div class="env-editor" id="envEditor" aria-label="Environment variables"></div>');
+    expect(html).not.toContain('<textarea id="envEditor"');
+    expect(css).toContain(".env-row {\n  display: grid;");
+    expect(css).toContain("  padding: 0;");
+    const envRowCss = css.slice(css.indexOf(".env-row {"), css.indexOf(".env-row input {"));
+    expect(envRowCss).not.toContain("border-bottom");
+    expect(css).toContain(".env-row + .env-row {\n  padding-top: 12px;");
+    expect(css).not.toContain('grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);');
+    expect(app).toContain("function parseEnvEditorRows(contents)");
+    expect(app).toContain('keyInput.placeholder = "KEYNAME";');
+    expect(app).toContain('valueInput.placeholder = "VALUE";');
+    expect(app).toContain("function envEditorContents()");
+    expect(app).toContain("function handleEnvEditorPaste(event)");
+    expect(app).toContain("if (!row || !envRowIsEmpty(row)) return;");
+    expect(app).toContain('event.clipboardData?.getData("text")');
+    expect(app).toContain("renderEnvEditor(env.contents || \"\");");
+    expect(server).toContain("create table if not exists environment_variables");
+    expect(server).toContain("const getEnvironmentVariablesStmt = db.query(\"select contents from environment_variables where id = 1\");");
+    expect(server).toContain("const setEnvironmentVariablesStmt = db.query(");
+    expect(server).toContain("function readEnvContents()");
+    expect(server).toContain("return row?.contents ?? \"\";");
+    expect(server).toContain("function writeEnvContents(contents: string)");
+    expect(server).toContain("writeEnvContents(body.contents ?? \"\");");
+    expect(server).not.toContain("sessionEnvContents");
+    expect(server).not.toContain("const envPath");
+    expect(server).not.toContain("const legacyEnvPath");
     expect(server).not.toContain("writeFileSync(envPath, body.contents ?? \"\", \"utf8\");");
-    expect(server).toContain("...parseEnv(readEnvFile()),");
+    expect(server).toContain("...parseEnv(readEnvContents()),");
     expect(server).toContain("env: runtimeEnv(flow),");
     expect(server).toContain("function stopIdleAgentRuntimesForEnvUpdate()");
     expect(server).toContain("if (runtime.activeTurnId) continue;");
     expect(server).toContain("stopIdleAgentRuntimesForEnvUpdate();");
+    expect(app).toContain('window.addEventListener("pagehide", flushEnvSaveOnPageHide);');
+    expect(app).toContain("keepalive: true");
   });
 
   test("makes settings sections collapsible", () => {
@@ -731,6 +755,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function runtimeOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain('const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);');
     expect(app).toContain("function syncLinearTicketsWithFlows()");
+    expect(app).toContain("function flowUpdatedAtMs(flow)");
+    expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
     expect(app).toContain("const flowsByIssue = new Map");
     expect(app).toContain("return { ...ticket, flowId, flowStage };");
     expect(app).toContain("setFlows(message.payload);");

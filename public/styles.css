@@ -801,6 +801,37 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   min-height: 220px;
 }
 
+.env-editor {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.env-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+}
+
+.env-row + .env-row {
+  padding-top: 12px;
+}
+
+.env-row input {
+  min-height: 30px;
+  padding: 0 8px;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.env-key {
+  color: #b45309;
+}
+
+.env-value {
+  color: var(--ink);
+}
+
 .checkout-list {
   display: grid;
   gap: 8px;
