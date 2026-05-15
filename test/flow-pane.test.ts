@@ -1019,10 +1019,24 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function isShellTraceGroupLog(log)");
     expect(app).toContain("function shellOutputPane()");
     expect(app).toContain("function shellOutputGroups(logs, flow)");
-    expect(app).toContain("const clearAfterLogId = state.shellOutputClearAfterLogId.get(flow?.id || state.selectedFlowId) || 0;");
+    expect(app).toContain("function syncShellOutputClearState(flows)");
+    expect(app).toContain("Number(flow.shellOutputClearAfterLogId || 0)");
+    expect(app).toContain("const flowId = flow?.id || state.selectedFlowId;");
+    expect(app).toContain("state.shellOutputClearAfterLogId.get(flowId) || 0");
+    expect(app).toContain("Number(flow?.shellOutputClearAfterLogId || 0)");
     expect(app).toContain("return latestShellGroups(logs, clearAfterLogId);");
-    expect(app).toContain("function clearShellOutputPane()");
+    expect(app).toContain("async function clearShellOutputPane()");
     expect(app).toContain("state.shellOutputClearAfterLogId.set(flowId, state.lastLogId.get(flowId) || 0);");
+    expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flowId)}/shell-output/clear`, { method: "POST" });');
+    expect(app).toContain('if (message.event === "shell-output-cleared")');
+    expect(server).toContain("create table if not exists shell_output_state");
+    expect(server).toContain("function shellOutputClearAfterLogId(flowId: string)");
+    expect(server).toContain("function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number)");
+    expect(server).toContain('broadcast("shell-output-cleared", { flowId, clearAfterLogId: normalized });');
+    expect(server).toContain("function clientFlow(flow: Flow)");
+    expect(server).toContain("shellOutputClearAfterLogId: shellOutputClearAfterLogId(flow.id)");
+    expect(server).toContain('parts[3] === "shell-output" && parts[4] === "clear" && request.method === "POST"');
+    expect(server).toContain("const clearAfterLogId = setShellOutputClearAfterLogId(id, latestLogId(id));");
     expect(app).toContain("function hasVisibleTerminalOutput(message)");
     expect(app).toContain("!hasVisibleTerminalOutput(log.message)");
     expect(app).toContain("if (!isRoutineShellExitLog(log)) appendTerminalGroup(groups, log);");
@@ -1053,8 +1067,18 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('if (!event.ctrlKey || event.metaKey || event.altKey || event.key.toLowerCase() !== "c") return false;');
     expect(app).toContain("if (!flowShellRunning(selectedFlow())) return false;");
     expect(app).toContain("if (handleShellInterruptKeydown(event)) return;");
+    const shellInterruptKeydown = app.slice(
+      app.indexOf("function handleShellInterruptKeydown(event)"),
+      app.indexOf("function handleAgentInterruptKeydown(event)"),
+    );
+    expect(shellInterruptKeydown).not.toContain("interruptSelectedFlow");
+    expect(app).toContain("function handleAgentInterruptKeydown(event)");
+    expect(app).toContain('if (event.key !== "Escape" || event.metaKey || event.ctrlKey || event.altKey) return false;');
+    expect(app).toContain('if (focusedInputPaneKind() !== "prompt") return false;');
+    expect(app).toContain("if (!flowAgentRunning(selectedFlow())) return false;");
+    expect(app).toContain("if (!event.repeat) void interruptSelectedFlow();");
+    expect(app).toContain("if (handleAgentInterruptKeydown(event)) return;");
     expect(app).not.toContain('focusedInputPaneKind() === "shell" &&\n    flowShellRunning(selectedFlow())');
-    expect(app).not.toContain("void interruptSelectedFlow();");
     expect(app).not.toContain('els.flowPane.querySelector(".agent-interrupt").addEventListener("click"');
     expect(app).toContain("function canSubmitPromptMessage()");
     expect(app).toContain("function canSubmitShellCommand()");
@@ -1073,7 +1097,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (!canSubmitPromptMessage()) {\n    flashBlockedInput(input);\n    return;\n  }");
     expect(app).toContain("state.messageSubmitting = true;");
     expect(app).toContain('if (command === "clear") {');
-    expect(app).toContain("clearShellOutputPane();");
+    expect(app).toContain("await clearShellOutputPane();");
     expect(app).toContain("state.shellSubmitting = true;");
     expect(app).toContain("const flow = await ensureSelectedFlow();");
     expect(app).toContain("submittedFlowId = flow.id;");
@@ -1212,7 +1236,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('parts[3] === "command" && parts[4] === "interrupt" && request.method === "POST"');
     expect(server).toContain("interruptShellCommand(id);");
     expect(server).toContain("startShellCommand(flow, body.command);");
-    expect(server).toContain("return json({ ok: true, flow: runtimeAdjustedFlow(getFlow(id) ?? flow) });");
+    expect(server).toContain("return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });");
     expect(server).toContain('runtime.stopping ? "interrupted" : "failed"');
     expect(server).toContain('agentStatus: code === 0 || runtime.stopping ? "idle" : "failed"');
     expect(server).not.toContain("agent stopped by Turbopump");
@@ -1732,6 +1756,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('event.ctrlKey && event.key.toLowerCase() === "z"');
     expect(app).toContain("if (!state.historySearch) return false;");
     expect(app).toContain('if (event.key === "ArrowLeft" || event.key === "ArrowRight") {\n    cancelHistorySearch();\n    return false;\n  }');
+    expect(app).toContain('if (event.key === "Escape") {\n    cancelHistorySearch();\n    return true;\n  }');
     expect(app).toContain('if (event.key === "Tab") {\n    event.preventDefault();\n    cancelHistorySearch();\n    return true;\n  }');
     expect(app).toContain("updateHistorySearchMatches(input, state.historySearch.query + event.key);");
     expect(app).toContain("function handleGlobalHistorySearchKeydown(event)");

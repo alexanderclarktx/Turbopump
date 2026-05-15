@@ -39,6 +39,7 @@ type Flow = {
   serving: number;
   createdAt: string;
   updatedAt: string;
+  shellOutputClearAfterLogId?: number;
 };
 
 type LogRow = {
@@ -182,6 +183,12 @@ db.exec(`
     message text not null,
     createdAt text not null
   );
+
+  create table if not exists shell_output_state (
+    flowId text primary key,
+    clearAfterLogId integer not null default 0,
+    updatedAt text not null
+  );
 `);
 tryMigration("update flows set stage = 'planning' where stage = 'not_started'");
 tryMigration("alter table flows add column agentModel text not null default ''");
@@ -244,6 +251,12 @@ const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
 );
 const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
+const latestLogIdStmt = db.query("select id from logs where flowId = ? order by id desc limit 1");
+const shellOutputStateStmt = db.query("select clearAfterLogId from shell_output_state where flowId = ?");
+const setShellOutputClearAfterLogIdStmt = db.query(`
+  insert into shell_output_state (flowId, clearAfterLogId, updatedAt) values (?, ?, ?)
+  on conflict(flowId) do update set clearAfterLogId = excluded.clearAfterLogId, updatedAt = excluded.updatedAt
+`);
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -383,6 +396,23 @@ function listFlows() {
   return allFlowsStmt.all() as Flow[];
 }
 
+function latestLogId(flowId: string) {
+  const row = latestLogIdStmt.get(flowId) as { id: number } | null;
+  return row?.id ?? 0;
+}
+
+function shellOutputClearAfterLogId(flowId: string) {
+  const row = shellOutputStateStmt.get(flowId) as { clearAfterLogId: number } | null;
+  return row?.clearAfterLogId ?? 0;
+}
+
+function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number) {
+  const normalized = Number.isFinite(clearAfterLogId) ? Math.max(0, Math.trunc(clearAfterLogId)) : 0;
+  setShellOutputClearAfterLogIdStmt.run(flowId, normalized, now());
+  broadcast("shell-output-cleared", { flowId, clearAfterLogId: normalized });
+  return normalized;
+}
+
 function runtimeAdjustedFlow(flow: Flow) {
   const shellRuntime = shellProcesses.get(flow.id);
   if (shellRuntime) {
@@ -405,8 +435,15 @@ function runtimeAdjustedFlow(flow: Flow) {
   return flow;
 }
 
+function clientFlow(flow: Flow) {
+  return {
+    ...runtimeAdjustedFlow(flow),
+    shellOutputClearAfterLogId: shellOutputClearAfterLogId(flow.id),
+  };
+}
+
 function listClientFlows() {
-  return listFlows().map((flow) => runtimeAdjustedFlow(flow));
+  return listFlows().map((flow) => clientFlow(flow));
 }
 
 function checkoutNameFromPath(path: string) {
@@ -2212,7 +2249,7 @@ async function handleApi(request: Request, url: URL) {
     const parsed = parseLinearIssue(body.issue || "");
     if (!parsed.identifier) return json({ error: "Linear issue URL or key is required" }, { status: 400 });
     const existing = getFlowByIssue(parsed.identifier);
-    if (existing) return json({ ok: true, alreadyExists: true, flow: existing });
+    if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
 
     const id = crypto.randomUUID();
     const linearIssue = await fetchLinearIssue(parsed.identifier).catch(() => null);
@@ -2239,13 +2276,12 @@ async function handleApi(request: Request, url: URL) {
       createdAt,
     );
     const flow = getFlow(id);
-    if (flow) {
-      insertLog(id, "flow", `Created checkout ${target}\nBranch ${branch}\n`);
-      await syncLinearStatus(flow);
-    }
+    if (!flow) return json({ error: "Failed to create flow" }, { status: 500 });
+    insertLog(id, "flow", `Created checkout ${target}\nBranch ${branch}\n`);
+    await syncLinearStatus(flow);
     broadcast("flows", listClientFlows());
     broadcast("checkouts", listCheckouts());
-    return json({ ok: true, flow: getFlow(id) });
+    return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
   }
 
   if (parts[0] === "api" && parts[1] === "flows" && parts[2]) {
@@ -2254,7 +2290,7 @@ async function handleApi(request: Request, url: URL) {
     if (!flow) return json({ error: "Flow not found" }, { status: 404 });
 
     if (parts.length === 3 && request.method === "GET") {
-      return json({ flow });
+      return json({ flow: clientFlow(flow) });
     }
 
     if (parts[3] === "logs" && request.method === "GET") {
@@ -2278,6 +2314,11 @@ async function handleApi(request: Request, url: URL) {
       } catch (error) {
         return json({ error: String(error) }, { status: 400 });
       }
+    }
+
+    if (parts[3] === "shell-output" && parts[4] === "clear" && request.method === "POST") {
+      const clearAfterLogId = setShellOutputClearAfterLogId(id, latestLogId(id));
+      return json({ ok: true, clearAfterLogId, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "context-images" && request.method === "POST") {
@@ -2308,13 +2349,13 @@ async function handleApi(request: Request, url: URL) {
       if (fields.prUrl !== undefined) {
         insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
       }
-      return json({ ok: true, flow: getFlow(id) });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "agent" && parts[4] === "status" && request.method === "GET") {
       const reconciled = reconcileAgentHeartbeat(flow);
       return json({
-        flow: runtimeAdjustedFlow(reconciled),
+        flow: clientFlow(reconciled),
         turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId),
       });
     }
@@ -2343,13 +2384,13 @@ async function handleApi(request: Request, url: URL) {
 
     if (parts[3] === "command" && parts[4] === "interrupt" && request.method === "POST") {
       interruptShellCommand(id);
-      return json({ ok: true, flow: runtimeAdjustedFlow(getFlow(id) ?? flow) });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "command" && request.method === "POST") {
       const body = await readJson<{ command: string }>(request);
       startShellCommand(flow, body.command);
-      return json({ ok: true, flow: runtimeAdjustedFlow(getFlow(id) ?? flow) });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "serve" && request.method === "POST") {
@@ -2366,7 +2407,7 @@ async function handleApi(request: Request, url: URL) {
       await syncLinearStatus(flow);
       broadcast("flows", listClientFlows());
       broadcast("checkouts", listCheckouts());
-      return json({ ok: true, flow: getFlow(id) });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
   }
 

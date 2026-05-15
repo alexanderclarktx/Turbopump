@@ -567,7 +567,7 @@ function handleHistorySearchKeydown(event) {
   }
   if (event.key === "Escape") {
     cancelHistorySearch();
-    return false;
+    return true;
   }
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
     cancelHistorySearch();
@@ -772,6 +772,16 @@ function handleShellInterruptKeydown(event) {
   if (!flowShellRunning(selectedFlow())) return false;
   event.preventDefault();
   void interruptSelectedShellCommand();
+  return true;
+}
+
+function handleAgentInterruptKeydown(event) {
+  if (event.defaultPrevented || event.isComposing) return false;
+  if (event.key !== "Escape" || event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (focusedInputPaneKind() !== "prompt") return false;
+  if (!flowAgentRunning(selectedFlow())) return false;
+  event.preventDefault();
+  if (!event.repeat) void interruptSelectedFlow();
   return true;
 }
 
@@ -1341,7 +1351,20 @@ function render() {
 
 function setFlows(flows) {
   state.flows = flows || [];
+  syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
+}
+
+function syncShellOutputClearState(flows) {
+  for (const flow of flows || []) {
+    if (!flow?.id) continue;
+    const clearAfterLogId = Number(flow.shellOutputClearAfterLogId || 0);
+    if (!Number.isFinite(clearAfterLogId) || clearAfterLogId <= 0) continue;
+    state.shellOutputClearAfterLogId.set(
+      flow.id,
+      Math.max(state.shellOutputClearAfterLogId.get(flow.id) || 0, clearAfterLogId),
+    );
+  }
 }
 
 function runtimeOnlyFlowChanges(previousFlows, nextFlows) {
@@ -2994,7 +3017,11 @@ function shellOutputPane() {
 }
 
 function shellOutputGroups(logs, flow) {
-  const clearAfterLogId = state.shellOutputClearAfterLogId.get(flow?.id || state.selectedFlowId) || 0;
+  const flowId = flow?.id || state.selectedFlowId;
+  const clearAfterLogId = Math.max(
+    state.shellOutputClearAfterLogId.get(flowId) || 0,
+    Number(flow?.shellOutputClearAfterLogId || 0),
+  );
   const runningGroups = runningShellGroups(logs, flow, clearAfterLogId);
   if (runningGroups.length) return runningGroups;
   return latestShellGroups(logs, clearAfterLogId);
@@ -3035,13 +3062,23 @@ function renderShellOutputPane(flowId) {
   pane.scrollTop = pane.scrollHeight;
 }
 
-function clearShellOutputPane() {
+async function clearShellOutputPane() {
   const flowId = state.selectedFlowId;
   if (flowId) state.shellOutputClearAfterLogId.set(flowId, state.lastLogId.get(flowId) || 0);
   const pane = shellOutputPane();
   pane?.replaceChildren();
   if (pane) pane._shellOutputSignature = "";
   renderShellOutputPane(flowId);
+  if (!flowId) return;
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flowId)}/shell-output/clear`, { method: "POST" });
+    const clearAfterLogId = Number(data.clearAfterLogId || 0);
+    if (Number.isFinite(clearAfterLogId)) state.shellOutputClearAfterLogId.set(flowId, clearAfterLogId);
+    if (data.flow) upsertFlow(data.flow);
+    renderShellOutputPane(flowId);
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
 function formatTerminalMessage(source, message) {
@@ -3814,6 +3851,14 @@ function connectWs() {
       removeLogEntries(message.payload.flowId, message.payload.ids || []);
       renderLogs(message.payload.flowId, { force: true });
     }
+    if (message.event === "shell-output-cleared") {
+      const flowId = message.payload.flowId;
+      const clearAfterLogId = Number(message.payload.clearAfterLogId || 0);
+      if (flowId && Number.isFinite(clearAfterLogId)) {
+        state.shellOutputClearAfterLogId.set(flowId, clearAfterLogId);
+        renderShellOutputPane(flowId);
+      }
+    }
   });
   ws.addEventListener("close", () => setTimeout(connectWs, 1000));
 }
@@ -4086,6 +4131,7 @@ promptInput().addEventListener("keydown", (event) => {
   }
 
   if (handleInputPaneTabKeydown(event)) return;
+  if (handleAgentInterruptKeydown(event)) return;
   if (handleInputHistoryNavigationKeydown(event)) return;
 
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -4118,7 +4164,7 @@ async function submitShellCommand(value) {
     cancelHistorySearch();
     resetInputHistoryNavigation();
     input.value = "";
-    clearShellOutputPane();
+    await clearShellOutputPane();
     input.focus({ preventScroll: true });
     return;
   }
