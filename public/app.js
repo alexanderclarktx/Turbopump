@@ -10,6 +10,8 @@ const THEME_KEY = "flow.theme";
 const PROMPT_HISTORY_KEY = "flow.promptHistory";
 const SHELL_HISTORY_KEY = "flow.shellHistory";
 const MAX_INPUT_HISTORY_ITEMS = 200;
+const DEFAULT_TOAST_DURATION_MS = 3200;
+const ERROR_TOAST_DURATION_MS = 8000;
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
 const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
@@ -220,6 +222,7 @@ const els = {
   flowPane: document.querySelector("#flowPane"),
   diffModal: document.querySelector("#diffModal"),
   imagePreviewModal: document.querySelector("#imagePreviewModal"),
+  toastStack: document.querySelector("#toastStack"),
 };
 
 let repoConfigSaveTimer = 0;
@@ -341,8 +344,30 @@ async function api(path, options = {}) {
   return body;
 }
 
-function toast(message) {
-  console.log(message);
+function toast(message, options = {}) {
+  const kind = options.kind || "info";
+  const stack = els.toastStack;
+  if (!stack) {
+    console.log(message);
+    return;
+  }
+
+  const item = document.createElement("div");
+  item.className = `toast toast-${kind}`;
+  item.setAttribute("role", kind === "error" ? "alert" : "status");
+  item.textContent = message;
+  stack.appendChild(item);
+
+  const duration = options.duration ?? (kind === "error" ? ERROR_TOAST_DURATION_MS : DEFAULT_TOAST_DURATION_MS);
+  window.setTimeout(() => {
+    item.classList.add("toast-exiting");
+    item.addEventListener("transitionend", () => item.remove(), { once: true });
+    window.setTimeout(() => item.remove(), 200);
+  }, duration);
+}
+
+function isGitCloneError(error) {
+  return /\bgit clone failed\b/i.test(error?.message || "");
 }
 
 function slashCommandMatches(value) {
@@ -2610,10 +2635,18 @@ async function loadLinearDetail(identifier) {
 }
 
 async function createFlowFromTicket(ticket, options = {}) {
-  const data = await api("/api/flows", {
-    method: "POST",
-    body: JSON.stringify({ issue: ticket.url || ticket.identifier, title: ticket.title }),
-  });
+  let data;
+  try {
+    data = await api("/api/flows", {
+      method: "POST",
+      body: JSON.stringify({ issue: ticket.url || ticket.identifier, title: ticket.title }),
+    });
+  } catch (error) {
+    if (isGitCloneError(error)) {
+      toast(error.message, { kind: "error" });
+    }
+    throw error;
+  }
   upsertFlow(data.flow);
   render();
   await loadLogs(data.flow.id);

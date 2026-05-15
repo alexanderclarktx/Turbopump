@@ -486,6 +486,17 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain('runGit(["clone", repoUrl, target]);');
   });
 
+  test("shows visible error toasts for git clone failures", () => {
+    expect(html).toContain('id="toastStack"');
+    expect(css).toContain(".toast-stack");
+    expect(css).toContain(".toast-error");
+    expect(app).toContain("function toast(message, options = {})");
+    expect(app).toContain("function isGitCloneError(error)");
+    expect(app).toContain('toast(error.message, { kind: "error" });');
+    expect(server).toContain("function gitCommandLabel(args: string[])");
+    expect(server).toContain('`${gitCommandLabel(args)} failed: ${output}`');
+  });
+
   test("trusts flow checkouts before starting the Codex app server", () => {
     expect(server).toContain("function ensureCodexProjectTrusted(projectPath: string)");
     expect(server).toContain('const codexHome = codexEnv.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");');

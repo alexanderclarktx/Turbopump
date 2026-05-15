@@ -80,6 +80,45 @@ body {
     sans-serif;
 }
 
+.toast-stack {
+  position: fixed;
+  z-index: 1000;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  width: min(420px, calc(100vw - 36px));
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 11px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 12px 30px rgb(15 23 42 / 18%);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity var(--motion-pane),
+    transform var(--motion-pane);
+}
+
+.toast-error {
+  border-color: color-mix(in srgb, var(--danger), var(--line-strong) 30%);
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel));
+}
+
+.toast-exiting {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
 button,
 input,
 select,

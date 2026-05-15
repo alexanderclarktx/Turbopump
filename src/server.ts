@@ -741,6 +741,10 @@ function codexThreadSettingKey(flowId: string) {
   return `codexThread:${flowId}`;
 }
 
+function gitCommandLabel(args: string[]) {
+  return `git ${args[0] ?? ""}`.trim();
+}
+
 function runGit(args: string[], cwd = rootDir) {
   const result = Bun.spawnSync({
     cmd: ["git", ...args],
@@ -752,7 +756,8 @@ function runGit(args: string[], cwd = rootDir) {
   const stdout = result.stdout.toString().trim();
   const stderr = result.stderr.toString().trim();
   if (result.exitCode !== 0) {
-    throw new Error(stderr || stdout || `git ${args.join(" ")} failed`);
+    const output = stderr || stdout;
+    throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
   }
   return stdout;
 }
