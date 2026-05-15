@@ -2747,6 +2747,14 @@ body.shell-pane-hidden .shell-command-panel {
   color: #16a34a;
 }
 
+.terminal-entry-working-agent .agent-working {
+  color: #6d28d9;
+}
+
+body.theme-dark .terminal-entry-working-agent .agent-working {
+  color: #c084fc;
+}
+
 body.theme-dark .terminal-entry-working-shell .agent-working {
   color: #22c55e;
 }

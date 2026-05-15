@@ -3782,7 +3782,7 @@ function connectWs() {
       if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {
         renderTickets();
         const flow = selectedFlow();
-        if (flow) renderLogs(flow.id);
+        if (flow) renderLogs(flow.id, { force: true });
         return;
       }
       render();
@@ -4210,8 +4210,9 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     const flow = await ensureSelectedFlow();
     if (!flow) return;
     submittedFlowId = flow.id;
-    renderFlowPane();
     scheduleAgentWorkingPoll(flow.id);
+    renderFlowPane();
+    renderLogs(flow.id, { force: true, scrollToLatest: true });
     await api(`/api/flows/${flow.id}/message`, {
       method: "POST",
       body: JSON.stringify({ message: agentMessage }),

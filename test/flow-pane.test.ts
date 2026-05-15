@@ -760,7 +760,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function setFlows(flows)");
     expect(app).toContain("function runtimeOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain('const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);');
-    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) renderLogs(flow.id);\n        return;\n      }");
+    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) renderLogs(flow.id, { force: true });\n        return;\n      }");
     expect(app).toContain("function syncLinearTicketsWithFlows()");
     expect(app).toContain("function flowUpdatedAtMs(flow)");
     expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
@@ -1005,6 +1005,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("const runtimeKind = flowRuntimeKind(flow);");
     expect(app).toContain('const agentWorkingKind = agentWorking ? "agent" : "idle";');
     expect(app).toContain("if (agentWorking) appendTerminalWorkingBlock(fragment);");
+    expect(app).toContain("renderLogs(flow.id, { force: true, scrollToLatest: true });");
     expect(app).not.toContain('els.flowPane.querySelector(".agent-working").hidden = !agentWorking;');
     expect(app).toContain("shellOutputClearAfterLogId: new Map()");
     expect(app).toContain("function latestShellGroups(logs, clearAfterLogId = 0)");
@@ -1108,6 +1109,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("grid-template-rows: minmax(0, 1fr) auto;");
     expect(css).toContain("border-top: 1px solid var(--line);");
     expect(css).toContain(".agent-working");
+    expect(css).toContain(".terminal-entry-working-agent .agent-working");
+    expect(css).toContain("color: #6d28d9;");
+    expect(css).toContain("body.theme-dark .terminal-entry-working-agent .agent-working");
     expect(css).not.toContain(".agent-working.shell-working");
     expect(css).toContain(".terminal-panel.shell-output-visible");
     expect(css).toContain(
