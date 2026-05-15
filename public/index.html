@@ -7,7 +7,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body class="settings-collapsed">
+  <body class="settings-collapsed app-booting">
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
     <main>
       <aside class="sidebar" id="settingsPane">
         <div class="settings-header">
@@ -33,62 +34,93 @@
         </div>
 
         <div class="settings-content">
-          <section>
-            <h2>Linear</h2>
-            <span id="linearState" class="pill">Linear disconnected</span>
-            <form id="linearKeyForm" class="linear-key-form">
-              <input id="linearApiKey" type="password" placeholder="Linear API key" autocomplete="off" />
-              <button type="submit">Connect Linear</button>
-            </form>
+          <section class="settings-section">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Linear</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <span id="linearState" class="pill">Linear disconnected</span>
+              <form id="linearKeyForm" class="linear-key-form">
+                <input id="linearApiKey" type="password" placeholder="Linear API key" autocomplete="off" />
+                <button type="submit">Connect Linear</button>
+              </form>
+            </div>
           </section>
 
-          <section>
-            <h2>Repo</h2>
-            <label>
-              url
-              <input id="repoUrl" placeholder="git@github.com:my/repo.git" />
-            </label>
+          <section class="settings-section">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Repo</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <label>
+                url
+                <input id="repoUrl" placeholder="git@github.com:my/repo.git" />
+              </label>
+            </div>
           </section>
 
-          <section class="agent-settings">
-            <h2>Agents</h2>
-            <label class="agent-instructions-label">
-              <span class="setting-label-row">
-                <span>developer instructions</span>
-                <button
-                  id="resetAgentDeveloperInstructions"
-                  class="icon-button"
-                  type="button"
-                  aria-label="Reset developer instructions"
-                  title="Reset developer instructions"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M20 6v5h-5" />
-                    <path d="M4 18v-5h5" />
-                    <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
-                    <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
-                  </svg>
-                </button>
-              </span>
-              <textarea id="agentDeveloperInstructions" spellcheck="false"></textarea>
-            </label>
+          <section class="settings-section agent-settings">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Agents</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <label class="agent-instructions-label">
+                <span class="setting-label-row">
+                  <span>developer instructions</span>
+                  <button
+                    id="resetAgentDeveloperInstructions"
+                    class="icon-button"
+                    type="button"
+                    aria-label="Reset developer instructions"
+                    title="Reset developer instructions"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M20 6v5h-5" />
+                      <path d="M4 18v-5h5" />
+                      <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
+                      <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
+                    </svg>
+                  </button>
+                </span>
+                <textarea id="agentDeveloperInstructions" spellcheck="false"></textarea>
+              </label>
+            </div>
           </section>
 
-          <section class="checkout-settings">
-            <h2>Checkouts</h2>
-            <div id="checkoutList" class="checkout-list" aria-live="polite"></div>
+          <section class="settings-section checkout-settings">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Checkouts</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <div id="checkoutList" class="checkout-list" aria-live="polite"></div>
+            </div>
           </section>
 
-          <section class="development-settings" hidden>
-            <h2>Development</h2>
-            <label>
-              serve script
-              <input id="serveCommand" placeholder="bun run dev" />
-            </label>
-            <label>
-              environment
-              <textarea id="envEditor" spellcheck="false"></textarea>
-            </label>
+          <section class="settings-section environment-settings">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Environment</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <div class="env-editor" id="envEditor" aria-label="Environment variables"></div>
+            </div>
+          </section>
+
+          <section class="settings-section development-settings" hidden>
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>Development</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <label>
+                serve script
+                <input id="serveCommand" placeholder="bun run dev" />
+              </label>
+            </div>
           </section>
         </div>
       </aside>
@@ -129,17 +161,32 @@
             <div class="agent-panel terminal-panel">
               <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
               <div class="terminal" role="log" aria-live="polite"></div>
+              <div
+                class="shell-output-resizer"
+                role="separator"
+                aria-label="Resize agent and shell output panes"
+                aria-orientation="vertical"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                tabindex="0"
+              ></div>
+              <div class="shell-output-pane" role="log" aria-live="polite" hidden></div>
               <form class="message-form">
-                <button class="agent-interrupt icon-button" type="button" aria-label="Pause agent" title="Pause agent" disabled>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M9 6v12" />
-                    <path d="M15 6v12" />
-                  </svg>
-                </button>
-                <textarea class="message-input" placeholder="Prompt the agent" rows="1"></textarea>
+                <div class="history-search-indicator" aria-live="polite" aria-hidden="true"></div>
+                <div class="prompt-input-pane">
+                  <span class="input-pane-prefix prompt-input-prefix" aria-hidden="true">&gt;</span>
+                  <textarea class="message-input" rows="1"></textarea>
+                </div>
+                <div class="shell-command-panel">
+                  <div class="shell-input-pane">
+                    <span class="input-pane-prefix shell-input-prefix" aria-hidden="true">$</span>
+                    <input class="shell-input" autocomplete="off" />
+                  </div>
+                </div>
                 <div class="agent-context" aria-label="Current flow context" hidden>
                   <span class="agent-context-window"></span>
                   <span class="agent-context-model"></span>
+                  <button class="agent-context-diff" type="button" hidden>diff</button>
                   <a class="agent-context-branch"></a>
                 </div>
                 <div class="agent-image-context" aria-label="Attached image context" hidden></div>
@@ -173,7 +220,46 @@
         <path d="M20.1 14.3A8 8 0 0 1 9.7 3.9 8.5 8.5 0 1 0 20.1 14.3Z" />
       </svg>
     </button>
+    <div class="diff-modal-backdrop" id="diffModal" hidden>
+      <section class="diff-modal" role="dialog" aria-modal="true" aria-label="Diff viewer">
+        <button class="diff-modal-close icon-button" type="button" aria-label="Close diff viewer" title="Close diff viewer">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+          </svg>
+        </button>
+        <div class="diff-modal-summary"></div>
+        <pre class="diff-modal-code"><code class="language-diff"></code></pre>
+      </section>
+    </div>
+    <div class="image-preview-backdrop" id="imagePreviewModal" hidden>
+      <section class="image-preview-modal" role="dialog" aria-modal="true" aria-labelledby="imagePreviewTitle">
+        <header class="image-preview-header">
+          <h2 id="imagePreviewTitle">Image preview</h2>
+        </header>
+        <div class="image-preview-frame">
+          <img alt="" />
+        </div>
+      </section>
+    </div>
 
+    <script src="/vendor/prismjs/prism.js" data-manual></script>
+    <script src="/vendor/prismjs/components/prism-markup.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-css.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-clike.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-javascript.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-typescript.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-jsx.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-tsx.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-bash.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-shell-session.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-json.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-diff.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-markdown.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-python.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-go.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-rust.min.js"></script>
+    <script src="/vendor/prismjs/components/prism-yaml.min.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

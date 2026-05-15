@@ -1,8 +1,17 @@
 import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js";
 
 const COLLAPSED_LINEAR_STATUSES_KEY = "flow.collapsedLinearStatuses";
+const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
+const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
+const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
+const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
 const THEME_KEY = "flow.theme";
+const PROMPT_HISTORY_KEY = "flow.promptHistory";
+const SHELL_HISTORY_KEY = "flow.shellHistory";
+const MAX_INPUT_HISTORY_ITEMS = 200;
+const DEFAULT_TOAST_DURATION_MS = 3200;
+const ERROR_TOAST_DURATION_MS = 8000;
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
 const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
@@ -12,6 +21,7 @@ const SLASH_COMMANDS = [
   { name: "/effort", description: "Set Codex reasoning effort" },
   { name: "/fast", description: "Toggle fast mode for this flow" },
   { name: "/model", description: "Set the Codex model for this flow" },
+  { name: "/review", description: "Ask Codex to review the current changes" },
 ];
 const SLASH_COMMAND_EXPANSIONS = {
   "/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({
@@ -22,7 +32,14 @@ const SLASH_COMMAND_EXPANSIONS = {
     name: `/model ${model}`,
     description: "",
   })),
+  "/review": [
+    { name: "/review base", description: "Review against a base branch (PR style)" },
+    { name: "/review uncommitted", description: "Review uncommitted changes" },
+    { name: "/review commit", description: "Review a commit" },
+    { name: "/review custom", description: "Custom review instructions" },
+  ],
 };
+const SLASH_COMMANDS_WITH_ARGUMENTS = ["/review base", "/review commit", "/review custom"];
 
 function sortSlashCommands(commands) {
   return [...commands].sort((a, b) => a.name.localeCompare(b.name));
@@ -41,12 +58,20 @@ function slashCommandHasExpansions(commandName) {
   return Boolean(SLASH_COMMAND_EXPANSIONS[commandName]);
 }
 
+function slashCommandAllowsArguments(commandName) {
+  return SLASH_COMMANDS_WITH_ARGUMENTS.includes(commandName);
+}
+
 function validSlashCommand(value) {
   const commandName = value.trim();
   if (slashCommandHasExpansions(commandName)) return false;
   if (SORTED_SLASH_COMMANDS.some((command) => command.name === commandName)) return true;
   return Object.values(SLASH_COMMAND_EXPANSIONS).some((expansions) =>
-    expansions.some((command) => command.name === commandName),
+    expansions.some(
+      (command) =>
+        command.name === commandName ||
+        (slashCommandAllowsArguments(command.name) && commandName.startsWith(`${command.name} `)),
+    ),
   );
 }
 
@@ -62,6 +87,26 @@ function initialCollapsedLinearStatuses() {
   }
 }
 
+function initialPinnedLinearIssues() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PINNED_LINEAR_ISSUES_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function initialCollapsedSettingsSections() {
+  const raw = localStorage.getItem(COLLAPSED_SETTINGS_SECTIONS_KEY);
+  if (raw === null) return new Set(["checkouts"]);
+  try {
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : []);
+  } catch {
+    return new Set(["checkouts"]);
+  }
+}
+
 function initialFlowSplitSize() {
   const value = Number(localStorage.getItem(FLOW_SPLIT_SIZE_KEY) || 50);
   return clampFlowSplitSize(Number.isFinite(value) ? value : 50);
@@ -73,8 +118,30 @@ function initialTheme() {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function initialInputHistory(key) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
 function clampFlowSplitSize(value) {
   return Math.min(100, Math.max(0, value));
+}
+
+function clampShellOutputSplitSize(value) {
+  return Math.min(70, Math.max(18, value));
+}
+
+function initialShellOutputSplitSize() {
+  const value = Number(localStorage.getItem(SHELL_OUTPUT_SPLIT_SIZE_KEY) || 28);
+  return clampShellOutputSplitSize(Number.isFinite(value) ? value : 28);
+}
+
+function initialBooleanSetting(key) {
+  return localStorage.getItem(key) === "true";
 }
 
 const state = {
@@ -92,22 +159,42 @@ const state = {
   selectedFlowId: localStorage.getItem("flow.selectedFlowId") || "",
   linearDetails: new Map(),
   logs: new Map(),
+  logIds: new Map(),
   lastLogId: new Map(),
+  shellOutputClearAfterLogId: new Map(),
   openTraceGroups: new Map(),
   settingsCollapsed: true,
   theme: initialTheme(),
+  collapsedSettingsSections: initialCollapsedSettingsSections(),
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
+  pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
+  shellOutputSplitSize: initialShellOutputSplitSize(),
+  ticketDrawerHidden: false,
+  shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
   messageSubmitting: false,
+  shellSubmitting: false,
   interruptSubmitting: false,
+  shellInterruptingFlowIds: new Set(),
   pendingAgentImages: [],
   agentImageUploading: false,
   agentImageDragDepth: 0,
   agentWorkingPollFlowId: "",
   agentWorkingPollTimer: 0,
   agentWorkingPollInFlight: false,
+  promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
+  shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
+  promptHistoryOrder: new Map(),
+  shellHistoryOrder: new Map(),
+  historySearch: null,
+  historyNavigation: null,
   terminalFollowPaused: false,
+  flowDiffs: new Map(),
+  flowDiffLoadingIds: new Set(),
+  diffModalFlowId: "",
+  diffModalDiff: null,
+  diffModalLoadingFlowId: "",
   draggingLinearIssueId: "",
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
@@ -117,6 +204,7 @@ const state = {
 
 const els = {
   settingsPane: document.querySelector("#settingsPane"),
+  settingsContent: document.querySelector(".settings-content"),
   settingsToggle: document.querySelector("#settingsToggle"),
   themeToggle: document.querySelector("#themeToggle"),
   repoUrl: document.querySelector("#repoUrl"),
@@ -132,11 +220,17 @@ const els = {
   ticketState: document.querySelector("#ticketState"),
   ticketGrid: document.querySelector("#ticketGrid"),
   flowPane: document.querySelector("#flowPane"),
+  diffModal: document.querySelector("#diffModal"),
+  imagePreviewModal: document.querySelector("#imagePreviewModal"),
+  toastStack: document.querySelector("#toastStack"),
 };
 
 let repoConfigSaveTimer = 0;
 let agentConfigSaveTimer = 0;
 let envSaveTimer = 0;
+let diffModalTransitionTimer = 0;
+let imagePreviewTransitionTimer = 0;
+let checkoutLoadFrame = 0;
 let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
 let lastSavedEnv = "";
@@ -250,8 +344,30 @@ async function api(path, options = {}) {
   return body;
 }
 
-function toast(message) {
-  console.log(message);
+function toast(message, options = {}) {
+  const kind = options.kind || "info";
+  const stack = els.toastStack;
+  if (!stack) {
+    console.log(message);
+    return;
+  }
+
+  const item = document.createElement("div");
+  item.className = `toast toast-${kind}`;
+  item.setAttribute("role", kind === "error" ? "alert" : "status");
+  item.textContent = message;
+  stack.appendChild(item);
+
+  const duration = options.duration ?? (kind === "error" ? ERROR_TOAST_DURATION_MS : DEFAULT_TOAST_DURATION_MS);
+  window.setTimeout(() => {
+    item.classList.add("toast-exiting");
+    item.addEventListener("transitionend", () => item.remove(), { once: true });
+    window.setTimeout(() => item.remove(), 200);
+  }, duration);
+}
+
+function isGitCloneError(error) {
+  return /\bgit clone failed\b/i.test(error?.message || "");
 }
 
 function slashCommandMatches(value) {
@@ -262,6 +378,482 @@ function slashCommandMatches(value) {
   return SORTED_SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
 }
 
+function inputHistoryMode(input = document.activeElement) {
+  return input?.classList?.contains("shell-input") ? "shell" : "prompt";
+}
+
+function inputHistoryKey(mode = inputHistoryMode()) {
+  return mode === "shell" ? SHELL_HISTORY_KEY : PROMPT_HISTORY_KEY;
+}
+
+function inputHistory(mode = inputHistoryMode()) {
+  return mode === "shell" ? state.shellHistory : state.promptHistory;
+}
+
+function inputHistoryOrder(mode = inputHistoryMode()) {
+  return mode === "shell" ? state.shellHistoryOrder : state.promptHistoryOrder;
+}
+
+function saveInputHistory(mode = inputHistoryMode()) {
+  localStorage.setItem(inputHistoryKey(mode), JSON.stringify(inputHistory(mode)));
+}
+
+function inputHistoryLogOrder(log) {
+  const timestamp = Date.parse(log.createdAt || "");
+  const id = Number(log.id || 0);
+  if (Number.isFinite(timestamp)) return timestamp + id / 1_000_000;
+  return Number.isFinite(id) && id > 0 ? id : Date.now();
+}
+
+function sortInputHistory(mode = inputHistoryMode()) {
+  const history = inputHistory(mode);
+  const order = inputHistoryOrder(mode);
+  history.sort((a, b) => (order.get(b) ?? 0) - (order.get(a) ?? 0));
+  history.splice(MAX_INPUT_HISTORY_ITEMS);
+  saveInputHistory(mode);
+}
+
+function shouldRememberInputHistoryItem(item, mode) {
+  return !(mode === "prompt" && item.startsWith("/"));
+}
+
+function rememberInputHistory(value, mode = inputHistoryMode(), orderValue = Date.now()) {
+  const item = value.trim();
+  if (!item) return;
+  if (!shouldRememberInputHistoryItem(item, mode)) return;
+  const history = inputHistory(mode);
+  const order = inputHistoryOrder(mode);
+  const existingIndex = history.indexOf(item);
+  if (existingIndex < 0) history.push(item);
+  if ((order.get(item) ?? -Infinity) <= orderValue) order.set(item, orderValue);
+  sortInputHistory(mode);
+}
+
+function rememberLogHistory(log) {
+  const normalized = normalizeTerminalLog(log);
+  const order = inputHistoryLogOrder(log);
+  if (normalized.source === "user") rememberInputHistory(normalized.message, "prompt", order);
+  if (normalized.source === "shell:command") rememberInputHistory(normalized.message, "shell", order);
+}
+
+function matchingInputHistory(query, mode = inputHistoryMode()) {
+  const needle = query.toLowerCase();
+  return inputHistory(mode).filter((item) => item.toLowerCase().includes(needle));
+}
+
+function applyHistorySearchResult(input) {
+  const search = state.historySearch;
+  if (!search) return false;
+  const result = search.matches[search.index];
+  if (!result) return false;
+  input.value = result;
+  input.setSelectionRange(result.length, result.length);
+  resizeMessageInput();
+  renderSlashMenu();
+  return true;
+}
+
+function resetInputHistoryNavigation() {
+  state.historyNavigation = null;
+}
+
+function updateInputHistoryNavigation(input, direction) {
+  const mode = inputHistoryMode(input);
+  const history = inputHistory(mode);
+  if (!history.length) return false;
+  if (!state.historyNavigation || state.historyNavigation.mode !== mode) {
+    if (direction < 0) return false;
+    state.historyNavigation = {
+      mode,
+      draft: input.value,
+      index: -1,
+    };
+  }
+  const nextIndex = state.historyNavigation.index + direction;
+  if (nextIndex < -1 || nextIndex >= history.length) return true;
+  state.historyNavigation.index = nextIndex;
+  const value = nextIndex === -1 ? state.historyNavigation.draft : history[nextIndex];
+  input.value = value;
+  input.setSelectionRange(value.length, value.length);
+  resizeMessageInput();
+  hideSlashMenu();
+  return true;
+}
+
+function inputCaretOnFirstLine(input) {
+  const start = input.selectionStart ?? 0;
+  return !input.value.slice(0, start).includes("\n");
+}
+
+function inputCaretOnLastLine(input) {
+  const end = input.selectionEnd ?? input.value.length;
+  return !input.value.slice(end).includes("\n");
+}
+
+function handleInputHistoryNavigationKeydown(event) {
+  if (state.historySearch) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return false;
+  const input = event.currentTarget;
+  const direction = event.key === "ArrowUp" ? 1 : -1;
+  if (direction > 0 && !inputCaretOnFirstLine(input)) return false;
+  if (direction < 0 && !state.historyNavigation && !inputCaretOnLastLine(input)) return false;
+  if (!updateInputHistoryNavigation(input, direction)) return false;
+  event.preventDefault();
+  return true;
+}
+
+function renderHistorySearchIndicator() {
+  const indicator = els.flowPane.querySelector(".history-search-indicator");
+  if (!indicator) return;
+  const form = els.flowPane.querySelector(".message-form");
+  const search = state.historySearch;
+  const terminal = els.flowPane.querySelector(".terminal");
+  const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
+  form?.classList.toggle("history-searching", Boolean(search));
+  indicator.setAttribute("aria-hidden", String(!search));
+  applyFlowSplitSize();
+  if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);
+  if (!search) {
+    indicator.textContent = "";
+    indicator.dataset.mode = "";
+    return;
+  }
+  indicator.dataset.mode = search.mode;
+  const label = search.mode === "shell" ? "shell" : "prompt";
+  const resultText = search.query && !search.matches.length ? " no match" : "";
+  indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;
+}
+
+function updateHistorySearchMatches(input, query) {
+  const search = state.historySearch;
+  if (!search) return false;
+  search.query = query;
+  search.matches = search.query ? matchingInputHistory(search.query, search.mode) : [];
+  search.index = 0;
+  renderHistorySearchIndicator();
+  if (search.matches.length) {
+    return applyHistorySearchResult(input);
+  }
+  input.value = search.query ? "" : search.draft;
+  input.setSelectionRange(input.value.length, input.value.length);
+  resizeMessageInput();
+  renderSlashMenu();
+  return true;
+}
+
+function cancelHistorySearch() {
+  state.historySearch = null;
+  renderHistorySearchIndicator();
+}
+
+function startOrAdvanceHistorySearch(input) {
+  const mode = inputHistoryMode();
+  if (!state.historySearch || state.historySearch.mode !== mode) {
+    state.historySearch = {
+      mode,
+      query: "",
+      draft: input.value,
+      matches: [],
+      index: 0,
+    };
+  } else if (state.historySearch.matches.length) {
+    state.historySearch.index = Math.min(state.historySearch.index + 1, state.historySearch.matches.length - 1);
+  }
+  renderHistorySearchIndicator();
+  return applyHistorySearchResult(input);
+}
+
+function moveHistorySearchForward(input) {
+  const search = state.historySearch;
+  if (!search || !search.matches.length) return false;
+  search.index = Math.max(search.index - 1, 0);
+  return applyHistorySearchResult(input);
+}
+
+function handleHistorySearchKeydown(event) {
+  const input = event.currentTarget;
+  if (event.ctrlKey && event.key.toLowerCase() === "r" && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    startOrAdvanceHistorySearch(input);
+    return true;
+  }
+  if (!state.historySearch) return false;
+  if (event.ctrlKey && event.key.toLowerCase() === "z" && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    moveHistorySearchForward(input);
+    return true;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    updateHistorySearchMatches(input, state.historySearch.query.slice(0, -1));
+    return true;
+  }
+  if (event.key === "Escape") {
+    cancelHistorySearch();
+    return true;
+  }
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    cancelHistorySearch();
+    return false;
+  }
+  if (event.key === "Tab") {
+    event.preventDefault();
+    cancelHistorySearch();
+    return true;
+  }
+  if (event.key.length === 1) {
+    event.preventDefault();
+    updateHistorySearchMatches(input, state.historySearch.query + event.key);
+    return true;
+  }
+  return false;
+}
+
+function promptInput() {
+  return els.flowPane.querySelector(".message-input");
+}
+
+function shellInput() {
+  return els.flowPane.querySelector(".shell-input");
+}
+
+function focusInputPane(kind) {
+  if (kind === "shell" && state.shellPaneHidden) return false;
+  const input = kind === "shell" ? shellInput() : promptInput();
+  if (!input) return false;
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
+  input.focus({ preventScroll: true });
+  return true;
+}
+
+function focusedInputPaneKind() {
+  if (document.activeElement === shellInput()) return "shell";
+  if (document.activeElement === promptInput()) return "prompt";
+  return "";
+}
+
+function toggleFocusedInputPane() {
+  const focused = focusedInputPaneKind();
+  if (focused === "shell") return focusInputPane("prompt");
+  return focusInputPane("shell") || focusInputPane("prompt");
+}
+
+function setInputMode(mode) {
+  focusInputPane(mode === "command" || mode === "shell" ? "shell" : "prompt");
+}
+
+function updateMessageInputMode() {
+  const input = promptInput();
+  if (!input) return;
+  renderSlashMenu();
+}
+
+function flowRuntimeActive(flow) {
+  return flow?.agentStatus === "running" || flow?.agentStatus === "interrupting";
+}
+
+function flowRuntimeKind(flow) {
+  if (
+    flow?.id === state.selectedFlowId &&
+    state.shellSubmitting &&
+    flow.agentStatus !== "running" &&
+    flow.agentStatus !== "interrupting"
+  ) {
+    return "shell";
+  }
+  return flow?.agentRuntimeKind === "shell" ? "shell" : "agent";
+}
+
+function flowAgentRunning(flow) {
+  return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "agent";
+}
+
+function flowShellRunning(flow) {
+  return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "shell";
+}
+
+function flowShellLive(flow) {
+  return (
+    flow?.agentStatus === "running" &&
+    flowRuntimeKind(flow) === "shell" &&
+    !state.shellInterruptingFlowIds.has(flow.id)
+  );
+}
+
+function canSubmitPromptMessage() {
+  const flow = selectedFlow();
+  const ticket = selectedTicket();
+  return Boolean(
+    repoUrlConfigured() &&
+      (flow || ticket) &&
+      !state.messageSubmitting &&
+      !state.agentImageUploading &&
+      !flowAgentRunning(flow),
+  );
+}
+
+function canSubmitShellCommand() {
+  const flow = selectedFlow();
+  const ticket = selectedTicket();
+  return Boolean(repoUrlConfigured() && (flow || ticket) && !state.shellSubmitting && !flowShellRunning(flow));
+}
+
+function canSwitchInputPane() {
+  const flow = selectedFlow();
+  const ticket = selectedTicket();
+  return Boolean(repoUrlConfigured() && (flow || ticket));
+}
+
+function handleInputPaneTabKeydown(event) {
+  if (event.defaultPrevented) return false;
+  if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;
+  if (!canSwitchInputPane()) return false;
+  event.preventDefault();
+  if (event.repeat) return true;
+  if (focusedInputPaneKind() === "prompt" && state.shellPaneHidden) {
+    revealShellPaneForInputFocus();
+    return true;
+  }
+  toggleFocusedInputPane();
+  return true;
+}
+
+function flashBlockedInput(input) {
+  if (!input) return;
+  input.classList.remove("input-submit-blocked");
+  void input.offsetWidth;
+  input.classList.add("input-submit-blocked");
+  window.setTimeout(() => input.classList.remove("input-submit-blocked"), 420);
+}
+
+async function interruptSelectedFlow() {
+  if (state.interruptSubmitting) return false;
+  const selected = selectedFlow();
+  if (!flowRuntimeActive(selected)) return false;
+  state.interruptSubmitting = true;
+  renderTickets();
+  renderFlowPane();
+  try {
+    await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
+  } finally {
+    state.interruptSubmitting = false;
+    renderTickets();
+    renderFlowPane();
+  }
+  return true;
+}
+
+async function interruptSelectedShellCommand() {
+  if (state.interruptSubmitting) return false;
+  const selected = selectedFlow();
+  if (!flowShellRunning(selected)) return false;
+  state.interruptSubmitting = true;
+  state.shellInterruptingFlowIds.add(selected.id);
+  renderShellOutputPane(selected.id);
+  try {
+    const data = await api(`/api/flows/${selected.id}/command/interrupt`, { method: "POST" });
+    if (data.flow) upsertFlow(data.flow);
+  } finally {
+    state.interruptSubmitting = false;
+    shellInput()?.focus({ preventScroll: true });
+  }
+  return true;
+}
+
+function isEditableKeyTarget(target) {
+  if (!(target instanceof Element)) return false;
+  if (target.closest("input, textarea, select")) return true;
+  return target.closest("[contenteditable]:not([contenteditable='false'])") !== null;
+}
+
+function shouldFocusMessageInputForKey(event) {
+  if (event.defaultPrevented || event.isComposing) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (event.key.length !== 1) return false;
+  if (isEditableKeyTarget(event.target)) return false;
+  const input = promptInput();
+  return Boolean(input && document.activeElement !== input);
+}
+
+function focusMessageInputForKey(event) {
+  if (!shouldFocusMessageInputForKey(event)) return false;
+  const input = promptInput();
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  event.preventDefault();
+  if (event.key === "$" && focusInputPane("shell")) return true;
+  input.focus();
+  input.setRangeText(event.key, start, end, "end");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+}
+
+function handleShellInterruptKeydown(event) {
+  if (event.defaultPrevented || event.isComposing) return false;
+  if (!event.ctrlKey || event.metaKey || event.altKey || event.key.toLowerCase() !== "c") return false;
+  if (!flowShellRunning(selectedFlow())) return false;
+  event.preventDefault();
+  void interruptSelectedShellCommand();
+  return true;
+}
+
+function handleAgentInterruptKeydown(event) {
+  if (event.defaultPrevented || event.isComposing) return false;
+  if (event.key !== "Escape" || event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (focusedInputPaneKind() !== "prompt") return false;
+  if (!flowAgentRunning(selectedFlow())) return false;
+  event.preventDefault();
+  if (!event.repeat) void interruptSelectedFlow();
+  return true;
+}
+
+function handleCommandK(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "k") return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (event.repeat) return true;
+  if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");
+  return true;
+}
+
+function handlePaneVisibilityShortcuts(event) {
+  const key = event.key.toLowerCase();
+  const togglesSettings = event.metaKey && !event.ctrlKey && !event.altKey && (event.code === "Comma" || key === ",");
+  const togglesTickets = event.ctrlKey && !event.metaKey && !event.altKey && (event.code === "Backquote" || key === "`");
+  const togglesShell = event.metaKey && !event.ctrlKey && !event.altKey && (event.code === "Backslash" || key === "\\");
+  if (!togglesSettings && !togglesTickets && !togglesShell) return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (event.repeat) return true;
+  if (togglesSettings) toggleSettingsCollapsed();
+  if (togglesTickets) toggleTicketDrawerHidden();
+  if (togglesShell) toggleShellPaneHidden();
+  return true;
+}
+
+function handleGlobalHistorySearchKeydown(event) {
+  if (!event.ctrlKey || event.metaKey || event.altKey) return false;
+  const key = event.key.toLowerCase();
+  if (key !== "r" && key !== "z") return false;
+  if (isEditableKeyTarget(event.target)) return false;
+  const input = document.activeElement === shellInput() ? shellInput() : promptInput();
+  if (!input) return false;
+  if (key === "r") {
+    event.preventDefault();
+    input.focus();
+    startOrAdvanceHistorySearch(input);
+    return true;
+  }
+  if (!state.historySearch) return false;
+  event.preventDefault();
+  input.focus();
+  moveHistorySearchForward(input);
+  return true;
+}
+
 function hideSlashMenu() {
   const menu = els.flowPane.querySelector(".slash-menu");
   menu.hidden = true;
@@ -269,17 +861,31 @@ function hideSlashMenu() {
 }
 
 function resizeMessageInput() {
-  const input = els.flowPane.querySelector(".message-input");
+  const input = promptInput();
   const terminal = els.flowPane.querySelector(".terminal");
+  if (!input) return;
   const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
+  const currentHeight = input.getBoundingClientRect().height;
   input.style.height = "auto";
-  input.style.height = `${input.scrollHeight}px`;
-  if (shouldFollowLatest) scrollTerminalToLatest(terminal);
+  const targetHeight = input.scrollHeight;
+  if (!currentHeight || Math.abs(currentHeight - targetHeight) < 1) {
+    input.style.height = `${targetHeight}px`;
+  } else {
+    input.style.height = `${currentHeight}px`;
+    requestAnimationFrame(() => {
+      input.style.height = `${targetHeight}px`;
+    });
+  }
+  if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);
 }
 
 function renderSlashMenu() {
-  const input = els.flowPane.querySelector(".message-input");
+  const input = promptInput();
   const menu = els.flowPane.querySelector(".slash-menu");
+  if (!input || document.activeElement === shellInput()) {
+    hideSlashMenu();
+    return;
+  }
   const matches = slashCommandMatches(input.value);
   if (!matches.length) {
     hideSlashMenu();
@@ -312,7 +918,8 @@ function renderSlashMenu() {
 }
 
 function selectSlashCommand(index = state.slashCommandIndex) {
-  const input = els.flowPane.querySelector(".message-input");
+  const input = promptInput();
+  if (!input) return false;
   const matches = slashCommandMatches(input.value);
   const command = matches[index];
   if (!command) return false;
@@ -394,15 +1001,175 @@ function scheduleEnvSave() {
   envSaveTimer = setTimeout(() => void saveEnv().catch(reportAutoSaveError), 900);
 }
 
+function parseEnvEditorRows(contents) {
+  return contents
+    .split(/\r?\n/)
+    .map((rawLine) => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) return null;
+      const normalizedLine = line.startsWith("export ") ? line.slice(7).trim() : line;
+      const index = normalizedLine.indexOf("=");
+      if (index === -1) return null;
+      const key = normalizedLine.slice(0, index).trim();
+      if (!key) return null;
+      let value = normalizedLine.slice(index + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      return { key, value };
+    })
+    .filter(Boolean);
+}
+
+function createEnvRow(key = "", value = "") {
+  const row = document.createElement("div");
+  row.className = "env-row";
+
+  const keyInput = document.createElement("input");
+  keyInput.className = "env-key";
+  keyInput.placeholder = "KEYNAME";
+  keyInput.autocomplete = "off";
+  keyInput.spellcheck = false;
+  keyInput.value = key;
+
+  const valueInput = document.createElement("input");
+  valueInput.className = "env-value";
+  valueInput.placeholder = "VALUE";
+  valueInput.autocomplete = "off";
+  valueInput.spellcheck = false;
+  valueInput.value = value;
+
+  row.append(keyInput, valueInput);
+  return row;
+}
+
+function envRowValues(row) {
+  return {
+    key: row.querySelector(".env-key")?.value.trim() || "",
+    value: row.querySelector(".env-value")?.value || "",
+  };
+}
+
+function envRowIsEmpty(row) {
+  const values = envRowValues(row);
+  return !values.key && !values.value;
+}
+
+function ensureTrailingEnvRow() {
+  const rows = [...els.envEditor.querySelectorAll(".env-row")];
+  if (!rows.length || !envRowIsEmpty(rows.at(-1))) {
+    els.envEditor.append(createEnvRow());
+  }
+}
+
+function renderEnvEditor(contents) {
+  els.envEditor.replaceChildren();
+  for (const row of parseEnvEditorRows(contents || "")) {
+    els.envEditor.append(createEnvRow(row.key, row.value));
+  }
+  ensureTrailingEnvRow();
+}
+
+function envEditorContents() {
+  return [...els.envEditor.querySelectorAll(".env-row")]
+    .map(envRowValues)
+    .filter((row) => row.key)
+    .map((row) => `${row.key}=${row.value}`)
+    .join("\n");
+}
+
 async function saveEnv() {
   clearTimeout(envSaveTimer);
-  if (els.envEditor.value === lastSavedEnv) return;
+  const contents = envEditorContents();
+  if (contents === lastSavedEnv) return;
   const result = await api("/api/env", {
     method: "PUT",
-    body: JSON.stringify({ contents: els.envEditor.value }),
+    body: JSON.stringify({ contents }),
   });
-  lastSavedEnv = els.envEditor.value;
-  toast(result.restartedServe ? "Env saved and serve restarted" : "Env saved");
+  lastSavedEnv = contents;
+  toast(result.restartedServe ? "Env updated and serve restarted" : "Env updated");
+}
+
+function flushEnvSaveOnPageHide() {
+  clearTimeout(envSaveTimer);
+  const contents = envEditorContents();
+  if (contents === lastSavedEnv) return;
+  lastSavedEnv = contents;
+  void fetch("/api/env", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ contents }),
+    keepalive: true,
+  }).catch(reportAutoSaveError);
+}
+
+function handleEnvEditorInput() {
+  ensureTrailingEnvRow();
+  scheduleEnvSave();
+}
+
+function handleEnvEditorPaste(event) {
+  const input = event.target.closest(".env-key, .env-value");
+  const row = input?.closest(".env-row");
+  if (!row || !envRowIsEmpty(row)) return;
+  const pastedRows = parseEnvEditorRows(event.clipboardData?.getData("text") || "");
+  if (!pastedRows.length) return;
+
+  event.preventDefault();
+  let insertAfter = row;
+  pastedRows.forEach((envRow, index) => {
+    const targetRow = index === 0 ? row : createEnvRow();
+    targetRow.querySelector(".env-key").value = envRow.key;
+    targetRow.querySelector(".env-value").value = envRow.value;
+    if (index > 0) {
+      insertAfter.after(targetRow);
+      insertAfter = targetRow;
+    }
+  });
+  ensureTrailingEnvRow();
+  insertAfter.querySelector(".env-value")?.focus();
+  scheduleEnvSave();
+}
+
+function handleEnvEditorFocusOut(event) {
+  if (event.relatedTarget && els.envEditor.contains(event.relatedTarget)) return;
+  void saveEnv().catch(reportAutoSaveError);
+}
+
+function settingsSectionKey(section) {
+  const label = section.querySelector(".settings-section-toggle span")?.textContent || "";
+  return label.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function applySettingsSectionState(section) {
+  const key = settingsSectionKey(section);
+  const collapsed = state.collapsedSettingsSections.has(key);
+  section.classList.toggle("collapsed", collapsed);
+  section.querySelector(".settings-section-toggle")?.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function resetSettingsHorizontalScroll() {
+  if (els.settingsContent.scrollLeft !== 0) els.settingsContent.scrollLeft = 0;
+}
+
+function renderSettingsSections() {
+  els.settingsContent.querySelectorAll(".settings-section").forEach(applySettingsSectionState);
+  resetSettingsHorizontalScroll();
+}
+
+function toggleSettingsSection(section) {
+  const key = settingsSectionKey(section);
+  if (!key) return;
+  if (state.collapsedSettingsSections.has(key)) {
+    state.collapsedSettingsSections.delete(key);
+  } else {
+    state.collapsedSettingsSections.add(key);
+  }
+  localStorage.setItem(COLLAPSED_SETTINGS_SECTIONS_KEY, JSON.stringify([...state.collapsedSettingsSections]));
+  applySettingsSectionState(section);
 }
 
 function setSettingsCollapsed(collapsed) {
@@ -420,8 +1187,45 @@ function setSettingsCollapsed(collapsed) {
     els.settingsPane.removeAttribute("tabindex");
     els.settingsPane.removeAttribute("title");
     els.settingsPane.removeAttribute("role");
-    void ensureCheckoutsLoaded();
+    resetSettingsHorizontalScroll();
+    renderCheckouts();
+    scheduleCheckoutsLoaded();
   }
+}
+
+function toggleSettingsCollapsed() {
+  setSettingsCollapsed(!state.settingsCollapsed);
+}
+
+function setTicketDrawerHidden(hidden) {
+  state.ticketDrawerHidden = hidden;
+  document.body.classList.toggle("tickets-collapsed", hidden);
+  applyFlowSplitSize();
+}
+
+function toggleTicketDrawerHidden() {
+  setTicketDrawerHidden(!state.ticketDrawerHidden);
+}
+
+function setShellPaneHidden(hidden) {
+  const restoreTerminalBottom = terminalBottomRestorer();
+  state.shellPaneHidden = hidden;
+  document.body.classList.toggle("shell-pane-hidden", hidden);
+  const shellPanel = els.flowPane.querySelector(".shell-command-panel");
+  if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));
+  if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");
+  localStorage.setItem(SHELL_PANE_HIDDEN_KEY, String(hidden));
+  renderShellOutputPane(state.selectedFlowId);
+  restoreTerminalBottom();
+}
+
+function toggleShellPaneHidden() {
+  setShellPaneHidden(!state.shellPaneHidden);
+}
+
+function revealShellPaneForInputFocus() {
+  setShellPaneHidden(false);
+  focusInputPane("shell");
 }
 
 function applyTheme(theme) {
@@ -489,10 +1293,56 @@ function setFlowSplitSize(value) {
   localStorage.setItem(FLOW_SPLIT_SIZE_KEY, String(state.flowSplitSize));
 }
 
+function shellOutputSplitBounds(panel, rect) {
+  const resizer = panel.querySelector(".shell-output-resizer");
+  const resizerWidth = resizer?.getBoundingClientRect().width || 0;
+  const minShellPx = Math.min(180, Math.max(80, rect.width - resizerWidth - 180));
+  const maxShellPx = Math.max(minShellPx, rect.width - resizerWidth - 260);
+  return {
+    min: (Math.min(rect.width, Math.max(0, minShellPx)) / rect.width) * 100,
+    max: (Math.min(rect.width, Math.max(0, maxShellPx)) / rect.width) * 100,
+  };
+}
+
+function appliedShellOutputSplitSize() {
+  const panel = els.flowPane.querySelector(".terminal-panel");
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width) return state.shellOutputSplitSize;
+  const bounds = shellOutputSplitBounds(panel, rect);
+  return Math.min(bounds.max, Math.max(bounds.min, state.shellOutputSplitSize));
+}
+
+function applyShellOutputSplitSize() {
+  const panel = els.flowPane.querySelector(".terminal-panel");
+  const rect = panel.getBoundingClientRect();
+  const applied = appliedShellOutputSplitSize();
+  const resizer = panel.querySelector(".shell-output-resizer");
+  if (rect.width) {
+    const bounds = shellOutputSplitBounds(panel, rect);
+    resizer.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
+    resizer.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+  }
+  resizer.setAttribute("aria-valuenow", String(Math.round(applied)));
+  panel.style.setProperty("--shell-pane-size", `${applied}%`);
+  return applied;
+}
+
+function setShellOutputSplitSize(value) {
+  state.shellOutputSplitSize = clampShellOutputSplitSize(value);
+  const applied = applyShellOutputSplitSize();
+  state.shellOutputSplitSize = applied;
+  localStorage.setItem(SHELL_OUTPUT_SPLIT_SIZE_KEY, String(state.shellOutputSplitSize));
+}
+
 async function bootstrap() {
   applyTheme(state.theme);
+  renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
+  setTicketDrawerHidden(state.ticketDrawerHidden);
+  setShellPaneHidden(state.shellPaneHidden);
   setFlowSplitSize(state.flowSplitSize);
+  setShellOutputSplitSize(state.shellOutputSplitSize);
+  requestAnimationFrame(() => document.body.classList.remove("app-booting"));
   const data = await api("/api/bootstrap");
   state.stages = data.stages;
   setFlows(data.flows);
@@ -506,12 +1356,14 @@ async function bootstrap() {
   setDefaultSettingsState(data.linear);
   updateLinearState(data.linear);
   const env = await api("/api/env");
-  els.envEditor.value = env.contents || "";
-  lastSavedEnv = els.envEditor.value;
+  renderEnvEditor(env.contents || "");
+  lastSavedEnv = envEditorContents();
   render();
   const flow = selectedFlow();
-  if (flow) await loadLogs(flow.id);
-  void loadAllLogs();
+  if (flow) {
+    await loadLogs(flow.id);
+    void loadFlowDiff(flow.id, { force: true });
+  }
   if (state.linearSignedIn) await loadLinearTickets();
   connectWs();
 }
@@ -524,7 +1376,36 @@ function render() {
 
 function setFlows(flows) {
   state.flows = flows || [];
+  syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
+}
+
+function syncShellOutputClearState(flows) {
+  for (const flow of flows || []) {
+    if (!flow?.id) continue;
+    const clearAfterLogId = Number(flow.shellOutputClearAfterLogId || 0);
+    if (!Number.isFinite(clearAfterLogId) || clearAfterLogId <= 0) continue;
+    state.shellOutputClearAfterLogId.set(
+      flow.id,
+      Math.max(state.shellOutputClearAfterLogId.get(flow.id) || 0, clearAfterLogId),
+    );
+  }
+}
+
+function runtimeOnlyFlowChanges(previousFlows, nextFlows) {
+  const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);
+  if ((previousFlows || []).length !== (nextFlows || []).length) return false;
+  const previousById = new Map((previousFlows || []).map((flow) => [flow.id, flow]));
+  for (const next of nextFlows || []) {
+    const previous = previousById.get(next.id);
+    if (!previous) return false;
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+    for (const key of keys) {
+      if (ignoredKeys.has(key)) continue;
+      if (previous[key] !== next[key]) return false;
+    }
+  }
+  return true;
 }
 
 function setCheckouts(checkouts) {
@@ -568,6 +1449,16 @@ async function ensureCheckoutsLoaded() {
   await loadCheckouts();
 }
 
+function scheduleCheckoutsLoaded() {
+  if (checkoutLoadFrame) return;
+  checkoutLoadFrame = requestAnimationFrame(() => {
+    checkoutLoadFrame = requestAnimationFrame(() => {
+      checkoutLoadFrame = 0;
+      void ensureCheckoutsLoaded();
+    });
+  });
+}
+
 async function deleteCheckout(name) {
   if (!name) return;
   await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
@@ -597,7 +1488,6 @@ function renderCheckoutCard(checkout) {
   meta.className = "checkout-meta";
   const fields = [
     ["Linear", renderLinearStatusIcon(checkout.linearStatus)],
-    ["Phase", checkout.flowPhase || "No flow"],
     ["Last prompt", formatCheckoutTimestamp(checkout.lastPromptAt)],
   ];
   for (const [label, value] of fields) {
@@ -650,6 +1540,7 @@ function renderCheckoutCard(checkout) {
 
 function renderCheckouts() {
   if (!els.checkoutList) return;
+  if (state.settingsCollapsed) return;
   if (state.checkoutsLoading) {
     const loading = document.createElement("p");
     loading.className = "note";
@@ -692,12 +1583,116 @@ function agentContextWindowLabel(flow) {
   return `${Math.round((available / total) * 100)}%`;
 }
 
+function normalizeDiff(data) {
+  return {
+    status: data?.status || "",
+    stat: data?.stat || "",
+    names: data?.names || "",
+    patch: data?.patch || "",
+    error: data?.error || "",
+    files: Array.isArray(data?.files) ? data.files : [],
+    count: Number(data?.count || 0),
+    additions: Number(data?.additions || 0),
+    deletions: Number(data?.deletions || 0),
+    baseRef: data?.baseRef || "",
+  };
+}
+
+function diffText(diff) {
+  return [diff?.status, diff?.stat, diff?.names, diff?.patch].filter(Boolean).join("\n").trim();
+}
+
+function diffHasChanges(diff) {
+  return Boolean(diffText(diff));
+}
+
+function diffFileCount(diff) {
+  if (Array.isArray(diff?.files) && diff.files.length) return diff.files.length;
+  if (Number.isFinite(diff?.count) && diff.count > 0) return diff.count;
+  const paths = new Set();
+  for (const line of `${diff?.status || ""}\n${String(diff?.names || "").replaceAll("\0", "\n")}`.split("\n")) {
+    const parts = line.trim().split(/\s+/).filter(Boolean);
+    const path = parts[parts.length - 1];
+    if (path) paths.add(path);
+  }
+  return paths.size;
+}
+
+function diffIndicatorLabel(diff) {
+  const additions = Number(diff?.additions || 0);
+  const deletions = Number(diff?.deletions || 0);
+  if (!additions && !deletions && !diffFileCount(diff)) return "";
+  return `<span class="diff-additions">+${additions}</span><span class="diff-deletions">-${deletions}</span>`;
+}
+
+function diffCountLabel(value, prefix) {
+  if (value === null || value === undefined || value === "") return "";
+  const count = Number(value);
+  return Number.isFinite(count) ? `${prefix}${count}` : "";
+}
+
+function diffLoadingKey(flowId, options = {}) {
+  return `${flowId}:${options.patch ? "patch" : "summary"}`;
+}
+
+async function loadFlowDiff(flowId, options = {}) {
+  if (!flowId) return null;
+  const existing = state.flowDiffs.get(flowId);
+  if (!options.force && existing && (!options.patch || existing.patch)) {
+    if (options.modal && state.diffModalFlowId === flowId) {
+      state.diffModalDiff = { ...existing };
+      state.diffModalLoadingFlowId = "";
+      renderDiffModal();
+    }
+    return existing;
+  }
+  const loadingKey = diffLoadingKey(flowId, options);
+  if (state.flowDiffLoadingIds.has(loadingKey)) return state.flowDiffs.get(flowId) || null;
+  state.flowDiffLoadingIds.add(loadingKey);
+  if (options.modal && state.diffModalFlowId === flowId) {
+    state.diffModalLoadingFlowId = flowId;
+    renderDiffModal();
+  }
+  renderAgentContext(selectedFlow());
+  try {
+    const diff = normalizeDiff(await api(`/api/flows/${encodeURIComponent(flowId)}/diff${options.patch ? "?patch=1" : ""}`));
+    const latest = state.flowDiffs.get(flowId);
+    if (!options.patch && latest?.patch) diff.patch = latest.patch;
+    state.flowDiffs.set(flowId, diff);
+    if (options.modal && state.diffModalFlowId === flowId) {
+      state.diffModalDiff = { ...diff };
+      state.diffModalLoadingFlowId = "";
+      renderDiffModal();
+    }
+    return diff;
+  } catch (error) {
+    const diff = normalizeDiff({ error: error.message || String(error) });
+    state.flowDiffs.set(flowId, diff);
+    if (options.modal && state.diffModalFlowId === flowId) {
+      state.diffModalDiff = { ...diff };
+      state.diffModalLoadingFlowId = "";
+      renderDiffModal();
+    }
+    return diff;
+  } finally {
+    state.flowDiffLoadingIds.delete(loadingKey);
+    renderAgentContext(selectedFlow());
+  }
+}
+
 function renderAgentContext(flow) {
   const context = els.flowPane.querySelector(".agent-context");
   const branch = context.querySelector(".agent-context-branch");
+  const diffButton = context.querySelector(".agent-context-diff");
+  const diff = flow?.id ? state.flowDiffs.get(flow.id) : null;
   context.hidden = !flow;
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
   context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
+  diffButton.hidden = !flow || !diffHasChanges(diff);
+  diffButton.innerHTML = diffIndicatorLabel(diff);
+  diffButton.title = "Open diff viewer";
+  diffButton.disabled = !flow;
+  diffButton.onclick = flow ? () => openDiffViewer(flow.id) : null;
   branch.textContent = flow?.branchName || "";
   if (flow?.prUrl) {
     branch.href = flow.prUrl;
@@ -710,14 +1705,231 @@ function renderAgentContext(flow) {
     branch.removeAttribute("rel");
     branch.removeAttribute("title");
   }
+  if (flow?.id && !diff && !state.flowDiffLoadingIds.has(diffLoadingKey(flow.id))) void loadFlowDiff(flow.id);
+}
+
+function openDiffViewer(flowId) {
+  state.diffModalFlowId = flowId || "";
+  state.diffModalDiff = flowId && state.flowDiffs.get(flowId) ? { ...state.flowDiffs.get(flowId) } : null;
+  state.diffModalLoadingFlowId = flowId || "";
+  renderDiffModal();
+  if (flowId) void loadFlowDiff(flowId, { patch: true, modal: true });
+}
+
+function closeDiffViewer() {
+  state.diffModalFlowId = "";
+  state.diffModalDiff = null;
+  state.diffModalLoadingFlowId = "";
+  renderDiffModal();
+}
+
+function showDiffModal() {
+  clearTimeout(diffModalTransitionTimer);
+  els.diffModal.hidden = false;
+  els.diffModal.classList.remove("is-closing");
+  requestAnimationFrame(() => els.diffModal.classList.add("is-open"));
+}
+
+function hideDiffModal() {
+  clearTimeout(diffModalTransitionTimer);
+  els.diffModal.classList.remove("is-open");
+  els.diffModal.classList.add("is-closing");
+  diffModalTransitionTimer = setTimeout(() => {
+    if (state.diffModalFlowId) return;
+    els.diffModal.hidden = true;
+    els.diffModal.classList.remove("is-closing");
+  }, 180);
+}
+
+function openImagePreview(src, alt = "") {
+  if (!els.imagePreviewModal || !src) return;
+  clearTimeout(imagePreviewTransitionTimer);
+  const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
+  const title = els.imagePreviewModal.querySelector("#imagePreviewTitle");
+  image.src = src;
+  image.alt = alt;
+  title.textContent = alt || "Image preview";
+  els.imagePreviewModal.hidden = false;
+  els.imagePreviewModal.classList.remove("is-closing");
+  requestAnimationFrame(() => els.imagePreviewModal.classList.add("is-open"));
+}
+
+function closeImagePreview() {
+  if (!els.imagePreviewModal || els.imagePreviewModal.hidden) return;
+  clearTimeout(imagePreviewTransitionTimer);
+  els.imagePreviewModal.classList.remove("is-open");
+  els.imagePreviewModal.classList.add("is-closing");
+  imagePreviewTransitionTimer = setTimeout(() => {
+    const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
+    image.removeAttribute("src");
+    image.alt = "";
+    els.imagePreviewModal.hidden = true;
+    els.imagePreviewModal.classList.remove("is-closing");
+  }, 180);
+}
+
+function handleImagePreviewClick(event) {
+  const link = event.target.closest?.("a[data-image-preview]");
+  if (!link) return;
+  event.preventDefault();
+  openImagePreview(link.href, link.dataset.imagePreviewAlt || link.querySelector("img")?.alt || "");
+}
+
+function diffLineClass(line) {
+  if (/^(diff --git|index |new file mode|deleted file mode|similarity index|rename from|rename to)/.test(line)) return "diff-line-meta";
+  if (/^(@@|\+\+\+|---)/.test(line)) return "diff-line-coord";
+  if (line.startsWith("+")) return "diff-line-inserted";
+  if (line.startsWith("-")) return "diff-line-deleted";
+  return "";
+}
+
+function shouldHideDiffLine(line) {
+  return /^(diff --git|index |\+\+\+ |--- |new file mode|deleted file mode|similarity index|rename from|rename to)/.test(line);
+}
+
+function diffFilePathFromHeader(line) {
+  const pathStart = line.lastIndexOf(" b/");
+  return pathStart >= 0 ? line.slice(pathStart + 3).trim() : "";
+}
+
+function diffHunkLineState(line) {
+  const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+  if (!match) return null;
+  return { oldLine: Number(match[1]), newLine: Number(match[2]) };
+}
+
+function appendDiffLine(fragment, line, lineState) {
+  const row = document.createElement("span");
+  row.className = "diff-code-line";
+
+  const oldNumber = document.createElement("span");
+  oldNumber.className = "diff-line-number";
+
+  const newNumber = document.createElement("span");
+  newNumber.className = "diff-line-number";
+
+  const text = document.createElement("span");
+  const className = diffLineClass(line);
+  text.className = `diff-line-text${className ? ` ${className}` : ""}`;
+  text.textContent = line;
+
+  if (lineState && line.startsWith("@@")) {
+    const hunkState = diffHunkLineState(line);
+    if (hunkState) {
+      lineState.oldLine = hunkState.oldLine;
+      lineState.newLine = hunkState.newLine;
+    }
+  } else if (lineState && line.startsWith("+")) {
+    newNumber.textContent = String(lineState.newLine);
+    lineState.newLine += 1;
+  } else if (lineState && line.startsWith("-")) {
+    oldNumber.textContent = String(lineState.oldLine);
+    lineState.oldLine += 1;
+  } else if (lineState && lineState.oldLine && lineState.newLine) {
+    oldNumber.textContent = String(lineState.oldLine);
+    newNumber.textContent = String(lineState.newLine);
+    lineState.oldLine += 1;
+    lineState.newLine += 1;
+  }
+
+  row.append(oldNumber, newNumber, text);
+  fragment.appendChild(row);
+}
+
+function renderDiffCode(code, text) {
+  code.className = "language-diff diff-code";
+  code.replaceChildren();
+  if (!text) return;
+  const fragment = document.createDocumentFragment();
+  const lines = String(text).split("\n");
+  let fileDividerCount = 0;
+  const lineState = { oldLine: 0, newLine: 0 };
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      const filePath = diffFilePathFromHeader(line);
+      if (filePath) {
+        const divider = document.createElement("span");
+        divider.className = `diff-file-divider${fileDividerCount ? "" : " is-first"}`;
+        divider.textContent = filePath;
+        fragment.appendChild(divider);
+        fileDividerCount += 1;
+        lineState.oldLine = 0;
+        lineState.newLine = 0;
+      }
+      continue;
+    }
+    if (shouldHideDiffLine(line)) continue;
+    appendDiffLine(fragment, line, lineState);
+  }
+  code.appendChild(fragment);
+}
+
+function renderDiffSummary(summary, diff, loading) {
+  summary.replaceChildren();
+  if (loading || diff?.error) {
+    summary.textContent = loading ? "Loading diff..." : diff.error;
+    return;
+  }
+  const files = Array.isArray(diff?.files) ? diff.files.filter((file) => file?.path) : [];
+  if (!files.length) {
+    summary.textContent = diff?.stat?.trim() || diff?.names?.trim() || diff?.status?.trim() || "No diff.";
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const file of files) {
+    const row = document.createElement("div");
+    row.className = "diff-summary-file";
+
+    const path = document.createElement("span");
+    path.className = "diff-summary-path";
+    path.textContent = file.path;
+
+    const counts = document.createElement("span");
+    counts.className = "diff-summary-counts";
+
+    const additions = document.createElement("span");
+    additions.className = "diff-additions";
+    additions.textContent = diffCountLabel(file.additions, "+");
+
+    const deletions = document.createElement("span");
+    deletions.className = "diff-deletions";
+    deletions.textContent = diffCountLabel(file.deletions, "-");
+
+    counts.append(additions, deletions);
+    row.append(counts, path);
+    fragment.appendChild(row);
+  }
+  summary.appendChild(fragment);
+}
+
+function renderDiffModal() {
+  if (!els.diffModal) return;
+  const flowId = state.diffModalFlowId;
+  if (!flowId) {
+    hideDiffModal();
+    return;
+  }
+  showDiffModal();
+  const flow = state.flows.find((item) => item.id === flowId);
+  const diff = state.diffModalDiff;
+  const loading = state.diffModalLoadingFlowId === flowId && !diff?.patch;
+  const summary = els.diffModal.querySelector(".diff-modal-summary");
+  const code = els.diffModal.querySelector(".diff-modal-code code");
+  els.diffModal.querySelector(".diff-modal")?.setAttribute("aria-label", `${flow?.linearIssueId || "Flow"} diff`);
+  renderDiffSummary(summary, diff, loading);
+  renderDiffCode(code, loading ? "" : diff?.patch?.trim() || diff?.names?.trim() || diff?.status?.trim() || "");
 }
 
 function appendLogEntry(log) {
   const flowId = log.flowId;
   const id = Number(log.id || Date.now());
   if (!state.logs.has(flowId)) state.logs.set(flowId, []);
+  if (!state.logIds.has(flowId)) {
+    state.logIds.set(flowId, new Set((state.logs.get(flowId) || []).map((entry) => Number(entry.id))));
+  }
   const list = state.logs.get(flowId);
-  if (list.some((entry) => entry.id === id)) return false;
+  const ids = state.logIds.get(flowId);
+  if (ids.has(id)) return false;
   list.push({
     id,
     flowId,
@@ -725,17 +1937,28 @@ function appendLogEntry(log) {
     message: log.message,
     createdAt: log.createdAt || new Date().toISOString(),
   });
+  ids.add(id);
+  rememberLogHistory(log);
   state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
   return true;
 }
 
 function upsertFlow(flow) {
   if (!flow?.id) return;
+  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") {
+    state.shellInterruptingFlowIds.delete(flow.id);
+  }
   const next = [...state.flows];
   const index = next.findIndex((item) => item.id === flow.id);
+  if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;
   if (index === -1) next.push(flow);
   else next[index] = flow;
   setFlows(next);
+}
+
+function flowUpdatedAtMs(flow) {
+  const timestamp = Date.parse(flow?.updatedAt || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function syncLinearTicketsWithFlows() {
@@ -793,13 +2016,9 @@ async function loadLinearTickets(options = {}) {
 }
 
 function renderTickets() {
-  if (!state.linearTickets.length) {
-    els.ticketGrid.replaceChildren();
-    els.ticketGrid.dataset.ticketSignature = "";
-    return;
-  }
   const tickets = sortedLinearTickets(state.linearTickets);
-  const groups = groupedTicketsByLinearStatus(tickets);
+  const pinnedTickets = tickets.filter((ticket) => isLinearIssuePinned(ticket.identifier));
+  const groups = groupedTicketsByLinearStatus(tickets.filter((ticket) => !isLinearIssuePinned(ticket.identifier)));
   const signature = tickets
     .map((ticket) =>
       [
@@ -814,7 +2033,8 @@ function renderTickets() {
       ].join("\u001f"),
     )
     .join("\u001e")
-    .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"));
+    .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"))
+    .concat("\u001d", [...state.pinnedLinearIssues].sort().join("\u001f"));
 
   if (els.ticketGrid.dataset.ticketSignature === signature) {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
@@ -824,7 +2044,7 @@ function renderTickets() {
   }
 
   els.ticketGrid.dataset.ticketSignature = signature;
-  const nodes = [];
+  const nodes = [renderPinnedTicketGroup(pinnedTickets)];
   for (const group of groups) {
     nodes.push(renderTicketStatusGroup(group));
   }
@@ -905,6 +2125,35 @@ function renderTicketStatusGroup(group) {
   return section;
 }
 
+function renderPinnedTicketGroup(tickets) {
+  const section = document.createElement("section");
+  section.className = "ticket-status-group pinned-ticket-group";
+  section.addEventListener("dragenter", handlePinnedTicketDragEnter);
+  section.addEventListener("dragover", handlePinnedTicketDragOver);
+  section.addEventListener("dragleave", handleTicketStatusDragLeave);
+  section.addEventListener("drop", handlePinnedTicketDrop);
+
+  const separator = document.createElement("div");
+  separator.className = "ticket-status-separator pinned-ticket-separator";
+  separator.innerHTML = `
+    <svg class="ticket-pinned-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="m12 3.5 2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9L12 3.5Z" />
+    </svg>
+    <span class="ticket-status-label">Pinned</span>
+    <span class="ticket-status-count">${tickets.length}</span>
+  `;
+
+  const body = document.createElement("div");
+  body.className = "ticket-status-group-body";
+  const items = document.createElement("div");
+  items.className = "ticket-status-group-items";
+  items.replaceChildren(...tickets.map((ticket) => renderTicketCard(ticket)));
+  body.append(items);
+
+  section.append(separator, body);
+  return section;
+}
+
 function renderTicketStatusSeparator(group) {
   const separator = document.createElement("button");
   separator.className = "ticket-status-separator";
@@ -921,9 +2170,24 @@ function renderTicketStatusSeparator(group) {
   return separator;
 }
 
+function isLinearIssuePinned(identifier) {
+  return state.pinnedLinearIssues.has(identifier);
+}
+
+function persistPinnedLinearIssues() {
+  localStorage.setItem(PINNED_LINEAR_ISSUES_KEY, JSON.stringify([...state.pinnedLinearIssues]));
+}
+
+function setLinearIssuePinned(identifier, pinned) {
+  if (pinned) state.pinnedLinearIssues.add(identifier);
+  else state.pinnedLinearIssues.delete(identifier);
+  persistPinnedLinearIssues();
+  renderTickets();
+}
+
 function ticketCanMoveToStatus(issueId, group) {
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
-  return Boolean(ticket && group.stateId && linearStatusId(ticket) !== group.stateId);
+  return Boolean(ticket && group.stateId && (isLinearIssuePinned(issueId) || linearStatusId(ticket) !== group.stateId));
 }
 
 function setTicketStatusGroupDragOver(groupElement, active) {
@@ -960,7 +2224,40 @@ function handleTicketStatusDrop(event, group) {
   if (!ticketCanMoveToStatus(issueId, group)) return;
   event.preventDefault();
   clearTicketDragState();
+  if (isLinearIssuePinned(issueId)) {
+    state.pinnedLinearIssues.delete(issueId);
+    persistPinnedLinearIssues();
+  }
+  if (linearStatusId(state.linearTickets.find((item) => item.identifier === issueId)) === group.stateId) {
+    renderTickets();
+    return;
+  }
   void moveTicketToLinearStatus(issueId, group);
+}
+
+function ticketCanMoveToPinned(issueId) {
+  return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId) && !isLinearIssuePinned(issueId));
+}
+
+function handlePinnedTicketDragEnter(event) {
+  if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
+  event.preventDefault();
+  setTicketStatusGroupDragOver(event.currentTarget, true);
+}
+
+function handlePinnedTicketDragOver(event) {
+  if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  setTicketStatusGroupDragOver(event.currentTarget, true);
+}
+
+function handlePinnedTicketDrop(event) {
+  const issueId = state.draggingLinearIssueId || event.dataTransfer.getData("text/plain");
+  if (!ticketCanMoveToPinned(issueId)) return;
+  event.preventDefault();
+  clearTicketDragState();
+  setLinearIssuePinned(issueId, true);
 }
 
 function replaceLinearIssue(issue) {
@@ -1024,8 +2321,9 @@ function ticketAgentWorking(ticket) {
   return Boolean(
     repoUrlConfigured() &&
       flow &&
-      (flow.agentStatus === "running" ||
-        (flow.id === state.selectedFlowId && (state.messageSubmitting || state.interruptSubmitting))),
+      (flowRuntimeActive(flow) ||
+        (flow.id === state.selectedFlowId &&
+          (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting))),
   );
 }
 
@@ -1033,6 +2331,7 @@ function updateTicketCardState(card) {
   const ticket = state.linearTickets.find((item) => item.identifier === card.dataset.issue);
   card.classList.toggle("active", card.dataset.issue === state.selectedLinearIssueId);
   card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+  card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
 }
 
 function renderTicketCard(ticket) {
@@ -1045,7 +2344,6 @@ function renderTicketCard(ticket) {
   card.dataset.issue = ticket.identifier;
   updateTicketCardState(card);
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
-  const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : "";
   card.innerHTML = `
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
@@ -1055,7 +2353,7 @@ function renderTicketCard(ticket) {
     </div>
     ${
       ticket.flowId
-        ? `<div class="ticket-flow-corner">${stageName ? `<span class="ticket-stage">${stageName}</span>` : ""}<img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow"></div>`
+        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow"></div>`
         : ""
     }
   `;
@@ -1111,6 +2409,7 @@ async function selectFlow(id) {
   localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
   render();
   await loadLogs(id);
+  void loadFlowDiff(id, { force: true });
   void loadLinearDetail(flow.linearIssueId);
 }
 
@@ -1126,7 +2425,10 @@ async function openTicketInFlowPane(ticket) {
     localStorage.removeItem("flow.selectedFlowId");
   }
   render();
-  if (flow) await loadLogs(flow.id);
+  if (flow) {
+    await loadLogs(flow.id);
+    void loadFlowDiff(flow.id, { force: true });
+  }
   void loadLinearDetail(ticket.identifier);
 }
 
@@ -1151,7 +2453,6 @@ function renderFlowPane() {
   const issueUrl = flow?.linearIssueUrl || ticket?.url || "";
   const agentEnabled = repoUrlConfigured();
   const agentPanel = els.flowPane.querySelector(".agent-panel");
-  const agentRunning = flow?.agentStatus === "running";
 
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
@@ -1162,10 +2463,14 @@ function renderFlowPane() {
     return;
   }
 
-  const agentInterrupt = els.flowPane.querySelector(".agent-interrupt");
-  agentInterrupt.disabled = state.interruptSubmitting || !agentEnabled || !agentRunning;
-  els.flowPane.querySelector(".message-input").disabled =
-    state.messageSubmitting || state.agentImageUploading || agentRunning || !agentEnabled || (!flow && !ticket);
+  const messageForm = els.flowPane.querySelector(".message-form");
+  const messageInput = promptInput();
+  const commandInput = shellInput();
+  messageInput.disabled = false;
+  commandInput.disabled = false;
+  messageForm.classList.remove("input-disabled");
+  messageForm.setAttribute("aria-disabled", "false");
+  updateMessageInputMode();
   resizeMessageInput();
 
   renderLinearDetail({ issueId, title, issueUrl, ticket, flow });
@@ -1174,6 +2479,7 @@ function renderFlowPane() {
     renderLogs(flow.id);
   } else {
     stopAgentWorkingPoll();
+    renderShellOutputPane("");
     const terminal = els.flowPane.querySelector(".terminal");
     terminal._flowLogFlowId = "";
     terminal._flowLogSignature = "";
@@ -1225,7 +2531,7 @@ function eventHasDraggedFiles(event) {
 
 function setAgentImageDragActive(active) {
   document.body.classList.toggle("agent-image-drag-active", active);
-  els.flowPane.querySelector(".message-input").classList.toggle("drag-over", active);
+  promptInput().classList.toggle("drag-over", active);
 }
 
 async function uploadAgentImages(files) {
@@ -1266,6 +2572,7 @@ function renderLinearDetail(context) {
     issue.estimate ? `${issue.estimate} pts` : "",
   ].filter(Boolean);
   const priorityMeta = renderLinearPriorityIcon(issue.priority);
+  const statusName = issue.state?.name || context.ticket?.state?.name || "";
 
   container.innerHTML = `
     <section class="linear-issue">
@@ -1281,6 +2588,7 @@ function renderLinearDetail(context) {
         ${priorityMeta ? `<span class="linear-meta-priority">${priorityMeta}</span>` : ""}
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
         ${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}
+        ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}
       </div>
       <div class="linear-description linear-markdown">${renderLinearMarkdown(issue.description, "No description.")}</div>
     </section>
@@ -1327,10 +2635,18 @@ async function loadLinearDetail(identifier) {
 }
 
 async function createFlowFromTicket(ticket, options = {}) {
-  const data = await api("/api/flows", {
-    method: "POST",
-    body: JSON.stringify({ issue: ticket.url || ticket.identifier, title: ticket.title }),
-  });
+  let data;
+  try {
+    data = await api("/api/flows", {
+      method: "POST",
+      body: JSON.stringify({ issue: ticket.url || ticket.identifier, title: ticket.title }),
+    });
+  } catch (error) {
+    if (isGitCloneError(error)) {
+      toast(error.message, { kind: "error" });
+    }
+    throw error;
+  }
   upsertFlow(data.flow);
   render();
   await loadLogs(data.flow.id);
@@ -1346,13 +2662,10 @@ async function ensureSelectedFlow() {
   return createFlowFromTicket(ticket);
 }
 
-async function loadAllLogs() {
-  await Promise.all(state.flows.map((flow) => loadLogs(flow.id)));
-}
-
-async function loadLogs(id) {
+async function loadLogs(id, options = {}) {
   if (!state.logs.has(id)) state.logs.set(id, []);
 
+  const appendedLogs = [];
   while (true) {
     const after = state.lastLogId.get(id) || 0;
     const data = await api(`/api/flows/${id}/logs?after=${after}`);
@@ -1361,13 +2674,17 @@ async function loadLogs(id) {
     let highestLogId = after;
     for (const log of data.logs) {
       highestLogId = Math.max(highestLogId, log.id);
-      appendLogEntry(log);
+      if (appendLogEntry(log)) appendedLogs.push(log);
     }
 
     state.lastLogId.set(id, highestLogId);
     if (data.logs.length < 1000) break;
   }
 
+  if (options.shellOnly || (appendedLogs.length && appendedLogs.every(isShellOnlyRenderLog))) {
+    renderShellOutputPane(id);
+    return;
+  }
   renderLogs(id);
 }
 
@@ -1390,6 +2707,11 @@ function logMeta(source) {
     "agent:approval": { label: "approval", marker: "?", tone: "warning" },
     "agent:input": { label: "input", marker: "?", tone: "warning" },
     "agent:protocol": { label: "protocol", marker: "!", tone: "warning" },
+    "shell:command": { label: "shell", marker: "$", tone: "shell" },
+    "shell:output": { label: "output", marker: "|", tone: "output" },
+    "shell:stderr": { label: "stderr", marker: "!", tone: "error" },
+    "shell:status": { label: "status", marker: "*", tone: "status" },
+    "shell:result": { label: "shell", marker: "ok", tone: "toolResult" },
     flow: { label: "flow", marker: "*", tone: "status" },
     linear: { label: "linear", marker: "*", tone: "status" },
     serve: { label: "serve", marker: "$", tone: "tool" },
@@ -1400,6 +2722,9 @@ function logMeta(source) {
 
 function normalizeTerminalLog(log) {
   const message = String(log.message || "");
+  if (log.source === "user" && message.trimStart().startsWith("$ ")) {
+    return { ...log, source: "shell:command", message: message.trimStart().slice(2).trim() };
+  }
   if (log.source === "agent" && message.startsWith("$ ")) {
     return { ...log, source: "agent:tool", message: message.slice(2) };
   }
@@ -1413,6 +2738,8 @@ function isStreamingSource(source) {
     "agent:reasoning",
     "agent:output",
     "agent:cmd",
+    "shell:output",
+    "shell:stderr",
     "agent",
     "serve",
     "serve:stderr",
@@ -1420,7 +2747,7 @@ function isStreamingSource(source) {
 }
 
 function parseTraceGroup(log) {
-  if (log.source !== "agent:trace-group") return null;
+  if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
     const payload = JSON.parse(String(log.message || "{}"));
     const afterId = Number(payload.afterId);
@@ -1430,6 +2757,7 @@ function parseTraceGroup(log) {
       afterId,
       beforeId,
       count: Number(payload.count || 0),
+      kind: typeof payload.kind === "string" ? payload.kind : "",
       key: `${afterId}:${beforeId}`,
     };
   } catch {
@@ -1443,6 +2771,24 @@ function isRuntimeDisappearedLog(log) {
 
 function isTurnCompletedLog(log) {
   return log.source === "agent:status" && /^turn completed\b/.test(String(log.message || "").trim());
+}
+
+function isShellExitLog(log) {
+  return isShellResultLog(log) || isLegacyShellExitLog(log);
+}
+
+function isShellResultLog(log) {
+  return log.source === "shell:result" && /^(completed|interrupted|failed) exit \d+\b/.test(String(log.message || "").trim());
+}
+
+function isLegacyShellExitLog(log) {
+  return (
+    log.source === "agent:tool-result" && /^(completed|interrupted|failed) exit \d+\b/.test(String(log.message || "").trim())
+  );
+}
+
+function isRoutineShellExitLog(log) {
+  return (log.source === "shell:result" || log.source === "agent:tool-result") && String(log.message || "").trim() === "completed exit 0";
 }
 
 function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
@@ -1535,10 +2881,12 @@ function isHiddenTerminalLog(log) {
   );
 }
 
-function terminalGroups(logs) {
+function terminalGroups(logs, flow) {
   const groups = [];
-  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log));
-  const persistedTraceRanges = normalizedLogs.map((log) => parseTraceGroup(log)).filter(Boolean);
+  const normalizedLogs = agentPaneLogs(logs, flow);
+  const persistedTraceRanges = normalizedLogs
+    .map((log) => parseTraceGroup(log))
+    .filter((range) => range && range.kind !== "shell");
   const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
   const traceRanges = [
     ...persistedTraceRanges,
@@ -1548,8 +2896,16 @@ function terminalGroups(logs) {
   const traceGroups = new Map();
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
-    if (isHiddenTerminalLog(log)) continue;
+    const previousGroup = groups[groups.length - 1];
+    if (
+      log.source === "agent:tool" &&
+      previousGroup?.source === "shell:command" &&
+      formatTerminalMessage(log.source, log.message) === formatTerminalMessage(previousGroup.source, previousGroup.message)
+    ) {
+      continue;
+    }
     const traceRange = traceRangeForLog(log, traceRanges);
+    if (isHiddenTerminalLog(log)) continue;
     if (traceRange) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
@@ -1561,6 +2917,9 @@ function terminalGroups(logs) {
           message: "",
           createdAt: log.createdAt,
           lastAt: log.createdAt,
+          traceAfterId: traceRange.afterId,
+          traceKind: traceRange.kind,
+          defaultOpen: false,
           children: [],
         };
         traceGroups.set(traceRange.key, traceGroup);
@@ -1575,6 +2934,186 @@ function terminalGroups(logs) {
   return groups;
 }
 
+function agentPaneLogs(logs, flow) {
+  const result = [];
+  let activeShellCommand = null;
+  const latestShellCommandId = latestShellCommandLogId(logs);
+  const shellRunning = flowShellRunning(flow);
+  for (const rawLog of logs) {
+    const log = normalizeTerminalLog(rawLog);
+    if (log.source === "shell:command") {
+      activeShellCommand = log;
+      continue;
+    }
+    if (isShellTraceGroupLog(log)) continue;
+    if (isShellOwnedLog(log)) continue;
+    if (activeShellCommand && isShellPaneLog(log, activeShellCommand)) {
+      if (isShellExitLog(log) && (!shellRunning || Number(activeShellCommand.id) !== latestShellCommandId)) activeShellCommand = null;
+      continue;
+    }
+    result.push(log);
+  }
+  return result;
+}
+
+function isShellPaneLog(log, command) {
+  if (isShellOwnedLog(log)) return true;
+  if (isShellExitLog(log)) return true;
+  if (isLegacyShellOutputLog(log)) return true;
+  return (
+    log.source === "agent:tool" &&
+    formatTerminalMessage(log.source, log.message) === formatTerminalMessage(command.source, command.message)
+  );
+}
+
+function latestShellCommandLogId(logs) {
+  let id = 0;
+  for (const log of logs) {
+    const normalized = normalizeTerminalLog(log);
+    if (normalized.source !== "shell:command") continue;
+    const logId = Number(normalized.id);
+    if (Number.isFinite(logId) && logId > id) id = logId;
+  }
+  return id;
+}
+
+function isShellOwnedLog(log) {
+  return String(log.source || "").startsWith("shell:") && log.source !== "shell:command";
+}
+
+function isLegacyShellOutputLog(log) {
+  if (log.source === "agent:cmd" || log.source === "agent:stderr") return true;
+  return log.source === "agent:status" && /^shell interrupt (requested|escalated|forced cleanup)\b/.test(String(log.message || "").trim());
+}
+
+function isShellTraceGroupLog(log) {
+  if (log.source === "shell:trace-group") return true;
+  if (log.source !== "agent:trace-group") return false;
+  return parseTraceGroup(log)?.kind === "shell";
+}
+
+function isShellOnlyRenderLog(log) {
+  const normalized = normalizeTerminalLog(log);
+  return (
+    String(normalized.source || "").startsWith("shell:") ||
+    isShellTraceGroupLog(normalized) ||
+    isLegacyShellOutputLog(normalized)
+  );
+}
+
+function runningShellGroups(logs, flow, clearAfterLogId = 0) {
+  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") return [];
+  return latestShellGroups(logs, clearAfterLogId);
+}
+
+function latestShellGroups(logs, clearAfterLogId = 0) {
+  const normalizedLogs = logs.map((log) => normalizeTerminalLog(log)).filter((log) => Number(log.id) > clearAfterLogId);
+  const lastCommandIndex = normalizedLogs.findLastIndex((log) => log.source === "shell:command");
+  if (lastCommandIndex < 0) return [];
+  const groups = [];
+  const command = normalizedLogs[lastCommandIndex];
+  appendTerminalGroup(groups, command);
+  for (const log of normalizedLogs.slice(lastCommandIndex + 1)) {
+    if (log.source === "agent:trace-group" || log.source === "shell:trace-group") continue;
+    if (isShellResultLog(log)) {
+      if (!isRoutineShellExitLog(log)) appendTerminalGroup(groups, log);
+      break;
+    }
+    if (
+      log.source === "agent:tool" &&
+      formatTerminalMessage(log.source, log.message) === formatTerminalMessage(command.source, command.message)
+    ) {
+      continue;
+    }
+    if (!isShellOutputLog(log)) continue;
+    if ((log.source === "shell:output" || log.source === "shell:stderr") && !hasVisibleTerminalOutput(log.message)) continue;
+    appendTerminalGroup(groups, log);
+  }
+  return groups;
+}
+
+function hasVisibleTerminalOutput(message) {
+  return Boolean(
+    String(message || "")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\[(\d{1,3}(?:;\d{1,3})*)m/g, "")
+      .trim(),
+  );
+}
+
+function isShellOutputLog(log) {
+  return log.source === "shell:output" || log.source === "shell:stderr" || log.source === "shell:status";
+}
+
+function shellOutputPane() {
+  return els.flowPane.querySelector(".shell-output-pane");
+}
+
+function shellOutputGroups(logs, flow) {
+  const flowId = flow?.id || state.selectedFlowId;
+  const clearAfterLogId = Math.max(
+    state.shellOutputClearAfterLogId.get(flowId) || 0,
+    Number(flow?.shellOutputClearAfterLogId || 0),
+  );
+  const runningGroups = runningShellGroups(logs, flow, clearAfterLogId);
+  if (runningGroups.length) return runningGroups;
+  return latestShellGroups(logs, clearAfterLogId);
+}
+
+function renderShellOutputPane(flowId) {
+  const pane = shellOutputPane();
+  const agentPanel = els.flowPane.querySelector(".agent-panel");
+  if (!pane) return;
+  if (!flowId) {
+    pane.hidden = true;
+    pane.replaceChildren();
+    pane._shellOutputSignature = "";
+    agentPanel?.classList.remove("shell-output-visible");
+    return;
+  }
+  if (flowId !== state.selectedFlowId) return;
+  const flow = state.flows.find((item) => item.id === flowId) || null;
+  const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
+  const hasGroups = Boolean(groups.length);
+  const showPane = !state.shellPaneHidden;
+  const shellLive = showPane && flowShellLive(flow);
+  pane.hidden = !showPane;
+  agentPanel?.classList.toggle("shell-output-visible", showPane);
+  if (showPane) applyShellOutputSplitSize();
+  if (!hasGroups && !shellLive) {
+    pane.replaceChildren();
+    pane._shellOutputSignature = "";
+    return;
+  }
+  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fshell-live:${shellLive}`;
+  if (pane._shellOutputSignature === signature) return;
+  const fragment = document.createDocumentFragment();
+  for (const group of groups) appendTerminalBlock(fragment, group);
+  if (shellLive) appendTerminalWorkingBlock(fragment, "shell");
+  pane.replaceChildren(fragment);
+  pane._shellOutputSignature = signature;
+  pane.scrollTop = pane.scrollHeight;
+}
+
+async function clearShellOutputPane() {
+  const flowId = state.selectedFlowId;
+  if (flowId) state.shellOutputClearAfterLogId.set(flowId, state.lastLogId.get(flowId) || 0);
+  const pane = shellOutputPane();
+  pane?.replaceChildren();
+  if (pane) pane._shellOutputSignature = "";
+  renderShellOutputPane(flowId);
+  if (!flowId) return;
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flowId)}/shell-output/clear`, { method: "POST" });
+    const clearAfterLogId = Number(data.clearAfterLogId || 0);
+    if (Number.isFinite(clearAfterLogId)) state.shellOutputClearAfterLogId.set(flowId, clearAfterLogId);
+    if (data.flow) upsertFlow(data.flow);
+    renderShellOutputPane(flowId);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
 function formatTerminalMessage(source, message) {
   const text = String(message || "");
   if (source === "agent:tool") return text.trim();
@@ -1583,8 +3122,258 @@ function formatTerminalMessage(source, message) {
   return text.replace(/^\n+/, "").replace(/\n+$/, "");
 }
 
+function localDayStart(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function terminalDateLabel(date, now = new Date()) {
+  const days = Math.floor((localDayStart(now) - localDayStart(date)) / 86_400_000);
+  if (days <= 0) return "";
+  return `${days}d ago`;
+}
+
+function formatTerminalTimestamp(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  }).replace(/\s+([AP]M)$/i, "$1").toLowerCase();
+  const dateLabel = terminalDateLabel(date);
+  return dateLabel ? `${time} (${dateLabel})` : time;
+}
+
 function usesTerminalBlockMarkdown(source) {
   return ["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
+}
+
+function usesTerminalMarkdownToggle(source) {
+  return ["agent", "agent:message"].includes(source);
+}
+
+function renderTerminalMarkdownOutput(message, showToggle = false) {
+  const toggle = showToggle
+    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Show raw markdown" title="Show raw markdown">Raw</button>`
+    : "";
+  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true })}</div>`;
+}
+
+function ansiClassForCode(code) {
+  const colors = {
+    30: "black",
+    31: "red",
+    32: "green",
+    33: "yellow",
+    34: "blue",
+    35: "magenta",
+    36: "cyan",
+    37: "white",
+    90: "bright-black",
+    91: "bright-red",
+    92: "bright-green",
+    93: "bright-yellow",
+    94: "bright-blue",
+    95: "bright-magenta",
+    96: "bright-cyan",
+    97: "bright-white",
+  };
+  return colors[code] ? `ansi-fg-${colors[code]}` : "";
+}
+
+function ansiColorValueForCode(code) {
+  const colors = {
+    30: "#111827",
+    31: "#b91c1c",
+    32: "#15803d",
+    33: "#a16207",
+    34: "#1d4ed8",
+    35: "#a21caf",
+    36: "#0e7490",
+    37: "#475569",
+    90: "#64748b",
+    91: "#dc2626",
+    92: "#16a34a",
+    93: "#ca8a04",
+    94: "#2563eb",
+    95: "#c026d3",
+    96: "#0891b2",
+    97: "#334155",
+  };
+  return colors[code] || "";
+}
+
+function ansi256ColorValue(value) {
+  const color = Number(value);
+  if (!Number.isInteger(color) || color < 0 || color > 255) return "";
+  const base = [
+    "#000000",
+    "#800000",
+    "#008000",
+    "#808000",
+    "#000080",
+    "#800080",
+    "#008080",
+    "#c0c0c0",
+    "#808080",
+    "#ff0000",
+    "#00ff00",
+    "#ffff00",
+    "#0000ff",
+    "#ff00ff",
+    "#00ffff",
+    "#ffffff",
+  ];
+  if (color < base.length) return base[color];
+  if (color >= 232) {
+    const level = 8 + (color - 232) * 10;
+    return `rgb(${level}, ${level}, ${level})`;
+  }
+  const index = color - 16;
+  const channel = (step) => (step === 0 ? 0 : 55 + step * 40);
+  const red = channel(Math.floor(index / 36) % 6);
+  const green = channel(Math.floor(index / 6) % 6);
+  const blue = channel(index % 6);
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
+function ansiTrueColorValue(red, green, blue) {
+  const channels = [red, green, blue].map(Number);
+  if (channels.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) return "";
+  return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`;
+}
+
+function ansiParams(value) {
+  if (!value) return [0];
+  const params = String(value)
+    .split(/[;:]/)
+    .filter((item) => item !== "")
+    .map((item) => Number(item));
+  return params.length ? params : [0];
+}
+
+function renderAnsiText(root, message) {
+  const text = String(message || "");
+  const pattern = /\x1b\[([0-?]*)([ -/]*)([@-~])|\[((?:\d{1,3}|[;:])+)m/g;
+  let index = 0;
+  let colorClass = "";
+  let inlineColor = "";
+  let backgroundColor = "";
+  let bold = false;
+  let dim = false;
+  let italic = false;
+  let underline = false;
+
+  const appendText = (value) => {
+    if (!value) return;
+    if (!colorClass && !inlineColor && !backgroundColor && !bold && !dim && !italic && !underline) {
+      root.appendChild(document.createTextNode(value));
+      return;
+    }
+    const span = document.createElement("span");
+    if (colorClass) span.classList.add(colorClass);
+    if (bold) span.classList.add("ansi-bold");
+    if (dim) span.classList.add("ansi-dim");
+    if (italic) span.classList.add("ansi-italic");
+    if (underline) span.classList.add("ansi-underline");
+    if (inlineColor) span.style.color = inlineColor;
+    if (backgroundColor) span.style.backgroundColor = backgroundColor;
+    span.textContent = value;
+    root.appendChild(span);
+  };
+
+  for (const match of text.matchAll(pattern)) {
+    appendText(text.slice(index, match.index));
+    index = match.index + match[0].length;
+    const command = match[3] || "m";
+    if (command !== "m") continue;
+    const params = ansiParams(match[1] || match[4] || "0");
+    for (let paramIndex = 0; paramIndex < params.length; paramIndex += 1) {
+      const code = params[paramIndex];
+      if (code === 0) {
+        colorClass = "";
+        inlineColor = "";
+        backgroundColor = "";
+        bold = false;
+        dim = false;
+        italic = false;
+        underline = false;
+      } else if (code === 1) {
+        bold = true;
+      } else if (code === 2) {
+        dim = true;
+      } else if (code === 3) {
+        italic = true;
+      } else if (code === 4) {
+        underline = true;
+      } else if (code === 22) {
+        bold = false;
+        dim = false;
+      } else if (code === 23) {
+        italic = false;
+      } else if (code === 24) {
+        underline = false;
+      } else if (code === 39) {
+        colorClass = "";
+        inlineColor = "";
+      } else if (code === 49) {
+        backgroundColor = "";
+      } else if (code >= 40 && code <= 47) {
+        backgroundColor = ansiColorValueForCode(code - 10);
+      } else if (code >= 100 && code <= 107) {
+        backgroundColor = ansiColorValueForCode(code - 10);
+      } else if ((code === 38 || code === 48) && params[paramIndex + 1] === 5) {
+        const nextColor = ansi256ColorValue(params[paramIndex + 2]);
+        if (nextColor) {
+          if (code === 38) {
+            colorClass = "";
+            inlineColor = nextColor;
+          } else {
+            backgroundColor = nextColor;
+          }
+        }
+        paramIndex += 2;
+      } else if ((code === 38 || code === 48) && params[paramIndex + 1] === 2) {
+        const nextColor = ansiTrueColorValue(params[paramIndex + 2], params[paramIndex + 3], params[paramIndex + 4]);
+        if (nextColor) {
+          if (code === 38) {
+            colorClass = "";
+            inlineColor = nextColor;
+          } else {
+            backgroundColor = nextColor;
+          }
+        }
+        paramIndex += 4;
+      } else {
+        const nextColorClass = ansiClassForCode(code);
+        if (nextColorClass) {
+          colorClass = nextColorClass;
+          inlineColor = "";
+        }
+      }
+    }
+  }
+  appendText(text.slice(index));
+}
+
+function toggleTerminalMarkdownOutput(button) {
+  const body = button.closest(".terminal-entry-body");
+  const content = body?.querySelector(".terminal-markdown-content");
+  if (!content) return;
+
+  const raw = content.dataset.rawMarkdown || "";
+  const showingRaw = body.classList.toggle("showing-raw-markdown");
+  button.setAttribute("aria-pressed", String(showingRaw));
+  button.setAttribute("aria-label", showingRaw ? "Show rendered markdown" : "Show raw markdown");
+  button.title = showingRaw ? "Show rendered markdown" : "Show raw markdown";
+  button.textContent = showingRaw ? "Rendered" : "Raw";
+  content.innerHTML = showingRaw
+    ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
+    : renderLinearMarkdown(raw, "", { images: false, links: true });
+  if (!showingRaw) highlightCodeBlocks(content);
+}
+
+function highlightCodeBlocks(root) {
+  window.Prism?.highlightAllUnder?.(root);
 }
 
 function appendTerminalBlock(fragment, group) {
@@ -1597,7 +3386,7 @@ function appendTerminalBlock(fragment, group) {
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
 
-  if (group.source === "agent:tool" || group.source === "agent:tool-result") {
+  if (group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command") {
     block.classList.add("terminal-entry-command");
     const row = document.createElement("div");
     row.className = "terminal-command-line";
@@ -1634,19 +3423,21 @@ function appendTerminalBlock(fragment, group) {
     time = document.createElement("time");
     time.className = "terminal-entry-time";
     time.dateTime = group.createdAt;
-    time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    time.textContent = formatTerminalTimestamp(group.createdAt);
   }
 
   const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
   body.className = "terminal-entry-body";
   const message = formatTerminalMessage(group.source, group.message);
-  body.innerHTML = usesTerminalBlockMarkdown(group.source)
-    ? renderLinearMarkdown(message, "", { images: false, links: true })
-    : renderInlineMarkdown(message, { images: false, links: false });
+  if (usesTerminalBlockMarkdown(group.source)) {
+    body.classList.add("terminal-markdown-output");
+    body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
+    highlightCodeBlocks(body);
+  } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
+    renderAnsiText(body, message);
+  } else {
+    body.innerHTML = renderInlineMarkdown(message, { images: false, links: false });
+  }
 
   header.replaceChildren(marker, label, ...(time ? [time] : []));
   block.replaceChildren(header, body);
@@ -1681,6 +3472,10 @@ function removeLogEntries(flowId, ids) {
     flowId,
     (state.logs.get(flowId) || []).filter((log) => !idSet.has(Number(log.id))),
   );
+  const knownIds = state.logIds.get(flowId);
+  if (knownIds) {
+    for (const id of idSet) knownIds.delete(id);
+  }
 }
 
 async function deleteOutputLogGroup(flowId, ids) {
@@ -1723,11 +3518,7 @@ function appendTerminalTraceGroup(fragment, group) {
   const time = document.createElement("time");
   time.className = "terminal-entry-time";
   time.dateTime = group.createdAt;
-  time.textContent = new Date(group.createdAt).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  time.textContent = formatTerminalTimestamp(group.createdAt);
 
   summary.addEventListener("click", (event) => {
     event.preventDefault();
@@ -1749,7 +3540,7 @@ function openTraceGroupKeys(flowId) {
 }
 
 function isTerminalTraceGroupOpen(group) {
-  return Boolean(group.flowId && group.traceKey && state.openTraceGroups.get(group.flowId)?.has(group.traceKey));
+  return Boolean(group.defaultOpen || (group.flowId && group.traceKey && state.openTraceGroups.get(group.flowId)?.has(group.traceKey)));
 }
 
 function setTerminalTraceGroupOpen(details, open) {
@@ -1822,13 +3613,88 @@ function resumeTerminalFollow() {
 
 function scrollTerminalToLatest(terminal) {
   requestAnimationFrame(() => {
-    terminal.scrollTop = terminal.scrollHeight;
+    scrollTerminalToLatestNow(terminal);
   });
+}
+
+function scrollTerminalToLatestNow(terminal) {
+  terminal.scrollTop = terminal.scrollHeight;
+}
+
+function terminalBottomRestorer() {
+  const terminal = els.flowPane.querySelector(".terminal");
+  if (!terminal) return () => {};
+  const distanceFromBottom = terminalDistanceFromBottom(terminal);
+  if (terminalAtLatest(terminal)) {
+    return () => {
+      terminal.scrollTop = terminal.scrollHeight;
+    };
+  }
+  const anchor = terminalBottomTextAnchor(terminal);
+  return () => {
+    const anchorBottom = terminalTextAnchorBottom(anchor);
+    if (anchorBottom !== null) {
+      terminal.scrollTop += anchorBottom - anchor.bottom;
+      return;
+    }
+    terminal.scrollTop = terminal.scrollHeight - terminal.clientHeight - distanceFromBottom;
+  };
+}
+
+function terminalBottomTextAnchor(terminal) {
+  const terminalRect = terminal.getBoundingClientRect();
+  const textNodes = [];
+  const walker = document.createTreeWalker(terminal, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return node.nodeValue?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+  for (let nodeIndex = textNodes.length - 1; nodeIndex >= 0; nodeIndex -= 1) {
+    const range = document.createRange();
+    range.selectNodeContents(textNodes[nodeIndex]);
+    const rects = [...range.getClientRects()];
+    range.detach();
+    for (let rectIndex = rects.length - 1; rectIndex >= 0; rectIndex -= 1) {
+      const rect = rects[rectIndex];
+      if (rect.width > 0 && rect.height > 0 && rect.top < terminalRect.bottom && rect.bottom > terminalRect.top) {
+        return { node: textNodes[nodeIndex], rectIndex, bottom: rect.bottom };
+      }
+    }
+  }
+
+  return null;
+}
+
+function terminalTextAnchorBottom(anchor) {
+  if (!anchor?.node?.isConnected) return null;
+  const range = document.createRange();
+  range.selectNodeContents(anchor.node);
+  const rects = [...range.getClientRects()];
+  range.detach();
+  return rects[anchor.rectIndex]?.bottom ?? null;
+}
+
+function followTerminalToLatestDuringLayout(terminal, durationMs) {
+  const startedAt = performance.now();
+  const follow = (now) => {
+    applyFlowSplitSize();
+    scrollTerminalToLatestNow(terminal);
+    if (now - startedAt < durationMs) requestAnimationFrame(follow);
+  };
+  requestAnimationFrame(follow);
 }
 
 function agentWorkingForFlow(flow) {
   const agentEnabled = repoUrlConfigured();
-  return Boolean(agentEnabled && flow && (state.messageSubmitting || state.interruptSubmitting || flow.agentStatus === "running"));
+  return Boolean(
+    agentEnabled &&
+      flow &&
+      (state.messageSubmitting ||
+        flowAgentRunning(flow) ||
+        (state.interruptSubmitting && flowRuntimeKind(flow) === "agent")),
+  );
 }
 
 function stopAgentWorkingPoll(flowId = "") {
@@ -1866,6 +3732,14 @@ async function pollAgentWorkingFlow() {
     return;
   }
   if (state.messageSubmitting || state.interruptSubmitting) {
+    state.agentWorkingPollInFlight = true;
+    try {
+      await loadLogs(flowId);
+    } catch {
+      // Keep the polling loop alive; transient fetch failures should not freeze the indicator.
+    } finally {
+      state.agentWorkingPollInFlight = false;
+    }
     scheduleAgentWorkingPoll(flowId);
     return;
   }
@@ -1889,13 +3763,13 @@ async function pollAgentWorkingFlow() {
   }
 }
 
-function appendTerminalWorkingBlock(fragment) {
+function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
   const block = document.createElement("section");
-  block.className = "terminal-entry terminal-entry-working";
+  block.className = `terminal-entry terminal-entry-working terminal-entry-working-${runtimeKind}`;
   block.setAttribute("aria-live", "polite");
 
   const body = document.createElement("div");
-  body.className = "terminal-entry-body agent-working";
+  body.className = "terminal-entry-body agent-working agent-turn-working";
 
   const dots = document.createElement("span");
   dots.className = "agent-working-dots";
@@ -1910,23 +3784,26 @@ function appendTerminalWorkingBlock(fragment) {
 function renderLogs(id, options = {}) {
   if (id !== state.selectedFlowId) return;
   const terminal = els.flowPane.querySelector(".terminal");
+  renderShellOutputPane(id);
+  const flow = state.flows.find((item) => item.id === id) || null;
+  const logs = state.logs.get(id) || [];
+  const groups = terminalGroups(logs, flow);
+  const agentWorking = agentWorkingForFlow(flow);
+  const agentWorkingKind = agentWorking ? "agent" : "idle";
+  syncAgentWorkingPoll(id, agentWorking);
+  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${agentWorkingKind}`;
   if (
     terminal._flowLogFlowId === id &&
     terminal._flowLogSignature &&
     !options.force &&
     !options.scrollToLatest &&
+    !agentWorking &&
     (state.terminalFollowPaused || !terminalAtLatest(terminal))
   ) {
     terminal._flowLogPending = id;
     return;
   }
 
-  const logs = state.logs.get(id) || [];
-  const groups = terminalGroups(logs);
-  const flow = state.flows.find((item) => item.id === id) || null;
-  const agentWorking = agentWorkingForFlow(flow);
-  syncAgentWorkingPoll(id, agentWorking);
-  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}`;
   if (terminal._flowLogFlowId === id && terminal._flowLogSignature === signature && !options.force) {
     if (options.scrollToLatest) scrollTerminalToLatest(terminal);
     return;
@@ -1941,6 +3818,7 @@ function renderLogs(id, options = {}) {
   terminal._flowLogSignature = signature;
   terminal._flowLogPending = "";
   if (atLatest) scrollTerminalToLatest(terminal);
+  renderShellOutputPane(id);
 }
 
 function escapeHtml(value) {
@@ -1969,9 +3847,18 @@ function connectWs() {
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "flows") {
+      const previousFlows = state.flows;
       setFlows(message.payload);
+      if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {
+        renderTickets();
+        const flow = selectedFlow();
+        if (flow) renderLogs(flow.id, { force: true });
+        return;
+      }
       render();
-      await loadAllLogs();
+      const flow = selectedFlow();
+      if (flow) void loadFlowDiff(flow.id, { force: true });
+      if (flow) await loadLogs(flow.id);
     }
     if (message.event === "checkouts") {
       setCheckouts(message.payload);
@@ -1979,19 +3866,31 @@ function connectWs() {
       renderCheckouts();
     }
     if (message.event === "log") {
-      const { id, flowId, source, message: chunk, createdAt } = message.payload;
-      appendLogEntry({
-        id,
-        flowId,
-        source,
-        message: chunk,
-        createdAt,
-      });
-      renderLogs(flowId);
+      const log = {
+        id: message.payload.id,
+        flowId: message.payload.flowId,
+        source: message.payload.source,
+        message: message.payload.message,
+        createdAt: message.payload.createdAt,
+      };
+      appendLogEntry(log);
+      if (isShellOnlyRenderLog(log)) {
+        renderShellOutputPane(log.flowId);
+        return;
+      }
+      renderLogs(log.flowId);
     }
     if (message.event === "logs-deleted") {
       removeLogEntries(message.payload.flowId, message.payload.ids || []);
       renderLogs(message.payload.flowId, { force: true });
+    }
+    if (message.event === "shell-output-cleared") {
+      const flowId = message.payload.flowId;
+      const clearAfterLogId = Number(message.payload.clearAfterLogId || 0);
+      if (flowId && Number.isFinite(clearAfterLogId)) {
+        state.shellOutputClearAfterLogId.set(flowId, clearAfterLogId);
+        renderShellOutputPane(flowId);
+      }
     }
   });
   ws.addEventListener("close", () => setTimeout(connectWs, 1000));
@@ -2020,9 +3919,38 @@ function startFlowSplitResize(event) {
   window.addEventListener("pointerup", onPointerUp, { once: true });
 }
 
+function resizeShellOutputSplitFromPointer(clientX) {
+  const panel = els.flowPane.querySelector(".terminal-panel");
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width) return;
+  setShellOutputSplitSizeKeepingTerminalBottom(((rect.right - clientX) / rect.width) * 100);
+}
+
+function setShellOutputSplitSizeKeepingTerminalBottom(value) {
+  const restoreTerminalBottom = terminalBottomRestorer();
+  setShellOutputSplitSize(value);
+  restoreTerminalBottom();
+}
+
+function startShellOutputSplitResize(event) {
+  event.preventDefault();
+  document.body.classList.add("shell-output-resizing");
+  resizeShellOutputSplitFromPointer(event.clientX);
+
+  const onPointerMove = (moveEvent) => resizeShellOutputSplitFromPointer(moveEvent.clientX);
+  const onPointerUp = () => {
+    document.body.classList.remove("shell-output-resizing");
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
 els.settingsToggle.addEventListener("click", (event) => {
   event.stopPropagation();
-  setSettingsCollapsed(!state.settingsCollapsed);
+  toggleSettingsCollapsed();
 });
 
 els.themeToggle.addEventListener("click", (event) => {
@@ -2041,6 +3969,14 @@ els.settingsPane.addEventListener("keydown", (event) => {
   setSettingsCollapsed(false);
 });
 
+els.settingsContent.addEventListener("click", (event) => {
+  const toggle = event.target.closest(".settings-section-toggle");
+  if (!toggle) return;
+  toggleSettingsSection(toggle.closest(".settings-section"));
+});
+
+els.settingsContent.addEventListener("scroll", resetSettingsHorizontalScroll);
+
 els.repoUrl.addEventListener("input", () => {
   scheduleRepoConfigSave();
   renderFlowPane();
@@ -2054,8 +3990,10 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
   els.agentDeveloperInstructions.value = state.defaultAgentDeveloperInstructions;
   void saveAgentConfig().catch(reportAutoSaveError);
 });
-els.envEditor.addEventListener("input", scheduleEnvSave);
-els.envEditor.addEventListener("blur", () => void saveEnv().catch(reportAutoSaveError));
+els.envEditor.addEventListener("input", handleEnvEditorInput);
+els.envEditor.addEventListener("paste", handleEnvEditorPaste);
+els.envEditor.addEventListener("focusout", handleEnvEditorFocusOut);
+window.addEventListener("pagehide", flushEnvSaveOnPageHide);
 
 els.linearKeyForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2084,6 +4022,13 @@ els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) 
   setFlowSplitSize(state.flowSplitSize + (event.key === "ArrowDown" ? 5 : -5));
 });
 
+els.flowPane.querySelector(".shell-output-resizer").addEventListener("pointerdown", startShellOutputSplitResize);
+els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  setShellOutputSplitSizeKeepingTerminalBottom(state.shellOutputSplitSize + (event.key === "ArrowLeft" ? 5 : -5));
+});
+
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
   if (terminalAtLatest(terminal)) resumeTerminalFollow();
@@ -2091,6 +4036,14 @@ els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   if (!pendingFlowId || !terminalAtLatest(terminal)) return;
   terminal._flowLogPending = "";
   renderLogs(pendingFlowId, { scrollToLatest: true });
+});
+
+els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
+  const toggle = event.target.closest(".terminal-markdown-toggle");
+  if (!toggle) return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleTerminalMarkdownOutput(toggle);
 });
 
 els.flowPane.querySelector(".terminal").addEventListener(
@@ -2109,27 +4062,18 @@ els.flowPane.querySelector(".terminal").addEventListener(
   { passive: true },
 );
 
-els.flowPane.querySelector(".agent-interrupt").addEventListener("click", async () => {
-  if (state.interruptSubmitting) return;
-  const selected = selectedFlow();
-  if (selected?.agentStatus === "running") {
-    state.interruptSubmitting = true;
-    renderTickets();
-    renderFlowPane();
-    try {
-      await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
-    } finally {
-      state.interruptSubmitting = false;
-      renderTickets();
-      renderFlowPane();
-    }
-  }
-});
-
-els.flowPane.querySelector(".message-input").addEventListener("input", () => {
+promptInput().addEventListener("input", () => {
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
   state.slashCommandIndex = 0;
+  updateMessageInputMode();
   resizeMessageInput();
   renderSlashMenu();
+});
+
+shellInput().addEventListener("input", () => {
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
 });
 
 els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
@@ -2174,10 +4118,12 @@ document.addEventListener("drop", (event) => {
   if (files.length) void uploadAgentImages(files);
 }, true);
 
-els.flowPane.querySelector(".message-input").addEventListener("keydown", (event) => {
+promptInput().addEventListener("keydown", (event) => {
   const input = event.currentTarget;
   const menu = els.flowPane.querySelector(".slash-menu");
   const matches = slashCommandMatches(input.value);
+
+  if (handleHistorySearchKeydown(event)) return;
 
   if (!menu.hidden && matches.length) {
     if (event.key === "ArrowDown") {
@@ -2191,8 +4137,7 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
       renderSlashMenu();
       return;
     } else if (event.key === "Tab") {
-      event.preventDefault();
-      selectSlashCommand();
+      handleInputPaneTabKeydown(event);
       return;
     } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -2218,6 +4163,10 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
     }
   }
 
+  if (handleInputPaneTabKeydown(event)) return;
+  if (handleAgentInterruptKeydown(event)) return;
+  if (handleInputHistoryNavigationKeydown(event)) return;
+
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;
@@ -2225,6 +4174,70 @@ els.flowPane.querySelector(".message-input").addEventListener("keydown", (event)
     input.form?.requestSubmit();
   }
 });
+
+shellInput().addEventListener("keydown", (event) => {
+  const input = event.currentTarget;
+  if (handleShellInterruptKeydown(event)) return;
+  if (handleHistorySearchKeydown(event)) return;
+  if (handleInputPaneTabKeydown(event)) return;
+  if (handleInputHistoryNavigationKeydown(event)) return;
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    void submitShellCommand(input.value);
+  }
+});
+
+async function submitShellCommand(value) {
+  const input = shellInput();
+  if (!input) return;
+  const command = String(value || "").trim();
+  if (!command) return;
+  if (command === "clear") {
+    rememberInputHistory(command, "shell");
+    cancelHistorySearch();
+    resetInputHistoryNavigation();
+    input.value = "";
+    await clearShellOutputPane();
+    input.focus({ preventScroll: true });
+    return;
+  }
+  if (!canSubmitShellCommand()) {
+    flashBlockedInput(input);
+    return;
+  }
+  if (state.pendingAgentImages.length) {
+    alert("Shell commands do not support image attachments.");
+    return;
+  }
+  rememberInputHistory(command, "shell");
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
+  state.shellSubmitting = true;
+  input.value = "";
+  hideSlashMenu();
+  renderTickets();
+  renderShellOutputPane(selectedFlow()?.id || "");
+  let submittedFlowId = "";
+  try {
+    const flow = await ensureSelectedFlow();
+    if (!flow) return;
+    submittedFlowId = flow.id;
+    state.shellInterruptingFlowIds.delete(flow.id);
+    renderShellOutputPane(flow.id);
+    const data = await api(`/api/flows/${flow.id}/command`, {
+      method: "POST",
+      body: JSON.stringify({ command }),
+    });
+    if (data.flow) upsertFlow(data.flow);
+  } finally {
+    state.shellSubmitting = false;
+    if (submittedFlowId) await loadLogs(submittedFlowId, { shellOnly: true });
+    renderTickets();
+    renderShellOutputPane(submittedFlowId);
+    if (state.shellPaneHidden) promptInput()?.focus();
+    else shellInput()?.focus();
+  }
+}
 
 els.flowPane.querySelector(".slash-menu").addEventListener("mouseover", (event) => {
   const button = event.target.closest(".slash-command");
@@ -2240,7 +4253,7 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   const command = event.target.closest(".slash-command")?.dataset.command;
   if (!command) return;
   event.preventDefault();
-  els.flowPane.querySelector(".message-input").value = command;
+  promptInput().value = command;
   resizeMessageInput();
   if (slashCommandHasExpansions(command)) {
     state.slashCommandIndex = 0;
@@ -2248,26 +4261,37 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   } else {
     hideSlashMenu();
   }
-  els.flowPane.querySelector(".message-input").focus();
+  promptInput().focus();
 });
 
 els.flowPane.querySelector(".message-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (state.messageSubmitting) return;
-  const input = els.flowPane.querySelector(".message-input");
-  if (input.disabled) return;
+  const input = promptInput();
   const message = input.value.trim();
   if (!message && !state.pendingAgentImages.length) return;
+  if (!canSubmitPromptMessage()) {
+    flashBlockedInput(input);
+    return;
+  }
   const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
+  rememberInputHistory(message, "prompt");
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
   state.messageSubmitting = true;
   input.value = "";
+  updateMessageInputMode();
   resizeMessageInput();
   hideSlashMenu();
   renderTickets();
   renderFlowPane();
+  let submittedFlowId = "";
   try {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
+    submittedFlowId = flow.id;
+    scheduleAgentWorkingPoll(flow.id);
+    renderFlowPane();
+    renderLogs(flow.id, { force: true, scrollToLatest: true });
     await api(`/api/flows/${flow.id}/message`, {
       method: "POST",
       body: JSON.stringify({ message: agentMessage }),
@@ -2275,18 +4299,48 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
+    if (submittedFlowId) await loadLogs(submittedFlowId);
     renderTickets();
     renderFlowPane();
+    promptInput().focus();
   }
 });
+
+els.diffModal?.querySelector(".diff-modal-close")?.addEventListener("click", closeDiffViewer);
+els.diffModal?.addEventListener("click", (event) => {
+  if (event.target === els.diffModal) closeDiffViewer();
+});
+els.imagePreviewModal?.addEventListener("click", (event) => {
+  if (event.target === els.imagePreviewModal) closeImagePreview();
+});
+els.flowPane.addEventListener("click", handleImagePreviewClick);
 
 let titleResizeFrame = 0;
 window.addEventListener("resize", () => {
   cancelAnimationFrame(titleResizeFrame);
-  titleResizeFrame = requestAnimationFrame(renderFlowPane);
+  titleResizeFrame = requestAnimationFrame(() => {
+    applyShellOutputSplitSize();
+    renderFlowPane();
+  });
 });
 
+document.addEventListener("keydown", handleCommandK, true);
+document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
+
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden) {
+    event.preventDefault();
+    closeImagePreview();
+    return;
+  }
+  if (event.key === "Escape" && state.diffModalFlowId) {
+    event.preventDefault();
+    closeDiffViewer();
+    return;
+  }
+  if (handleInputPaneTabKeydown(event)) return;
+  if (handleGlobalHistorySearchKeydown(event)) return;
+  if (focusMessageInputForKey(event)) return;
   if (event.key === "Escape") event.preventDefault();
 });
 

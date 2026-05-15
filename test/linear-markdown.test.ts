@@ -32,7 +32,9 @@ describe("renderLinearMarkdown", () => {
 
     expect(html).toContain('<figure class="linear-image">');
     expect(html).toContain(`src="${proxied}"`);
+    expect(html).toContain(`href="${proxied}" data-image-preview data-image-preview-alt="Screenshot"`);
     expect(html).toContain('alt="Screenshot"');
+    expect(html).not.toContain('target="_blank"');
     expect(html).not.toContain("\n        <figure");
   });
 
@@ -82,6 +84,26 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("1. first");
   });
 
+  test("renders Markdown tables", () => {
+    const html = renderLinearMarkdown("confirmed\n| before | after |\n| -- | -- |\n| one | **two** |");
+
+    expect(html).toContain("confirmed<table>");
+    expect(html).toContain("<thead><tr><th>before</th><th>after</th></tr></thead>");
+    expect(html).toContain("<tbody><tr><td>one</td><td><strong>two</strong></td></tr></tbody>");
+    expect(html).not.toContain("| before | after |");
+    expect(html).not.toContain("| -- | -- |");
+  });
+
+  test("renders images inside Markdown table cells", () => {
+    const url = "https://uploads.linear.app/workspace/file/before.png";
+    const html = renderLinearMarkdown(`| before | after |\n| -- | -- |\n| ![Before](${url}) | done |`);
+
+    expect(html).toContain("<table>");
+    expect(html).toContain("<td><figure class=\"linear-image\">");
+    expect(html).toContain(`src="/api/linear/attachment?url=${encodeURIComponent(url)}"`);
+    expect(html).toContain("<td>done</td>");
+  });
+
   test("keeps repeated ordered list markers numbered across nested bullets", () => {
     const html = renderLinearMarkdown("Plan:\n1. Add\n   - legacy\n   - image\n\n1. Update\n   - top\n\n1. Validate");
 
@@ -92,13 +114,56 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("1. Update");
   });
 
+  test("continues repeated ordered list markers across intervening paragraphs", () => {
+    const html = renderLinearMarkdown("1. Add\nDetails\n- requested\n\n1. Update\nMore detail\n\n1. Validate");
+
+    expect(html).toContain("<ol><li>Add<br>Details<ul><li>requested</li></ul></li><li>Update<br>More detail</li><li>Validate</li></ol>");
+    expect(html.match(/<ol>/g)).toHaveLength(1);
+    expect(html).not.toContain("1. Update");
+    expect(html).not.toContain("1. Validate");
+  });
+
+  test("keeps follow-up bullets visually under repeated numbered items", () => {
+    const html = renderLinearMarkdown(
+      "1. Fix added\nThe reviewer is right:\n- requested: all resources\n- added: only principals\n\n1. Move workspace\nThen the MCP tool only needs:\n- parallel lookup behavior\n- already-member behavior",
+    );
+
+    expect(html).toContain(
+      "<ol><li>Fix added<br>The reviewer is right:<ul><li>requested: all resources</li><li>added: only principals</li></ul></li><li>Move workspace<br>Then the MCP tool only needs:<ul><li>parallel lookup behavior</li><li>already-member behavior</li></ul></li></ol>",
+    );
+    expect(html.match(/<ul>/g)).toHaveLength(2);
+    expect(html).not.toContain("<ol start=");
+  });
+
   test("renders fenced code blocks while escaping HTML", () => {
     const html = renderLinearMarkdown("```ts\nconst apple = `<red>`;\n```");
 
-    expect(html).toContain('<pre class="markdown-code-block" data-language="ts"><code>');
+    expect(html).toContain('<pre class="markdown-code-block language-typescript" data-language="typescript"><code class="language-typescript">');
     expect(html).toContain("const apple = `&lt;red&gt;`;");
     expect(html).toContain("</code></pre>");
     expect(html).not.toContain("<red>");
+  });
+
+  test("renders fenced code blocks with common info strings", () => {
+    const html = renderLinearMarkdown(
+      "```text\nError calling Ando MCP tool ...\n```\n\n```json\n{\"error\":{\"code\":-32003}}\n```",
+    );
+
+    expect(html).toContain('<pre class="markdown-code-block"><code>');
+    expect(html).toContain("Error calling Ando MCP tool ...");
+    expect(html).toContain('<pre class="markdown-code-block language-json" data-language="json"><code class="language-json">');
+    expect(html).toContain('{"error":{"code":-32003}}');
+    expect(html).not.toContain("```text");
+    expect(html).not.toContain("```json");
+  });
+
+  test("renders fenced code blocks inside numbered list items", () => {
+    const html = renderLinearMarkdown(
+      "1. initialize\n2. notifications/initialized\n3. tools/call\n4. DELETE session in finally\nIf tools/call gets 400, execute wraps it as:\n```text\nError calling Ando MCP tool ...\n```\n\nThe wrapper can retry.",
+    );
+
+    expect(html).toContain('<li>DELETE session in finally<br>If tools/call gets 400, execute wraps it as:<pre class="markdown-code-block"><code>Error calling Ando MCP tool ...</code></pre><br>The wrapper can retry.</li>');
+    expect(html).not.toContain("```text");
   });
 
   test("does not parse Markdown inside fenced code blocks", () => {

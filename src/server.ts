@@ -39,6 +39,7 @@ type Flow = {
   serving: number;
   createdAt: string;
   updatedAt: string;
+  shellOutputClearAfterLogId?: number;
 };
 
 type LogRow = {
@@ -49,12 +50,13 @@ type LogRow = {
   createdAt: string;
 };
 
-type UploadedImage = {
-  name: string;
-  type: string;
-  size: number;
-  arrayBuffer: () => Promise<ArrayBuffer>;
+type DiffFile = {
+  path: string;
+  additions: number | null;
+  deletions: number | null;
 };
+
+type UploadedImage = File;
 
 type LinearIssue = {
   id: string;
@@ -93,8 +95,7 @@ const legacyDataDir = join(rootDir, `.${"water"}${"flow"}`);
 const checkoutDir = join(dataDir, "checkouts");
 const repoCheckoutDir = join(dataDir, "repo");
 const publicDir = join(rootDir, "public");
-const envPath = join(dataDir, ".env");
-const legacyEnvPath = join(legacyDataDir, ".env");
+const prismDir = join(rootDir, "node_modules", "prismjs");
 const dbPath = join(dataDir, "flow.sqlite");
 const legacyDbPath = join(legacyDataDir, `${"water"}flow.sqlite`);
 const port = Number(process.env.PORT ?? 3999);
@@ -103,35 +104,30 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
+const reviewFindingInstructions =
+  "Focus on bugs, behavioral regressions, missing tests, and risks. Report findings first with file and line references.";
 const defaultAgentDeveloperInstructions = [
   "You are running inside Turbopump, a local coding-agent workflow system.",
   "",
   "Work only in the checkout directory supplied as the current working directory.",
   "",
-  "In the planning stage, do not edit files. Focus on establishing task clarity.",
-  "",
-  "Flow stages are: planning -> working -> reviewing -> done.",
-  "",
   "Update flow metadata when appropriate by POSTing JSON to:",
   "{flowMetaApiUrl}",
-  'Example body: {"stage":"reviewing","prUrl":"https://github.com/org/repo/pull/123"}',
+  'Example body: {"prUrl":"https://github.com/org/repo/pull/123"}',
   'Each field in the body is optional.',
   "",
   "Flow ID: {flowId}",
   "Linear issue: {linearIssueId}",
   "Issue title: {title}",
-  "Current stage: {stage}",
   "Checkout path: {checkoutPath}",
   "",
   "working guidelines:",
-  "- pr names should be short and minimally capitalized",
-  "- don't set the flow phase to done unless told to"
+  "- use short PR titles",
+  "- do not capitalize the first word of PR titles"
 ].join("\n");
 
 mkdirSync(dataDir, { recursive: true });
 mkdirSync(checkoutDir, { recursive: true });
-if (!existsSync(envPath) && existsSync(legacyEnvPath)) copyFileSync(legacyEnvPath, envPath);
-if (!existsSync(envPath)) writeFileSync(envPath, "", "utf8");
 if (!existsSync(dbPath) && existsSync(legacyDbPath)) copyFileSync(legacyDbPath, dbPath);
 
 const db = new Database(dbPath);
@@ -150,6 +146,12 @@ db.exec(`
   create table if not exists settings (
     key text primary key,
     value text not null
+  );
+
+  create table if not exists environment_variables (
+    id integer primary key check (id = 1),
+    contents text not null,
+    updatedAt text not null
   );
 
   create table if not exists flows (
@@ -181,6 +183,12 @@ db.exec(`
     message text not null,
     createdAt text not null
   );
+
+  create table if not exists shell_output_state (
+    flowId text primary key,
+    clearAfterLogId integer not null default 0,
+    updatedAt text not null
+  );
 `);
 tryMigration("update flows set stage = 'planning' where stage = 'not_started'");
 tryMigration("alter table flows add column agentModel text not null default ''");
@@ -193,11 +201,12 @@ tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWind
 
 const clients = new Set<ServerWebSocket>();
 const agentProcesses = new Map<string, RuntimeProcess>();
+const shellProcesses = new Map<string, RuntimeProcess>();
 let serveProcess: RuntimeProcess | null = null;
 
 type RuntimeProcess = {
   flowId: string;
-  kind: "agent" | "serve";
+  kind: "agent" | "serve" | "shell";
   proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   command?: string;
   requestId?: number;
@@ -216,6 +225,8 @@ type RuntimeProcess = {
   >;
 };
 
+type RuntimeSignal = "SIGINT" | "SIGTERM" | "SIGKILL";
+
 type ServerWebSocket = {
   send: (message: string) => void;
 };
@@ -224,6 +235,11 @@ const getSettingStmt = db.query("select value from settings where key = ?");
 const setSettingStmt = db.query(`
   insert into settings (key, value) values (?, ?)
   on conflict(key) do update set value = excluded.value
+`);
+const getEnvironmentVariablesStmt = db.query("select contents from environment_variables where id = 1");
+const setEnvironmentVariablesStmt = db.query(`
+  insert into environment_variables (id, contents, updatedAt) values (1, ?, ?)
+  on conflict(id) do update set contents = excluded.contents, updatedAt = excluded.updatedAt
 `);
 const insertLogStmt = db.query(`
   insert into logs (flowId, source, message, createdAt) values (?, ?, ?, ?)
@@ -235,6 +251,12 @@ const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
 );
 const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
+const latestLogIdStmt = db.query("select id from logs where flowId = ? order by id desc limit 1");
+const shellOutputStateStmt = db.query("select clearAfterLogId from shell_output_state where flowId = ?");
+const setShellOutputClearAfterLogIdStmt = db.query(`
+  insert into shell_output_state (flowId, clearAfterLogId, updatedAt) values (?, ?, ?)
+  on conflict(flowId) do update set clearAfterLogId = excluded.clearAfterLogId, updatedAt = excluded.updatedAt
+`);
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -260,8 +282,13 @@ function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
 }
 
-function readEnvFile() {
-  return readFileSync(envPath, "utf8");
+function readEnvContents() {
+  const row = getEnvironmentVariablesStmt.get() as { contents: string } | null;
+  return row?.contents ?? "";
+}
+
+function writeEnvContents(contents: string) {
+  setEnvironmentVariablesStmt.run(contents, now());
 }
 
 function parseEnv(contents: string) {
@@ -287,10 +314,23 @@ function parseEnv(contents: string) {
 function runtimeEnv(flow?: Flow) {
   return {
     ...process.env,
-    ...parseEnv(readEnvFile()),
+    ...parseEnv(readEnvContents()),
     FLOW_API_URL: apiBaseUrl,
     FLOW_RUN_ID: flow?.id ?? "",
-    FLOW_STAGE: flow?.stage ?? "",
+  } as Record<string, string>;
+}
+
+function shellRuntimeEnv(flow: Flow) {
+  const env = runtimeEnv(flow);
+  delete env.NO_COLOR;
+  delete env.NODE_DISABLE_COLORS;
+  return {
+    ...env,
+    TERM: process.env.TERM || "xterm-256color",
+    COLORTERM: process.env.COLORTERM || "truecolor",
+    FORCE_COLOR: process.env.FORCE_COLOR || "3",
+    CLICOLOR: "1",
+    CLICOLOR_FORCE: "1",
   } as Record<string, string>;
 }
 
@@ -334,7 +374,7 @@ function deleteOutputLogs(flowId: string, ids: number[]) {
   if (!uniqueIds.length) throw new Error("No log ids provided.");
 
   const rows = uniqueIds.map((id) => logByIdStmt.get(id) as LogRow | null);
-  const allowedSources = new Set(["agent:output", "agent:cmd"]);
+  const allowedSources = new Set(["agent:output", "agent:cmd", "shell:output"]);
   if (rows.some((row) => !row || row.flowId !== flowId || !allowedSources.has(row.source))) {
     throw new Error("Only output logs for this flow can be deleted.");
   }
@@ -354,6 +394,56 @@ function getFlowByIssue(identifier: string) {
 
 function listFlows() {
   return allFlowsStmt.all() as Flow[];
+}
+
+function latestLogId(flowId: string) {
+  const row = latestLogIdStmt.get(flowId) as { id: number } | null;
+  return row?.id ?? 0;
+}
+
+function shellOutputClearAfterLogId(flowId: string) {
+  const row = shellOutputStateStmt.get(flowId) as { clearAfterLogId: number } | null;
+  return row?.clearAfterLogId ?? 0;
+}
+
+function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number) {
+  const normalized = Number.isFinite(clearAfterLogId) ? Math.max(0, Math.trunc(clearAfterLogId)) : 0;
+  setShellOutputClearAfterLogIdStmt.run(flowId, normalized, now());
+  broadcast("shell-output-cleared", { flowId, clearAfterLogId: normalized });
+  return normalized;
+}
+
+function runtimeAdjustedFlow(flow: Flow) {
+  const shellRuntime = shellProcesses.get(flow.id);
+  if (shellRuntime) {
+    return {
+      ...flow,
+      agentStatus: shellRuntime.stopping ? "interrupting" : "running",
+      agentRuntimeKind: "shell",
+    };
+  }
+
+  const agentRuntime = agentProcesses.get(flow.id);
+  if (agentRuntime?.activeTurnId) {
+    return {
+      ...flow,
+      agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running",
+      agentRuntimeKind: "agent",
+    };
+  }
+
+  return flow;
+}
+
+function clientFlow(flow: Flow) {
+  return {
+    ...runtimeAdjustedFlow(flow),
+    shellOutputClearAfterLogId: shellOutputClearAfterLogId(flow.id),
+  };
+}
+
+function listClientFlows() {
+  return listFlows().map((flow) => clientFlow(flow));
 }
 
 function checkoutNameFromPath(path: string) {
@@ -404,6 +494,7 @@ function listCheckouts() {
 
 async function refreshCheckoutLinearStatuses() {
   if (!linearAuthHeader()) return;
+  if (linearBackoffRemainingMs() > 0) return;
   const flowsByCheckout = checkoutFlowMap();
   const checkoutNames = new Set(
     readdirSync(checkoutDir, { withFileTypes: true })
@@ -413,7 +504,14 @@ async function refreshCheckoutLinearStatuses() {
   const flows = [...flowsByCheckout.entries()]
     .filter(([name]) => checkoutNames.has(name))
     .map(([, flow]) => flow);
-  await Promise.allSettled(flows.map((flow) => syncLinearStatus(flow)));
+  for (const flow of flows) {
+    try {
+      await syncLinearStatus(flow);
+    } catch (error) {
+      if (error instanceof LinearUnavailableError) return;
+      throw error;
+    }
+  }
 }
 
 function checkoutPathForName(name: string) {
@@ -521,7 +619,7 @@ function updateFlow(id: string, fields: Partial<Flow>) {
     now(),
     id,
   );
-  broadcast("flows", listFlows());
+  broadcast("flows", listClientFlows());
 }
 
 function repairFlowCheckoutPath(flow: Flow) {
@@ -544,6 +642,16 @@ function flowStatusAgeMs(flow: Flow, nowMs = Date.now()) {
 }
 
 function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
+  const shellRuntime = shellProcesses.get(flow.id);
+  if (shellRuntime) {
+    const shellStatus = shellRuntime.stopping ? "interrupting" : "running";
+    if (flow.agentStatus !== shellStatus) {
+      updateFlow(flow.id, { agentStatus: shellStatus });
+      return getFlow(flow.id) ?? { ...flow, agentStatus: shellStatus };
+    }
+    return flow;
+  }
+
   if (flow.agentStatus !== "running" && flow.agentStatus !== "interrupting") return flow;
 
   const runtime = agentProcesses.get(flow.id);
@@ -603,7 +711,7 @@ function tomlBasicString(value: string) {
 }
 
 function ensureCodexProjectTrusted(projectPath: string) {
-  const codexEnv = parseEnv(readEnvFile());
+  const codexEnv = parseEnv(readEnvContents());
   const codexHome = codexEnv.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");
   const configPath = join(codexHome, "config.toml");
   mkdirSync(codexHome, { recursive: true });
@@ -633,6 +741,10 @@ function codexThreadSettingKey(flowId: string) {
   return `codexThread:${flowId}`;
 }
 
+function gitCommandLabel(args: string[]) {
+  return `git ${args[0] ?? ""}`.trim();
+}
+
 function runGit(args: string[], cwd = rootDir) {
   const result = Bun.spawnSync({
     cmd: ["git", ...args],
@@ -644,7 +756,8 @@ function runGit(args: string[], cwd = rootDir) {
   const stdout = result.stdout.toString().trim();
   const stderr = result.stderr.toString().trim();
   if (result.exitCode !== 0) {
-    throw new Error(stderr || stdout || `git ${args.join(" ")} failed`);
+    const output = stderr || stdout;
+    throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
   }
   return stdout;
 }
@@ -664,6 +777,43 @@ function linearAuthHeader(apiKey = getSetting("linearApiKey")) {
   return apiKey;
 }
 
+class LinearUnavailableError extends Error {
+  status = 503;
+}
+
+const linearUnavailableBackoffMs = 30_000;
+const linearRequestTimeoutMs = 500_000;
+let linearUnavailableUntil = 0;
+let lastLinearUnavailableWarningAt = 0;
+
+function isLinearNetworkError(error: unknown) {
+  const value = error as { code?: unknown; message?: unknown; path?: unknown };
+  const text = `${String(value?.code || "")} ${String(value?.message || "")} ${String(value?.path || "")}`;
+  return /api\.linear\.app|FailedToOpenSocket|ConnectionRefused|Unable to connect/i.test(text);
+}
+
+function linearBackoffRemainingMs() {
+  return Math.max(0, linearUnavailableUntil - Date.now());
+}
+
+function markLinearUnavailable() {
+  linearUnavailableUntil = Date.now() + linearUnavailableBackoffMs;
+}
+
+function throwIfLinearUnavailable() {
+  const remaining = linearBackoffRemainingMs();
+  if (remaining > 0) {
+    throw new LinearUnavailableError(`Linear is temporarily unreachable. Retrying allowed in ${Math.ceil(remaining / 1000)}s.`);
+  }
+}
+
+function logLinearUnavailable(error: unknown) {
+  const nowMs = Date.now();
+  if (nowMs - lastLinearUnavailableWarningAt < linearUnavailableBackoffMs) return;
+  lastLinearUnavailableWarningAt = nowMs;
+  console.warn(error instanceof Error ? error.message : String(error));
+}
+
 function linearConfigPayload() {
   const hasApiKey = Boolean(getSetting("linearApiKey"));
   return {
@@ -679,15 +829,26 @@ async function linearGraphql<T>(query: string, variables: Record<string, unknown
     throw new Error("Linear is not connected. Add your Linear API key in the top-right Linear configuration.");
   }
 
-  const response = await fetch("https://api.linear.app/graphql", {
-    method: "POST",
-    headers: {
-      authorization,
-      "content-type": "application/json",
-      "public-file-urls-expire-in": "3600",
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  throwIfLinearUnavailable();
+  let response: Response;
+  try {
+    response = await fetch("https://api.linear.app/graphql", {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+        "public-file-urls-expire-in": "3600",
+      },
+      body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(linearRequestTimeoutMs),
+    });
+  } catch (error) {
+    if (isLinearNetworkError(error)) {
+      markLinearUnavailable();
+      throw new LinearUnavailableError("Linear is unreachable. Check your network connection.");
+    }
+    throw error;
+  }
   const body = (await response.json().catch(() => ({}))) as {
     data?: T;
     errors?: { message: string }[];
@@ -721,6 +882,7 @@ async function fetchLinearAttachment(rawUrl: string) {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     },
     redirect: "manual",
+    signal: AbortSignal.timeout(linearRequestTimeoutMs),
   });
 
   if (response.status >= 300 && response.status < 400) {
@@ -801,6 +963,54 @@ async function streamProcessOutput(
   if (remainder) insertLog(flowId, source, remainder);
 }
 
+function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
+  let signaled = false;
+  try {
+    process.kill(-runtime.proc.pid, signal);
+    signaled = true;
+  } catch {
+    // The process may not be a process-group leader, or it may already be gone.
+  }
+  try {
+    runtime.proc.kill(signal);
+    signaled = true;
+  } catch {
+    // The group signal above may already have handled it.
+  }
+  return signaled;
+}
+
+function forgetRuntimeProcess(runtime: RuntimeProcess) {
+  if (runtime.kind === "agent" && agentProcesses.get(runtime.flowId) === runtime) agentProcesses.delete(runtime.flowId);
+  if (runtime.kind === "shell" && shellProcesses.get(runtime.flowId) === runtime) shellProcesses.delete(runtime.flowId);
+  if (runtime.kind === "serve" && serveProcess === runtime) serveProcess = null;
+}
+
+function cleanupFailedRuntimeProcess(runtime: RuntimeProcess, reason: string) {
+  runtime.stopping = true;
+  rejectCodexPending(runtime, new Error(reason));
+  forgetRuntimeProcess(runtime);
+  signalRuntimeProcess(runtime, "SIGTERM");
+  setTimeout(() => {
+    if (runtime.proc.exitCode === null) signalRuntimeProcess(runtime, "SIGKILL");
+  }, 1500);
+}
+
+function scheduleShellInterruptEscalation(flowId: string, runtime: RuntimeProcess) {
+  setTimeout(() => {
+    if (shellProcesses.get(flowId) !== runtime) return;
+    insertLog(flowId, "shell:status", "shell interrupt escalated");
+    signalRuntimeProcess(runtime, "SIGTERM");
+  }, 1500);
+  setTimeout(() => {
+    if (shellProcesses.get(flowId) !== runtime) return;
+    insertLog(flowId, "shell:status", "shell interrupt forced cleanup");
+    signalRuntimeProcess(runtime, "SIGKILL");
+    shellProcesses.delete(flowId);
+    updateFlow(flowId, { agentStatus: "idle" });
+  }, 3500);
+}
+
 function writeCodexMessage(runtime: RuntimeProcess, message: Record<string, unknown>) {
   if (runtime.kind !== "agent") throw new Error("Codex messages can only be sent to agent processes.");
   runtime.proc.stdin?.write(`${JSON.stringify(message)}\n`);
@@ -849,7 +1059,6 @@ function agentTemplateContext(flow: Flow) {
     flowId: flow.id,
     linearIssueId: flow.linearIssueId,
     title: flow.title,
-    stage: flow.stage,
     prUrl: flow.prUrl,
     checkoutPath: flow.checkoutPath,
     flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/meta`,
@@ -1062,22 +1271,27 @@ function isAgentMessageSource(source: string) {
   return source === "agent:message" || source === "agent";
 }
 
-function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
-  if (beforeId <= promptId) return;
+function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
+  if (beforeId <= afterId) return;
 
-  const logs = (logsAfterStmt.all(flowId, promptId) as LogRow[]).filter((log) => log.id < beforeId);
+  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter((log) => log.id < beforeId);
   const traceCount = logs.length;
   if (!traceCount) return;
 
   insertLog(
     flowId,
-    "agent:trace-group",
+    kind === "shell" ? "shell:trace-group" : "agent:trace-group",
     JSON.stringify({
-      afterId: promptId,
+      afterId,
       beforeId,
       count: traceCount,
+      ...(kind ? { kind } : {}),
     }),
   );
+}
+
+function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
+  createTraceGroupBetweenLogs(flowId, promptId, beforeId);
 }
 
 function createTurnTraceGroup(flowId: string, beforeId: number) {
@@ -1252,6 +1466,7 @@ function spawnLoggedProcess(
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
     env: runtimeEnv(flow),
+    detached: true,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -1289,6 +1504,7 @@ async function startCodexAppServer(flow: Flow) {
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: activeFlow.checkoutPath,
     env,
+    detached: true,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -1320,46 +1536,52 @@ async function startCodexAppServer(flow: Flow) {
     insertLog(activeFlow.id, "agent:status", `app-server exited with code ${code}`);
   });
 
-  await sendCodexRequest(runtime, "initialize", {
-    clientInfo: {
-      name: "turbopump",
-      title: "Turbopump",
-      version: "0.1.0",
-    },
-    capabilities: {
-      experimentalApi: true,
-    },
-  });
-  sendCodexNotification(runtime, "initialized");
+  try {
+    await sendCodexRequest(runtime, "initialize", {
+      clientInfo: {
+        name: "turbopump",
+        title: "Turbopump",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+      },
+    });
+    sendCodexNotification(runtime, "initialized");
 
-  const savedThreadId = getSetting(codexThreadSettingKey(activeFlow.id));
-  let threadResponse: unknown;
-  if (savedThreadId) {
-    try {
-      threadResponse = await sendCodexRequest(runtime, "thread/resume", {
-        ...codexThreadResumeParams(activeFlow, savedThreadId),
-      });
-    } catch (error) {
-      insertLog(activeFlow.id, "agent:status", `could not resume Codex thread ${savedThreadId}: ${String(error)}`);
+    const savedThreadId = getSetting(codexThreadSettingKey(activeFlow.id));
+    let threadResponse: unknown;
+    if (savedThreadId) {
+      try {
+        threadResponse = await sendCodexRequest(runtime, "thread/resume", {
+          ...codexThreadResumeParams(activeFlow, savedThreadId),
+        });
+      } catch (error) {
+        insertLog(activeFlow.id, "agent:status", `could not resume Codex thread ${savedThreadId}: ${String(error)}`);
+      }
     }
-  }
-  if (!threadResponse) {
-    threadResponse = await sendCodexRequest(runtime, "thread/start", codexThreadParams(activeFlow));
-  }
+    if (!threadResponse) {
+      threadResponse = await sendCodexRequest(runtime, "thread/start", codexThreadParams(activeFlow));
+    }
 
-  const threadPayload = threadResponse as {
-    thread?: { id?: string };
-    model?: string;
-    reasoningEffort?: string | null;
-    serviceTier?: string | null;
-  };
-  const thread = threadPayload.thread;
-  if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
-  runtime.threadId = thread.id;
-  setSetting(codexThreadSettingKey(activeFlow.id), thread.id);
-  updateFlow(activeFlow.id, { ...codexThreadMetadata(threadPayload), ...configuredAgentMetadata(activeFlow) });
-  insertLog(activeFlow.id, "agent:status", `Codex thread ${thread.id} ready`);
-  return runtime;
+    const threadPayload = threadResponse as {
+      thread?: { id?: string };
+      model?: string;
+      reasoningEffort?: string | null;
+      serviceTier?: string | null;
+    };
+    const thread = threadPayload.thread;
+    if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
+    runtime.threadId = thread.id;
+    setSetting(codexThreadSettingKey(activeFlow.id), thread.id);
+    updateFlow(activeFlow.id, { ...codexThreadMetadata(threadPayload), ...configuredAgentMetadata(activeFlow) });
+    insertLog(activeFlow.id, "agent:status", `Codex thread ${thread.id} ready`);
+    return runtime;
+  } catch (error) {
+    insertLog(activeFlow.id, "agent:status", `cleaning up failed app-server startup: ${String(error)}`);
+    cleanupFailedRuntimeProcess(runtime, `codex app-server startup failed: ${String(error)}`);
+    throw error;
+  }
 }
 
 async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: string) {
@@ -1393,6 +1615,27 @@ function slashCommandArgs(message: string) {
   return trimmed.slice(firstSpace).trim();
 }
 
+function reviewPromptForSlashCommand(message: string) {
+  const [preset = "", ...rest] = slashCommandArgs(message).split(/\s+/);
+  const detail = rest.join(" ").trim();
+  if (preset === "base") {
+    const base = detail ? ` against base branch/ref ${detail}` : " against the base branch";
+    return `Review the current changes${base}. Treat this as a PR-style review. ${reviewFindingInstructions}`;
+  }
+  if (preset === "uncommitted") {
+    return `Review the uncommitted changes in the working tree. ${reviewFindingInstructions}`;
+  }
+  if (preset === "commit") {
+    const target = detail ? ` ${detail}` : "";
+    return `Review commit${target}. If no commit ref is specified, ask the user which commit to review. ${reviewFindingInstructions}`;
+  }
+  if (preset === "custom") {
+    if (!detail) return "Ask the user for custom review instructions before reviewing.";
+    return `Review the current changes using these custom review instructions:\n\n${detail}\n\n${reviewFindingInstructions}`;
+  }
+  throw new Error("Usage: /review base [branch]|uncommitted|commit [ref]|custom [instructions]");
+}
+
 async function ensureCodexRuntime(flow: Flow) {
   return agentProcesses.get(flow.id) ?? (await startCodexAppServer(flow));
 }
@@ -1423,11 +1666,36 @@ async function compactCodexThread(runtime: RuntimeProcess, flow: Flow) {
   await sendCodexRequest(runtime, "thread/compact/start", { threadId: runtime.threadId });
 }
 
+async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMessage: string) {
+  updateFlow(flow.id, { agentStatus: "running" });
+  const updated = getFlow(flow.id);
+  if (!updated) throw new Error("Flow disappeared while starting agent.");
+
+  const existingRuntime = agentProcesses.get(flow.id);
+  const isSteerMessage = Boolean(existingRuntime?.activeTurnId);
+  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
+  let runtime: RuntimeProcess | undefined;
+  let createdRuntime = false;
+  try {
+    runtime = existingRuntime;
+    if (!runtime) {
+      runtime = await startCodexAppServer(updated);
+      createdRuntime = true;
+    }
+    await sendAgentTurn(runtime, updated, agentMessage);
+  } catch (error) {
+    if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
+    updateFlow(flow.id, { agentStatus: "failed" });
+    insertLog(flow.id, "agent:error", `${String(error)}\n`);
+    throw error;
+  }
+}
+
 async function handleSlashCommand(flow: Flow, message: string) {
   flow = repairFlowCheckoutPath(flow);
   const command = parseSlashCommand(message);
   if (!command) return false;
-  insertLog(flow.id, "user", `${message.trim()}\n`);
+  const userLogId = insertLog(flow.id, "user", `${message.trim()}\n`);
 
   if (command === "/fast") {
     const serviceTier = flow.agentServiceTier === "fast" ? "" : "fast";
@@ -1447,6 +1715,10 @@ async function handleSlashCommand(flow: Flow, message: string) {
     if (!agentModels.has(model)) throw new Error("Usage: /model gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2");
     updateFlow(flow.id, { agentModel: model });
     insertLog(flow.id, "agent:status", `model set to ${model}`);
+    return true;
+  }
+  if (command === "/review") {
+    await startAgentTurnAfterUserLog(flow, userLogId, reviewPromptForSlashCommand(message));
     return true;
   }
 
@@ -1476,18 +1748,88 @@ async function startAgent(flow: Flow, userMessage = "") {
   const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);
   const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\n`) : 0;
   if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
+  let runtime: RuntimeProcess | undefined;
+  let createdRuntime = false;
   try {
-    const runtime = existingRuntime ?? (await startCodexAppServer(updated));
+    runtime = existingRuntime;
+    if (!runtime) {
+      runtime = await startCodexAppServer(updated);
+      createdRuntime = true;
+    }
     if (!message) return;
     await sendAgentTurn(runtime, updated, userMessage);
   } catch (error) {
+    if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
     updateFlow(flow.id, { agentStatus: "failed" });
     insertLog(flow.id, "agent:error", `${String(error)}\n`);
     throw error;
   }
 }
 
+function startShellCommand(flow: Flow, userCommand: string) {
+  flow = repairFlowCheckoutPath(flow);
+  const command = userCommand.trim();
+  if (!command) throw new Error("Type a shell command after $.");
+  if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");
+
+  const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
+    cwd: flow.checkoutPath,
+    env: shellRuntimeEnv(flow),
+    detached: true,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const runtime: RuntimeProcess = { flowId: flow.id, kind: "shell", proc, command };
+  shellProcesses.set(flow.id, runtime);
+  updateFlow(flow.id, { agentStatus: "running" });
+  const commandLogId = insertLog(flow.id, "shell:command", command);
+
+  const stdoutDone = streamProcessOutput(flow.id, "shell:output", proc.stdout).catch((error) =>
+    insertLog(flow.id, "shell:stderr", `stdout read failed: ${String(error)}\n`),
+  );
+  const stderrDone = streamProcessOutput(flow.id, "shell:stderr", proc.stderr).catch((error) =>
+    insertLog(flow.id, "shell:stderr", `stderr read failed: ${String(error)}\n`),
+  );
+  void Promise.all([stdoutDone, stderrDone]);
+
+  void (async () => {
+    try {
+      const code = await proc.exited;
+      if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
+      await Promise.all([stdoutDone, stderrDone]);
+      const resultLogId = insertLog(
+        flow.id,
+        "shell:result",
+        `${code === 0 ? "completed" : runtime.stopping ? "interrupted" : "failed"} exit ${code}`,
+      );
+      createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");
+      updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
+    } catch (error) {
+      if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
+      insertLog(flow.id, "shell:stderr", `shell command failed: ${String(error)}\n`);
+      updateFlow(flow.id, { agentStatus: "failed" });
+    }
+  })();
+}
+
+function interruptShellCommand(flowId: string) {
+  const runtime = shellProcesses.get(flowId);
+  if (!runtime) return false;
+  insertLog(flowId, "shell:status", "shell interrupt requested");
+  runtime.stopping = true;
+  try {
+    runtime.proc.stdin?.write("\x03");
+  } catch {
+    // Some commands close stdin before exiting; SIGINT below is the fallback.
+  }
+  signalRuntimeProcess(runtime, "SIGINT");
+  scheduleShellInterruptEscalation(flowId, runtime);
+  return true;
+}
+
 async function interruptAgent(flowId: string) {
+  if (interruptShellCommand(flowId)) return;
   const runtime = agentProcesses.get(flowId);
   if (!runtime) return;
   if (!runtime.threadId || !runtime.activeTurnId) {
@@ -1503,14 +1845,25 @@ async function interruptAgent(flowId: string) {
   });
 }
 
+function stopIdleAgentRuntimesForEnvUpdate() {
+  for (const runtime of agentProcesses.values()) {
+    if (runtime.activeTurnId) continue;
+    runtime.stopping = true;
+    agentProcesses.delete(runtime.flowId);
+    signalRuntimeProcess(runtime, "SIGTERM");
+    updateFlow(runtime.flowId, { agentStatus: "idle" });
+    insertLog(runtime.flowId, "agent:status", "agent environment updated");
+  }
+}
+
 function stopServe() {
   if (!serveProcess) return;
   const previous = serveProcess;
   serveProcess = null;
-  previous.proc.kill();
+  signalRuntimeProcess(previous, "SIGTERM");
   db.query("update flows set serving = 0").run();
   insertLog(previous.flowId, "serve", "\n[serve stopped by Turbopump]\n");
-  broadcast("flows", listFlows());
+  broadcast("flows", listClientFlows());
 }
 
 function startServe(flow: Flow) {
@@ -1590,6 +1943,7 @@ async function syncLinearStatus(flow: Flow) {
       linearStatus: issue.state?.name || "",
     });
   } catch (error) {
+    if (error instanceof LinearUnavailableError) throw error;
     insertLog(flow.id, "linear", `[linear sync failed] ${String(error)}\n`);
   }
 }
@@ -1695,29 +2049,90 @@ async function listAssignedLinearIssues(apiKey?: string) {
   };
 }
 
-function getDiff(flow: Flow) {
+async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   try {
     flow = repairFlowCheckoutPath(flow);
   } catch (error) {
-    return { status: "", stat: "", names: "", patch: String(error) };
+    return { status: "", stat: "", names: "", patch: String(error), count: 0, additions: 0, deletions: 0, baseRef: "", files: [] };
   }
-  const run = (args: string[]) => {
-    const result = Bun.spawnSync({
+  const run = async (args: string[], options: { trim?: boolean } = {}) => {
+    const result = Bun.spawn({
       cmd: ["git", ...args],
       cwd: flow.checkoutPath,
       stdout: "pipe",
       stderr: "pipe",
       env: process.env,
     });
-    return result.exitCode === 0
-      ? result.stdout.toString()
-      : result.stderr.toString() || result.stdout.toString();
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(result.stdout).text(),
+      new Response(result.stderr).text(),
+      result.exited,
+    ]);
+    const text = exitCode === 0 ? stdout : stderr || stdout;
+    return {
+      ok: exitCode === 0,
+      text: options.trim === false ? text : text.trim(),
+    };
   };
+
+  const remoteHead = await run(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+  const baseRefCandidates = [
+    remoteHead.ok ? remoteHead.text : "",
+    "origin/main",
+    "origin/master",
+    flow.baseSha,
+  ].filter(Boolean);
+  let baseRef = flow.baseSha;
+  for (const candidate of baseRefCandidates) {
+    const mergeBase = await run(["merge-base", "HEAD", candidate]);
+    if (mergeBase.ok && mergeBase.text) {
+      baseRef = mergeBase.text;
+      break;
+    }
+  }
+
+  const namesResult = await run(["diff", "--name-only", "-z", baseRef], { trim: false });
+  const numstatResult = await run(["diff", "--numstat", baseRef], { trim: false });
+  const names = namesResult.ok ? namesResult.text : "";
+  let additions = 0;
+  let deletions = 0;
+  const files: DiffFile[] = [];
+  if (numstatResult.ok) {
+    for (const line of numstatResult.text.split("\n")) {
+      const [added, deleted] = line.split("\t");
+      const path = line.split("\t").slice(2).join("\t").trim();
+      const addedCount = Number(added);
+      const deletedCount = Number(deleted);
+      if (Number.isFinite(addedCount)) additions += addedCount;
+      if (Number.isFinite(deletedCount)) deletions += deletedCount;
+      if (path) {
+        files.push({
+          path,
+          additions: Number.isFinite(addedCount) ? addedCount : null,
+          deletions: Number.isFinite(deletedCount) ? deletedCount : null,
+        });
+      }
+    }
+  }
+  const diff = {
+    status: names.replaceAll("\0", "\n").trim(),
+    names,
+    count: names.split("\0").filter(Boolean).length,
+    additions,
+    deletions,
+    baseRef,
+    files,
+  };
+  if (!options.patch) return { ...diff, stat: "", patch: "" };
+  const combinedResult = await run(["diff", "--find-renames", "--stat", "--patch", baseRef], { trim: false });
+  const combined = combinedResult.text;
+  const patchStart = combined.indexOf("diff --git ");
+  const stat = patchStart >= 0 ? combined.slice(0, patchStart).trim() : "";
+  const patch = patchStart >= 0 ? combined.slice(patchStart) : combined;
   return {
-    status: run(["status", "--short"]),
-    stat: run(["diff", "--stat", flow.baseSha]),
-    names: run(["diff", "--name-status", flow.baseSha]),
-    patch: run(["diff", "--find-renames", flow.baseSha]),
+    ...diff,
+    stat,
+    patch,
   };
 }
 
@@ -1738,7 +2153,7 @@ async function handleApi(request: Request, url: URL) {
         developerInstructions: getAgentDeveloperInstructionsTemplate(),
         defaultDeveloperInstructions: defaultAgentDeveloperInstructions,
       },
-      flows: listFlows(),
+      flows: listClientFlows(),
     });
   }
 
@@ -1781,13 +2196,14 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/env" && request.method === "GET") {
-    return json({ contents: readEnvFile() });
+    return json({ contents: readEnvContents() });
   }
 
   if (url.pathname === "/api/env" && request.method === "PUT") {
     const body = await readJson<{ contents: string }>(request);
-    writeFileSync(envPath, body.contents ?? "", "utf8");
+    writeEnvContents(body.contents ?? "");
     setSetting("envVersion", String(Number(getSetting("envVersion", "0")) + 1));
+    stopIdleAgentRuntimesForEnvUpdate();
     const activeServe = serveProcess ? getFlow(serveProcess.flowId) : null;
     if (activeServe) startServe(activeServe);
     return json({ ok: true, restartedServe: Boolean(activeServe) });
@@ -1827,7 +2243,7 @@ async function handleApi(request: Request, url: URL) {
     const body = await readJson<{ issueId?: string; stateId?: string }>(request);
     const result = await updateLinearIssueStatus(decodeURIComponent(parts[3]), body.issueId || "", body.stateId || "");
     if (result.flow) {
-      broadcast("flows", listFlows());
+      broadcast("flows", listClientFlows());
       broadcast("checkouts", listCheckouts());
     }
     return json({ ok: true, ...result });
@@ -1838,7 +2254,7 @@ async function handleApi(request: Request, url: URL) {
     const parsed = parseLinearIssue(body.issue || "");
     if (!parsed.identifier) return json({ error: "Linear issue URL or key is required" }, { status: 400 });
     const existing = getFlowByIssue(parsed.identifier);
-    if (existing) return json({ ok: true, alreadyExists: true, flow: existing });
+    if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
 
     const id = crypto.randomUUID();
     const linearIssue = await fetchLinearIssue(parsed.identifier).catch(() => null);
@@ -1865,13 +2281,12 @@ async function handleApi(request: Request, url: URL) {
       createdAt,
     );
     const flow = getFlow(id);
-    if (flow) {
-      insertLog(id, "flow", `Created checkout ${target}\nBranch ${branch}\n`);
-      await syncLinearStatus(flow);
-    }
-    broadcast("flows", listFlows());
+    if (!flow) return json({ error: "Failed to create flow" }, { status: 500 });
+    insertLog(id, "flow", `Created checkout ${target}\nBranch ${branch}\n`);
+    await syncLinearStatus(flow);
+    broadcast("flows", listClientFlows());
     broadcast("checkouts", listCheckouts());
-    return json({ ok: true, flow: getFlow(id) });
+    return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
   }
 
   if (parts[0] === "api" && parts[1] === "flows" && parts[2]) {
@@ -1880,7 +2295,7 @@ async function handleApi(request: Request, url: URL) {
     if (!flow) return json({ error: "Flow not found" }, { status: 404 });
 
     if (parts.length === 3 && request.method === "GET") {
-      return json({ flow });
+      return json({ flow: clientFlow(flow) });
     }
 
     if (parts[3] === "logs" && request.method === "GET") {
@@ -1906,6 +2321,11 @@ async function handleApi(request: Request, url: URL) {
       }
     }
 
+    if (parts[3] === "shell-output" && parts[4] === "clear" && request.method === "POST") {
+      const clearAfterLogId = setShellOutputClearAfterLogId(id, latestLogId(id));
+      return json({ ok: true, clearAfterLogId, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
     if (parts[3] === "context-images" && request.method === "POST") {
       try {
         const images = await saveFlowContextImages(repairFlowCheckoutPath(flow), await request.formData());
@@ -1916,7 +2336,7 @@ async function handleApi(request: Request, url: URL) {
     }
 
     if (parts[3] === "diff" && request.method === "GET") {
-      return json(getDiff(flow));
+      return json(await getDiff(flow, { patch: url.searchParams.get("patch") === "1" }));
     }
 
     if ((parts[3] === "meta" || parts[3] === "stage") && request.method === "POST") {
@@ -1934,13 +2354,13 @@ async function handleApi(request: Request, url: URL) {
       if (fields.prUrl !== undefined) {
         insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
       }
-      return json({ ok: true, flow: getFlow(id) });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "agent" && parts[4] === "status" && request.method === "GET") {
       const reconciled = reconcileAgentHeartbeat(flow);
       return json({
-        flow: reconciled,
+        flow: clientFlow(reconciled),
         turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId),
       });
     }
@@ -1967,6 +2387,17 @@ async function handleApi(request: Request, url: URL) {
       return json({ ok: true });
     }
 
+    if (parts[3] === "command" && parts[4] === "interrupt" && request.method === "POST") {
+      interruptShellCommand(id);
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
+    if (parts[3] === "command" && request.method === "POST") {
+      const body = await readJson<{ command: string }>(request);
+      startShellCommand(flow, body.command);
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
     if (parts[3] === "serve" && request.method === "POST") {
       startServe(flow);
       return json({ ok: true });
@@ -1979,9 +2410,9 @@ async function handleApi(request: Request, url: URL) {
 
     if (parts[3] === "linear-sync" && request.method === "POST") {
       await syncLinearStatus(flow);
-      broadcast("flows", listFlows());
+      broadcast("flows", listClientFlows());
       broadcast("checkouts", listCheckouts());
-      return json({ ok: true, flow: getFlow(id) });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
   }
 
@@ -1996,6 +2427,19 @@ async function handleApi(request: Request, url: URL) {
 
 function serveStatic(url: URL) {
   const path = url.pathname === "/" ? "/index.html" : url.pathname;
+  if (path.startsWith("/vendor/prismjs/")) {
+    const vendorPath = path.slice("/vendor/prismjs/".length);
+    const resolvedVendor = resolve(prismDir, `.${vendorPath.startsWith("/") ? vendorPath : `/${vendorPath}`}`);
+    if (!resolvedVendor.startsWith(prismDir) || !resolvedVendor.endsWith(".js")) {
+      return new Response("Not found", { status: 404 });
+    }
+    const file = Bun.file(resolvedVendor);
+    return file.exists().then((exists) => {
+      if (!exists) return new Response("Not found", { status: 404 });
+      return new Response(file, { headers: { "content-type": "text/javascript; charset=utf-8" } });
+    });
+  }
+
   const resolved = resolve(publicDir, `.${path}`);
   if (!resolved.startsWith(publicDir)) return new Response("Not found", { status: 404 });
   const file = Bun.file(resolved);
@@ -2017,8 +2461,15 @@ Bun.serve({
       if (url.pathname.startsWith("/api/")) return await handleApi(request, url);
       return await serveStatic(url);
     } catch (error) {
-      console.error(error);
-      return json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+      if (error instanceof LinearUnavailableError) {
+        logLinearUnavailable(error);
+      } else {
+        console.error(error);
+      }
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: error instanceof LinearUnavailableError ? error.status : 500 },
+      );
     }
   },
   websocket: {
