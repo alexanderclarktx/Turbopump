@@ -1494,7 +1494,7 @@ function finishCodexCompaction(runtime: RuntimeProcess, params: Record<string, u
   runtime.compactionPromptLogId = undefined;
   const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", "context compacted");
   deleteQueuedAgentMessagePlaceholders(runtime);
-  if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId, "compact");
+  if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId + 1, "compact");
   updateFlow(runtime.flowId, { agentStatus: "idle" });
   void startNextQueuedAgentMessage(runtime);
 }

@@ -754,9 +754,12 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-markdown a,\n.terminal-entry-body a");
     expect(css).toContain("color: #3b82f6;\n  font-weight: 700;\n  overflow-wrap: anywhere;\n  text-decoration: none;");
     expect(css).toContain("body.theme-dark .linear-markdown a,\nbody.theme-dark .terminal-entry-body a {\n  color: #93c5fd;\n}");
-    expect(css).toContain(".linear-markdown table {\n  display: block;");
-    expect(css).toContain(".linear-markdown th,\n.linear-markdown td");
-    expect(css).toContain("body.theme-dark .linear-markdown th");
+    expect(css).toContain(".linear-markdown table,\n.terminal-entry-body table {\n  display: block;");
+    expect(css).toContain("  border: 1px solid var(--line);\n  border-collapse: separate;\n  border-spacing: 0;\n  border-radius: 4px;");
+    expect(css).toContain(".linear-markdown th,\n.linear-markdown td,\n.terminal-entry-body th,\n.terminal-entry-body td");
+    expect(css).toContain("  min-width: 0;\n  border-right: 1px solid var(--line);\n  border-bottom: 1px solid var(--line);\n  padding: 4px 8px;");
+    expect(css).toContain("body.theme-dark .linear-markdown th,\nbody.theme-dark .terminal-entry-body th");
+    expect(css).toContain(".terminal-entry-body td {\n  font-size: 11px;\n}");
     expect(css).toContain(".linear-markdown ul,\n.linear-markdown ol {\n  margin: 4px 0 4px 18px;");
     expect(css).toContain(".terminal-entry-body ul,\n.terminal-entry-body ol {\n  margin: 4px 0;\n  padding-left: 3ch;");
     expect(css).toContain(".terminal-entry-body ul {\n  padding-left: 2ch;");
@@ -1679,7 +1682,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", "context compacted");');
     expect(server).toContain("deleteQueuedAgentMessagePlaceholders(runtime);");
     expect(server).toContain(
-      'if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId, "compact");',
+      'if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId + 1, "compact");',
     );
     expect(turnCompletedHandler).toContain('if (runtime.compacting && turn?.status !== "failed") {');
     expect(turnCompletedHandler).toContain("finishCodexCompaction(runtime, params);");
