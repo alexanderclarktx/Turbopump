@@ -2,7 +2,6 @@ import { Database } from "bun:sqlite";
 import {
   appendFileSync,
   copyFileSync,
-  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -90,9 +89,10 @@ const rootDir = process.cwd();
 const agentHeartbeatSweepIntervalMs = 5000;
 const agentRuntimeStartGraceMs = 30000;
 const agentRuntimeStaleMs = 120000;
+const warmedRepoPullIntervalMs = 60000;
 const dataDir = join(rootDir, ".flow");
 const legacyDataDir = join(rootDir, `.${"water"}${"flow"}`);
-const checkoutDir = join(dataDir, "checkouts");
+const worktreeDir = join(dataDir, "worktrees");
 const repoCheckoutDir = join(dataDir, "repo");
 const publicDir = join(rootDir, "public");
 const prismDir = join(rootDir, "node_modules", "prismjs");
@@ -109,7 +109,7 @@ const reviewFindingInstructions =
 const defaultAgentDeveloperInstructions = [
   "You are running inside Turbopump, a local coding-agent workflow system.",
   "",
-  "Work only in the checkout directory supplied as the current working directory.",
+  "Work only in the worktree directory supplied as the current working directory.",
   "",
   "Update flow metadata when appropriate by POSTing JSON to:",
   "{flowMetaApiUrl}",
@@ -119,7 +119,7 @@ const defaultAgentDeveloperInstructions = [
   "Flow ID: {flowId}",
   "Linear issue: {linearIssueId}",
   "Issue title: {title}",
-  "Checkout path: {checkoutPath}",
+  "Worktree path: {checkoutPath}",
   "",
   "working guidelines:",
   "- use short PR titles",
@@ -127,7 +127,7 @@ const defaultAgentDeveloperInstructions = [
 ].join("\n");
 
 mkdirSync(dataDir, { recursive: true });
-mkdirSync(checkoutDir, { recursive: true });
+mkdirSync(worktreeDir, { recursive: true });
 if (!existsSync(dbPath) && existsSync(legacyDbPath)) copyFileSync(legacyDbPath, dbPath);
 
 const db = new Database(dbPath);
@@ -202,6 +202,9 @@ tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWind
 const clients = new Set<ServerWebSocket>();
 const agentProcesses = new Map<string, RuntimeProcess>();
 const shellProcesses = new Map<string, RuntimeProcess>();
+const linearIssueCache = new Map<string, LinearIssue>();
+const deletedFlowIds = new Set<string>();
+let warmedRepoPulling = false;
 let serveProcess: RuntimeProcess | null = null;
 
 type RuntimeProcess = {
@@ -250,6 +253,7 @@ const insertLogStmt = db.query(`
 `);
 const logByIdStmt = db.query("select * from logs where id = ?");
 const deleteLogByIdStmt = db.query("delete from logs where id = ?");
+const deleteLogsByFlowIdStmt = db.query("delete from logs where flowId = ?");
 const latestUserLogStmt = db.query("select id from logs where flowId = ? and source = 'user' order by id desc limit 1");
 const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
@@ -264,6 +268,9 @@ const setShellOutputClearAfterLogIdStmt = db.query(`
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
+const deleteFlowByIdStmt = db.query("delete from flows where id = ?");
+const deleteShellOutputStateByFlowIdStmt = db.query("delete from shell_output_state where flowId = ?");
+const deleteSettingByKeyStmt = db.query("delete from settings where key = ?");
 const latestPromptTimestampStmt = db.query(
   "select createdAt from logs where flowId = ? and source = 'user' order by id desc limit 1",
 );
@@ -364,6 +371,7 @@ function broadcast(event: string, payload: unknown) {
 }
 
 function insertLog(flowId: string, source: string, message: string) {
+  if (deletedFlowIds.has(flowId)) return 0;
   const createdAt = now();
   const result = insertLogStmt.run(flowId, source, message, createdAt) as {
     lastInsertRowid?: number | bigint;
@@ -463,15 +471,15 @@ function listClientFlows() {
   return listFlows().map((flow) => clientFlow(flow));
 }
 
-function checkoutNameFromPath(path: string) {
+function worktreeNameFromPath(path: string) {
   return basename(resolve(path));
 }
 
-function checkoutFlowMap() {
+function worktreeFlowMap() {
   const map = new Map<string, Flow>();
   for (const flow of listFlows()) {
     if (!flow.checkoutPath) continue;
-    map.set(checkoutNameFromPath(flow.checkoutPath), flow);
+    map.set(worktreeNameFromPath(flow.checkoutPath), flow);
   }
   return map;
 }
@@ -481,14 +489,23 @@ function latestPromptTimestamp(flowId: string) {
   return row?.createdAt ?? "";
 }
 
-function listCheckouts() {
-  const flowsByCheckout = checkoutFlowMap();
-  return readdirSync(checkoutDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+function listWorktreeDirectories() {
+  if (!existsSync(worktreeDir)) return [];
+  const directories: Array<{ name: string; path: string }> = [];
+  for (const entry of readdirSync(worktreeDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    directories.push({ name: entry.name, path: join(worktreeDir, entry.name) });
+  }
+  return directories;
+}
+
+function listWorktrees() {
+  const flowsByWorktree = worktreeFlowMap();
+  return listWorktreeDirectories()
     .map((entry) => {
-      const path = join(checkoutDir, entry.name);
+      const path = entry.path;
       const stats = statSync(path);
-      const flow = flowsByCheckout.get(entry.name) ?? null;
+      const flow = flowsByWorktree.get(entry.name) ?? null;
       const createdAtMs = stats.birthtimeMs || stats.ctimeMs || stats.mtimeMs;
       return {
         name: entry.name,
@@ -509,17 +526,13 @@ function listCheckouts() {
     });
 }
 
-async function refreshCheckoutLinearStatuses() {
+async function refreshWorktreeLinearStatuses() {
   if (!linearAuthHeader()) return;
   if (linearBackoffRemainingMs() > 0) return;
-  const flowsByCheckout = checkoutFlowMap();
-  const checkoutNames = new Set(
-    readdirSync(checkoutDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name),
-  );
-  const flows = [...flowsByCheckout.entries()]
-    .filter(([name]) => checkoutNames.has(name))
+  const flowsByWorktree = worktreeFlowMap();
+  const worktreeNames = new Set(listWorktreeDirectories().map((entry) => entry.name));
+  const flows = [...flowsByWorktree.entries()]
+    .filter(([name]) => worktreeNames.has(name))
     .map(([, flow]) => flow);
   for (const flow of flows) {
     try {
@@ -531,23 +544,70 @@ async function refreshCheckoutLinearStatuses() {
   }
 }
 
-function checkoutPathForName(name: string) {
+function worktreePathForName(name: string) {
   const safeName = basename(name);
   if (!safeName || safeName !== name || safeName === "." || safeName === "..") {
-    throw new Error("Invalid checkout name.");
+    throw new Error("Invalid worktree name.");
   }
-  const target = resolve(checkoutDir, safeName);
-  const checkoutRoot = resolve(checkoutDir);
-  if (!target.startsWith(`${checkoutRoot}/`)) throw new Error("Invalid checkout path.");
+  const target = resolve(worktreeDir, safeName);
+  const worktreeRoot = resolve(worktreeDir);
+  if (!target.startsWith(`${worktreeRoot}/`)) throw new Error("Invalid worktree path.");
   return target;
 }
 
-function deleteCheckout(name: string) {
-  const target = checkoutPathForName(name);
-  if (!existsSync(target)) throw new Error("Checkout not found.");
+function deleteWorktree(name: string) {
+  const target = worktreePathForName(name);
+  if (!existsSync(target)) throw new Error("Worktree not found.");
   const stats = statSync(target);
-  if (!stats.isDirectory()) throw new Error("Checkout is not a directory.");
-  rmSync(target, { recursive: true, force: true });
+  if (!stats.isDirectory()) throw new Error("Worktree is not a directory.");
+  const flow = worktreeFlowMap().get(name) ?? null;
+  if (flow) stopFlowRuntimesForDelete(flow.id);
+  if (existsSync(repoCheckoutDir) && isGitWorktree(target)) {
+    runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
+    runGit(["worktree", "prune"], repoCheckoutDir);
+  } else {
+    rmSync(target, { recursive: true, force: true });
+  }
+  if (flow) deleteFlowTraceData(flow.id);
+  return { deletedFlowId: flow?.id ?? "" };
+}
+
+function isGitWorktree(path: string) {
+  try {
+    return statSync(join(path, ".git")).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function stopFlowRuntimesForDelete(flowId: string) {
+  const shellRuntime = shellProcesses.get(flowId);
+  if (shellRuntime) {
+    shellRuntime.stopping = true;
+    shellProcesses.delete(flowId);
+    signalRuntimeProcess(shellRuntime, "SIGTERM");
+  }
+
+  const agentRuntime = agentProcesses.get(flowId);
+  if (agentRuntime) {
+    agentRuntime.stopping = true;
+    agentProcesses.delete(flowId);
+    signalRuntimeProcess(agentRuntime, "SIGTERM");
+  }
+
+  if (serveProcess?.flowId === flowId) {
+    const previous = serveProcess;
+    serveProcess = null;
+    signalRuntimeProcess(previous, "SIGTERM");
+  }
+}
+
+function deleteFlowTraceData(flowId: string) {
+  deletedFlowIds.add(flowId);
+  deleteLogsByFlowIdStmt.run(flowId);
+  deleteShellOutputStateByFlowIdStmt.run(flowId);
+  deleteSettingByKeyStmt.run(codexThreadSettingKey(flowId));
+  deleteFlowByIdStmt.run(flowId);
 }
 
 function safeImageExtension(file: UploadedImage) {
@@ -639,18 +699,29 @@ function updateFlow(id: string, fields: Partial<Flow>) {
   broadcast("flows", listClientFlows());
 }
 
-function repairFlowCheckoutPath(flow: Flow) {
-  if (flow.checkoutPath && existsSync(flow.checkoutPath)) return flow;
+function pathIsInsideDirectory(path: string, directory: string) {
+  const target = resolve(path);
+  const root = resolve(directory);
+  return target.startsWith(`${root}/`);
+}
 
-  const checkoutName = basename(flow.checkoutPath || "");
-  const relocatedPath = checkoutName ? join(checkoutDir, checkoutName) : "";
-  if (relocatedPath && existsSync(relocatedPath)) {
-    updateFlow(flow.id, { checkoutPath: relocatedPath });
-    insertLog(flow.id, "agent:status", `repaired checkout path: ${relocatedPath}`);
-    return getFlow(flow.id) ?? { ...flow, checkoutPath: relocatedPath };
-  }
+function flowHasWorktree(flow: Flow) {
+  return Boolean(flow.checkoutPath && pathIsInsideDirectory(flow.checkoutPath, worktreeDir) && existsSync(flow.checkoutPath));
+}
 
-  throw new Error(`Checkout does not exist: ${flow.checkoutPath}`);
+function assertFlowWorktree(flow: Flow) {
+  if (flowHasWorktree(flow)) return flow;
+  throw new Error(`Worktree does not exist: ${flow.checkoutPath}`);
+}
+
+function ensureFlowWorktree(flow: Flow) {
+  if (flowHasWorktree(flow)) return flow;
+
+  const { target, branch, baseSha } = createWorktree(flow.id, flow.linearIssueId);
+  updateFlow(flow.id, { checkoutPath: target, branchName: branch, baseSha });
+  insertLog(flow.id, "flow", `Created worktree ${branch}\n`);
+  broadcast("checkouts", listWorktrees());
+  return getFlow(flow.id) ?? { ...flow, checkoutPath: target, branchName: branch, baseSha };
 }
 
 function flowStatusAgeMs(flow: Flow, nowMs = Date.now()) {
@@ -802,6 +873,15 @@ function parseLinearIssue(input: string) {
   };
 }
 
+function cacheLinearIssue(issue: LinearIssue | null | undefined) {
+  if (!issue?.identifier) return;
+  linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+}
+
+function cachedLinearIssue(identifier: string) {
+  return linearIssueCache.get(identifier.toUpperCase()) ?? null;
+}
+
 function linearAuthHeader(apiKey = getSetting("linearApiKey")) {
   return apiKey;
 }
@@ -947,31 +1027,62 @@ function safeSlug(value: string) {
 function ensureRepoCheckout(repoUrl: string) {
   if (!existsSync(repoCheckoutDir)) {
     runGit(["clone", repoUrl, repoCheckoutDir]);
+    runGit(["config", "advice.detachedHead", "false"], repoCheckoutDir);
     return;
   }
 
   const configuredUrl = runGit(["remote", "get-url", "origin"], repoCheckoutDir);
   if (configuredUrl !== repoUrl) {
+    const hasExistingWorktrees = listWorktreeDirectories().some((entry) => isGitWorktree(entry.path));
+    if (hasExistingWorktrees) {
+      throw new Error("Configured repo URL changed. Delete existing worktrees before switching repositories.");
+    }
     rmSync(repoCheckoutDir, { recursive: true, force: true });
     runGit(["clone", repoUrl, repoCheckoutDir]);
+    runGit(["config", "advice.detachedHead", "false"], repoCheckoutDir);
     return;
   }
 
-  runGit(["pull", "--ff-only"], repoCheckoutDir);
+  runGit(["worktree", "prune"], repoCheckoutDir);
 }
 
-function createCheckout(flowId: string, issueId: string) {
+function pullWarmedRepo() {
+  if (warmedRepoPulling) return;
+  if (!existsSync(repoCheckoutDir)) return;
+  const repoUrl = getSetting("repoUrl");
+  if (!repoUrl) return;
+  warmedRepoPulling = true;
+  try {
+    const configuredUrl = runGit(["remote", "get-url", "origin"], repoCheckoutDir);
+    if (configuredUrl !== repoUrl) return;
+    runGit(["worktree", "prune"], repoCheckoutDir);
+    runGit(["pull", "--ff-only"], repoCheckoutDir);
+  } catch (error) {
+    console.warn(`warmed repo pull failed: ${String(error)}`);
+  } finally {
+    warmedRepoPulling = false;
+  }
+}
+
+setInterval(pullWarmedRepo, warmedRepoPullIntervalMs);
+
+function createWorktree(flowId: string, issueId: string) {
   const repoUrl = getSetting("repoUrl");
   if (!repoUrl) throw new Error("Configure a repo before creating a flow.");
 
-  const target = join(checkoutDir, `${safeSlug(issueId)}-${flowId.slice(0, 8)}`);
-  if (existsSync(target)) throw new Error(`Checkout already exists: ${target}`);
+  const target = join(worktreeDir, `${safeSlug(issueId)}-${flowId.slice(0, 8)}`);
+  if (existsSync(target)) throw new Error(`Worktree already exists: ${target}`);
 
   ensureRepoCheckout(repoUrl);
-  cpSync(repoCheckoutDir, target, { recursive: true, force: false, errorOnExist: true });
-  const baseSha = runGit(["rev-parse", "HEAD"], target);
-  const branch = `turbo/${safeSlug(issueId)}`;
-  runGit(["checkout", "-b", branch], target);
+  const baseSha = runGit(["rev-parse", "HEAD"], repoCheckoutDir);
+  let branch = `turbo/${safeSlug(issueId)}`;
+  try {
+    runGit(["worktree", "add", "-b", branch, target, baseSha], repoCheckoutDir);
+  } catch (error) {
+    if (!/\balready exists\b|\bis already checked out\b/i.test(String(error))) throw error;
+    branch = `${branch}-${flowId.slice(0, 8)}`;
+    runGit(["worktree", "add", "-b", branch, target, baseSha], repoCheckoutDir);
+  }
   return { target, branch, baseSha };
 }
 
@@ -1354,15 +1465,15 @@ function createCompletedTurnTraceGroup(flowId: string) {
   createTurnTraceGroup(flowId, beforeId);
 }
 
-function checkoutBranchUpdate(flowId: string): Partial<Flow> {
+function worktreeBranchUpdate(flowId: string): Partial<Flow> {
   const existing = getFlow(flowId);
   if (!existing?.checkoutPath) return {};
   try {
-    const flow = repairFlowCheckoutPath(existing);
+    const flow = assertFlowWorktree(existing);
     const branchName = runGit(["rev-parse", "--abbrev-ref", "HEAD"], flow.checkoutPath);
     return branchName && branchName !== flow.branchName ? { branchName } : {};
   } catch (error) {
-    insertLog(flowId, "agent:status", `could not read checkout branch: ${String(error)}`);
+    insertLog(flowId, "agent:status", `could not read worktree branch: ${String(error)}`);
     return {};
   }
 }
@@ -1418,7 +1529,7 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
       runtime.compactionPromptLogId = undefined;
     }
     updateFlow(runtime.flowId, {
-      ...checkoutBranchUpdate(runtime.flowId),
+      ...worktreeBranchUpdate(runtime.flowId),
       agentStatus: turn?.status === "failed" ? "failed" : "idle",
     });
     if (turn?.status !== "failed") void startNextQueuedAgentMessage(runtime);
@@ -1558,13 +1669,13 @@ function spawnLoggedProcess(
 }
 
 async function startCodexAppServer(flow: Flow) {
-  const activeFlow = repairFlowCheckoutPath(flow);
+  const activeFlow = assertFlowWorktree(flow);
   const command = normalizeAgentCommand(getSetting("agentCommand", defaultCodexAppServerCommand));
   const env = runtimeEnv(activeFlow);
   try {
     ensureCodexProjectTrusted(activeFlow.checkoutPath);
   } catch (error) {
-    insertLog(activeFlow.id, "agent:status", `could not trust Codex checkout: ${String(error)}`);
+    insertLog(activeFlow.id, "agent:status", `could not trust Codex worktree: ${String(error)}`);
   }
 
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
@@ -1788,7 +1899,7 @@ async function startNextQueuedAgentMessage(runtime: RuntimeProcess) {
 }
 
 async function handleSlashCommand(flow: Flow, message: string) {
-  flow = repairFlowCheckoutPath(flow);
+  flow = ensureFlowWorktree(flow);
   const command = parseSlashCommand(message);
   if (!command) return false;
   const userLogId = insertLog(flow.id, "user", `${message.trim()}\n`);
@@ -1831,7 +1942,7 @@ async function handleSlashCommand(flow: Flow, message: string) {
 }
 
 async function startAgent(flow: Flow, userMessage = "") {
-  flow = repairFlowCheckoutPath(flow);
+  flow = ensureFlowWorktree(flow);
   const message = userMessage.trim();
   const existingRuntime = agentProcesses.get(flow.id);
   if (message && existingRuntime?.compacting) {
@@ -1874,7 +1985,7 @@ async function startAgent(flow: Flow, userMessage = "") {
 }
 
 function startShellCommand(flow: Flow, userCommand: string) {
-  flow = repairFlowCheckoutPath(flow);
+  flow = ensureFlowWorktree(flow);
   const command = userCommand.trim();
   if (!command) throw new Error("Type a shell command after $.");
   if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");
@@ -2008,7 +2119,9 @@ async function fetchLinearIssue(identifier: string) {
     `,
     { id: identifier },
   );
-  return body.issue ?? null;
+  const issue = body.issue ?? null;
+  cacheLinearIssue(issue);
+  return issue;
 }
 
 async function fetchLinearIssueDetail(identifier: string) {
@@ -2046,7 +2159,9 @@ async function fetchLinearIssueDetail(identifier: string) {
     `,
     { id: identifier },
   );
-  return body.issue ?? null;
+  const issue = body.issue ?? null;
+  cacheLinearIssue(issue);
+  return issue;
 }
 
 async function syncLinearStatus(flow: Flow) {
@@ -2097,6 +2212,7 @@ async function updateLinearIssueStatus(identifier: string, issueId: string, stat
   );
   const issue = data.issueUpdate?.issue;
   if (!data.issueUpdate?.success || !issue) throw new Error("Linear did not update the issue status.");
+  cacheLinearIssue(issue);
 
   const flow = getFlowByIssue(issue.identifier);
   if (flow) {
@@ -2148,6 +2264,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
       }
     }
   `, {}, apiKey);
+  for (const issue of data.viewer.assignedIssues.nodes) cacheLinearIssue(issue);
   const flowsByIssue = new Map(listFlows().map((flow) => [flow.linearIssueId, flow]));
   return {
     viewer: { id: data.viewer.id, name: data.viewer.name },
@@ -2167,7 +2284,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   try {
-    flow = repairFlowCheckoutPath(flow);
+    flow = assertFlowWorktree(flow);
   } catch (error) {
     return { status: "", stat: "", names: "", patch: String(error), count: 0, additions: 0, deletions: 0, baseRef: "", files: [] };
   }
@@ -2274,18 +2391,20 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/checkouts" && request.method === "GET") {
-    await refreshCheckoutLinearStatuses();
-    return json({ checkouts: listCheckouts() });
+    await refreshWorktreeLinearStatuses();
+    return json({ checkouts: listWorktrees() });
   }
 
   if (parts[0] === "api" && parts[1] === "checkouts" && parts[2] && request.method === "DELETE") {
+    let result: { deletedFlowId: string };
     try {
-      deleteCheckout(decodeURIComponent(parts[2]));
+      result = deleteWorktree(decodeURIComponent(parts[2]));
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
     }
-    broadcast("checkouts", listCheckouts());
-    return json({ ok: true, checkouts: listCheckouts() });
+    broadcast("flows", listClientFlows());
+    broadcast("checkouts", listWorktrees());
+    return json({ ok: true, ...result, flows: listClientFlows(), checkouts: listWorktrees() });
   }
 
   if (url.pathname === "/api/repo" && request.method === "POST") {
@@ -2360,21 +2479,27 @@ async function handleApi(request: Request, url: URL) {
     const result = await updateLinearIssueStatus(decodeURIComponent(parts[3]), body.issueId || "", body.stateId || "");
     if (result.flow) {
       broadcast("flows", listClientFlows());
-      broadcast("checkouts", listCheckouts());
+      broadcast("checkouts", listWorktrees());
     }
     return json({ ok: true, ...result });
   }
 
   if (url.pathname === "/api/flows" && request.method === "POST") {
-    const body = await readJson<{ issue: string; title?: string }>(request);
+    const body = await readJson<{
+      issue: string;
+      title?: string;
+      url?: string;
+      linearStatus?: string;
+      state?: { name?: string } | null;
+    }>(request);
     const parsed = parseLinearIssue(body.issue || "");
     if (!parsed.identifier) return json({ error: "Linear issue URL or key is required" }, { status: 400 });
     const existing = getFlowByIssue(parsed.identifier);
     if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
 
     const id = crypto.randomUUID();
-    const linearIssue = await fetchLinearIssue(parsed.identifier).catch(() => null);
-    const { target, branch, baseSha } = createCheckout(id, parsed.identifier);
+    const linearIssue = cachedLinearIssue(parsed.identifier);
+    const { target, branch, baseSha } = createWorktree(id, parsed.identifier);
     const createdAt = now();
     db.query(`
       insert into flows (
@@ -2384,10 +2509,10 @@ async function handleApi(request: Request, url: URL) {
     `).run(
       id,
       parsed.identifier,
-      linearIssue?.url || parsed.url,
+      body.url?.trim() || linearIssue?.url || parsed.url,
       body.title?.trim() || linearIssue?.title || parsed.identifier,
       "planning",
-      linearIssue?.state?.name || "",
+      body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
       target,
       branch,
       baseSha,
@@ -2398,10 +2523,9 @@ async function handleApi(request: Request, url: URL) {
     );
     const flow = getFlow(id);
     if (!flow) return json({ error: "Failed to create flow" }, { status: 500 });
-    insertLog(id, "flow", `Created checkout ${target}\nBranch ${branch}\n`);
-    await syncLinearStatus(flow);
+    insertLog(id, "flow", `Created worktree ${branch}\n`);
     broadcast("flows", listClientFlows());
-    broadcast("checkouts", listCheckouts());
+    broadcast("checkouts", listWorktrees());
     return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
   }
 
@@ -2444,7 +2568,7 @@ async function handleApi(request: Request, url: URL) {
 
     if (parts[3] === "context-images" && request.method === "POST") {
       try {
-        const images = await saveFlowContextImages(repairFlowCheckoutPath(flow), await request.formData());
+        const images = await saveFlowContextImages(assertFlowWorktree(flow), await request.formData());
         return json({ ok: true, images });
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
@@ -2527,7 +2651,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "linear-sync" && request.method === "POST") {
       await syncLinearStatus(flow);
       broadcast("flows", listClientFlows());
-      broadcast("checkouts", listCheckouts());
+      broadcast("checkouts", listWorktrees());
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
   }

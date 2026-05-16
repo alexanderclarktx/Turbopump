@@ -265,9 +265,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("prUrl: flow.prUrl,");
   });
 
-  test("shows checkout cleanup cards in Settings without deleting traces", () => {
+  test("shows worktree cleanup cards in Settings and deletes trace data with the workspace", () => {
     expect(html).toContain('<section class="settings-section checkout-settings">');
-    expect(html).toContain("<span>Checkouts</span>");
+    expect(html).toContain("<span>Worktrees</span>");
     expect(html).toContain('id="checkoutList"');
     expect(app).toContain("checkouts: []");
     expect(app).toContain("checkoutsLoaded: false");
@@ -287,6 +287,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('["Linear", renderLinearStatusIcon(checkout.linearStatus)]');
     expect(app).not.toContain('["Phase", checkout.flowPhase || "No flow"]');
     expect(app).toContain("function deleteCheckout(name)");
+    expect(app).toContain("function clearFlowClientState(flowId)");
+    expect(app).toContain("if (data.flows) setFlows(data.flows);");
+    expect(app).toContain("if (data.checkouts) setCheckouts(data.checkouts);");
     expect(app).toContain("Date.parse(a.lastPromptAt || a.createdAt || 0)");
     expect(app).toContain("deletingCheckoutNames: new Set()");
     expect(app).toContain('spinner.className = "checkout-spinner";');
@@ -303,17 +306,25 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".checkout-spinner");
     expect(css).toContain("@keyframes checkout-spinner");
     expect(css).toContain("pointer-events: none;");
-    expect(server).toContain("function listCheckouts()");
+    expect(server).toContain("function listWorktrees()");
     expect(server).toContain("Date.parse(a.lastPromptAt || a.createdAt || \"\")");
-    expect(server).toContain("async function refreshCheckoutLinearStatuses()");
-    expect(server).toContain("await refreshCheckoutLinearStatuses();");
+    expect(server).toContain("async function refreshWorktreeLinearStatuses()");
+    expect(server).toContain("await refreshWorktreeLinearStatuses();");
     expect(server).toContain("if (linearBackoffRemainingMs() > 0) return;");
     expect(server).toContain("for (const flow of flows) {");
     expect(server).toContain("if (error instanceof LinearUnavailableError) return;");
     expect(server).toContain("latestPromptTimestamp(flow.id)");
     expect(server).toContain('url.pathname === "/api/checkouts"');
     expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
-    expect(server).toContain("function deleteCheckout(name: string)");
+    expect(server).toContain("function deleteWorktree(name: string)");
+    expect(server).toContain("function deleteFlowTraceData(flowId: string)");
+    expect(server).toContain("function stopFlowRuntimesForDelete(flowId: string)");
+    expect(server).toContain("deleteLogsByFlowIdStmt.run(flowId);");
+    expect(server).toContain("deleteShellOutputStateByFlowIdStmt.run(flowId);");
+    expect(server).toContain("deleteSettingByKeyStmt.run(codexThreadSettingKey(flowId));");
+    expect(server).toContain("deleteFlowByIdStmt.run(flowId);");
+    expect(server).toContain('broadcast("flows", listClientFlows());');
+    expect(server).toContain("return json({ ok: true, ...result, flows: listClientFlows(), checkouts: listWorktrees() });");
     expect(server).toContain("rmSync(target, { recursive: true, force: true });");
   });
 
@@ -469,21 +480,63 @@ describe("Turbopump pane markup", () => {
   });
 
   test("uses the Linear ticket id as the default flow branch name", () => {
-    expect(server).toContain('const branch = `turbo/${safeSlug(issueId)}`;');
+    expect(server).toContain('let branch = `turbo/${safeSlug(issueId)}`;');
     expect(server).not.toContain('const branch = `flow/${safeSlug(issueId)}`;');
     expect(server).not.toContain('const branch = `flow/${safeSlug(issueId)}-${flowId.slice(0, 8)}`;');
   });
 
-  test("uses a warmed repo checkout when creating flow checkouts", () => {
+  test("uses git worktrees instead of copied checkouts for flow workspaces", () => {
+    expect(server).toContain('const worktreeDir = join(dataDir, "worktrees");');
+    expect(server).not.toContain("const checkoutDir = worktreeDir;");
+    expect(server).not.toContain('join(dataDir, "checkouts")');
+    expect(server).not.toContain('join(dataDir, "threadtrees")');
+    expect(server).not.toContain("function checkoutRoots()");
+    expect(server).toContain("const warmedRepoPullIntervalMs = 60000;");
+    expect(server).toContain("let warmedRepoPulling = false;");
+    expect(server).toContain("function pullWarmedRepo()");
+    expect(server).toContain("if (warmedRepoPulling) return;");
+    expect(server).toContain('runGit(["pull", "--ff-only"], repoCheckoutDir);');
+    expect(server).toContain("setInterval(pullWarmedRepo, warmedRepoPullIntervalMs);");
+    expect(server).not.toContain("type TimingEntry = {");
+    expect(server).not.toContain("function timeStep");
+    expect(server).not.toContain("function insertTimingLogs");
+    expect(server).toContain("function createWorktree(flowId: string, issueId: string)");
     expect(server).toContain('const repoCheckoutDir = join(dataDir, "repo");');
     expect(server).toContain("function ensureRepoCheckout(repoUrl: string)");
-    expect(server).toContain('runGit(["clone", repoUrl, repoCheckoutDir]);');
-    expect(server).toContain('runGit(["remote", "get-url", "origin"], repoCheckoutDir);');
-    expect(server).toContain("rmSync(repoCheckoutDir, { recursive: true, force: true });");
-    expect(server).toContain('runGit(["pull", "--ff-only"], repoCheckoutDir);');
-    expect(server).toContain("ensureRepoCheckout(repoUrl);");
-    expect(server).toContain("cpSync(repoCheckoutDir, target, { recursive: true, force: false, errorOnExist: true });");
+    expect(server).toContain('runGit(["clone", repoUrl, repoCheckoutDir])');
+    expect(server).toContain('runGit(["remote", "get-url", "origin"], repoCheckoutDir)');
+    expect(server).toContain("rmSync(repoCheckoutDir, { recursive: true, force: true })");
+    expect(server).toContain('runGit(["worktree", "prune"], repoCheckoutDir)');
+    expect(server).toContain("ensureRepoCheckout(repoUrl)");
+    expect(server).toContain('runGit(["rev-parse", "HEAD"], repoCheckoutDir)');
+    expect(server).toContain('runGit(["worktree", "add", "-b", branch, target, baseSha], repoCheckoutDir)');
+    expect(server).toContain('branch = `${branch}-${flowId.slice(0, 8)}`;');
+    expect(server).toContain('runGit(["worktree", "remove", "--force", target], repoCheckoutDir);');
+    expect(server).toContain('insertLog(id, "flow", `Created worktree ${branch}\\n`);');
+    expect(server).not.toContain("flow:timing");
+    expect(server).toContain("const linearIssueCache = new Map<string, LinearIssue>();");
+    expect(server).toContain("function cachedLinearIssue(identifier: string)");
+    expect(app).toContain("issue: ticket.identifier,");
+    expect(app).toContain("url: ticket.url,");
+    expect(app).toContain("linearStatus: linearStatusName(ticket),");
+    expect(server).toContain("const linearIssue = cachedLinearIssue(parsed.identifier);");
+    expect(server).toContain("const { target, branch, baseSha } = createWorktree(id, parsed.identifier);");
+    expect(server).not.toContain("cpSync(");
     expect(server).not.toContain('runGit(["clone", repoUrl, target]);');
+    expect(server).not.toContain('runGit(["checkout", "-b", branch], target);');
+  });
+
+  test("allocates missing worktrees lazily for prompts and shell commands", () => {
+    expect(server).toContain("function flowHasWorktree(flow: Flow)");
+    expect(server).toContain("function ensureFlowWorktree(flow: Flow)");
+    expect(server).toContain("flow = ensureFlowWorktree(flow);");
+    const startAgentBody = server.slice(server.indexOf("async function startAgent("), server.indexOf("function startShellCommand("));
+    expect(startAgentBody).toContain("flow = ensureFlowWorktree(flow);");
+    const shellBody = server.slice(server.indexOf("function startShellCommand("), server.indexOf("function interruptShellCommand"));
+    expect(shellBody).toContain("flow = ensureFlowWorktree(flow);");
+    expect(server).toContain("updateFlow(flow.id, { checkoutPath: target, branchName: branch, baseSha });");
+    expect(server).toContain('throw new Error(`Worktree does not exist: ${flow.checkoutPath}`);');
+    expect(server).not.toContain("repaired worktree path");
   });
 
   test("shows visible error toasts for git clone failures", () => {
@@ -497,14 +550,14 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('`${gitCommandLabel(args)} failed: ${output}`');
   });
 
-  test("trusts flow checkouts before starting the Codex app server", () => {
+  test("trusts flow worktrees before starting the Codex app server", () => {
     expect(server).toContain("function ensureCodexProjectTrusted(projectPath: string)");
     expect(server).toContain('const codexHome = codexEnv.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");');
     expect(server).toContain('const header = `[projects.${tomlBasicString(resolve(projectPath))}]`;');
     expect(server).toContain('appendFileSync(configPath, `${prefix}\\n${header}\\ntrust_level = "trusted"\\n`, "utf8");');
     expect(server).toContain('Bun.spawn(["/bin/zsh", "-lc", command], {');
-    expect(server).toContain("function repairFlowCheckoutPath(flow: Flow)");
-    expect(server).toContain("const activeFlow = repairFlowCheckoutPath(flow);");
+    expect(server).toContain("function assertFlowWorktree(flow: Flow)");
+    expect(server).toContain("const activeFlow = assertFlowWorktree(flow);");
     expect(server).toContain("ensureCodexProjectTrusted(activeFlow.checkoutPath);");
     const codexStartup = server.slice(server.indexOf("async function startCodexAppServer"));
     expect(codexStartup.indexOf("ensureCodexProjectTrusted(activeFlow.checkoutPath);")).toBeLessThan(
@@ -769,6 +822,9 @@ describe("Turbopump pane markup", () => {
 
   test("keeps ticket flow status synced when flows update", () => {
     expect(app).toContain("function setFlows(flows)");
+    expect(app).toContain("const nextIds = new Set(nextFlows.map((flow) => flow.id));");
+    expect(app).toContain("if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);");
+    expect(app).toContain('localStorage.removeItem("flow.selectedFlowId");');
     expect(app).toContain("function runtimeOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain('const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);');
     expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) renderLogs(flow.id, { force: true });\n        return;\n      }");
@@ -950,12 +1006,12 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("updateFlow(runtime.flowId, { agentModel: toModel });");
   });
 
-  test("refreshes the displayed checkout branch after each agent turn", () => {
-    expect(server).toContain("function checkoutBranchUpdate(flowId: string): Partial<Flow>");
+  test("refreshes the displayed worktree branch after each agent turn", () => {
+    expect(server).toContain("function worktreeBranchUpdate(flowId: string): Partial<Flow>");
     expect(server).toContain('runGit(["rev-parse", "--abbrev-ref", "HEAD"], flow.checkoutPath);');
     expect(server).toContain("branchName && branchName !== flow.branchName ? { branchName } : {}");
-    expect(server).toContain('insertLog(flowId, "agent:status", `could not read checkout branch: ${String(error)}`);');
-    expect(server).toContain("...checkoutBranchUpdate(runtime.flowId),");
+    expect(server).toContain('insertLog(flowId, "agent:status", `could not read worktree branch: ${String(error)}`);');
+    expect(server).toContain("...worktreeBranchUpdate(runtime.flowId),");
     expect(server).toContain('agentStatus: turn?.status === "failed" ? "failed" : "idle",');
     expect(app).toContain('branch.textContent = flow?.branchName || "";');
   });

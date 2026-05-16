@@ -1446,9 +1446,34 @@ function render() {
 }
 
 function setFlows(flows) {
-  state.flows = flows || [];
+  const nextFlows = flows || [];
+  const nextIds = new Set(nextFlows.map((flow) => flow.id));
+  for (const flow of state.flows) {
+    if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
+  }
+  state.flows = nextFlows;
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
+}
+
+function clearFlowClientState(flowId) {
+  state.logs.delete(flowId);
+  state.logIds.delete(flowId);
+  state.lastLogId.delete(flowId);
+  state.shellOutputClearAfterLogId.delete(flowId);
+  state.openTraceGroups.delete(flowId);
+  state.shellInterruptingFlowIds.delete(flowId);
+  state.flowDiffs.delete(flowId);
+  state.flowDiffLoadingIds.delete(flowId);
+  if (state.diffModalFlowId === flowId) {
+    state.diffModalFlowId = "";
+    state.diffModalDiff = null;
+  }
+  if (state.diffModalLoadingFlowId === flowId) state.diffModalLoadingFlowId = "";
+  if (state.selectedFlowId === flowId) {
+    state.selectedFlowId = "";
+    localStorage.removeItem("flow.selectedFlowId");
+  }
 }
 
 function syncShellOutputClearState(flows) {
@@ -1532,9 +1557,11 @@ function scheduleCheckoutsLoaded() {
 
 async function deleteCheckout(name) {
   if (!name) return;
-  await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
-  state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
-  renderCheckouts();
+  const data = await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (data.flows) setFlows(data.flows);
+  if (data.checkouts) setCheckouts(data.checkouts);
+  else state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
+  render();
 }
 
 function renderCheckoutCard(checkout) {
@@ -1547,7 +1574,7 @@ function renderCheckoutCard(checkout) {
 
   const ticketName = document.createElement("span");
   ticketName.className = "checkout-ticket-name";
-  ticketName.textContent = checkout.ticketName || checkout.name || "Unknown checkout";
+  ticketName.textContent = checkout.ticketName || checkout.name || "Unknown worktree";
 
   const ticketId = document.createElement("span");
   ticketId.className = "checkout-ticket-id";
@@ -1573,8 +1600,8 @@ function renderCheckoutCard(checkout) {
   const button = document.createElement("button");
   button.className = "checkout-delete";
   button.type = "button";
-  button.title = "Delete checkout";
-  button.setAttribute("aria-label", `Delete checkout ${checkout.name}`);
+  button.title = "Delete worktree";
+  button.setAttribute("aria-label", `Delete worktree ${checkout.name}`);
   button.innerHTML = `
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 6h18" />
@@ -1600,7 +1627,7 @@ function renderCheckoutCard(checkout) {
   if (state.deletingCheckoutNames.has(checkout.name)) {
     const spinner = document.createElement("span");
     spinner.className = "checkout-spinner";
-    spinner.setAttribute("aria-label", `Deleting checkout ${checkout.name}`);
+    spinner.setAttribute("aria-label", `Deleting worktree ${checkout.name}`);
     spinner.setAttribute("role", "status");
     card.replaceChildren(title, ticketId, meta, spinner);
   } else {
@@ -1615,21 +1642,21 @@ function renderCheckouts() {
   if (state.checkoutsLoading) {
     const loading = document.createElement("p");
     loading.className = "note";
-    loading.textContent = "Loading checkouts.";
+    loading.textContent = "Loading worktrees.";
     els.checkoutList.replaceChildren(loading);
     return;
   }
   if (!state.checkoutsLoaded) {
     const pending = document.createElement("p");
     pending.className = "note";
-    pending.textContent = "Open settings to load checkout directories.";
+    pending.textContent = "Open settings to load worktree directories.";
     els.checkoutList.replaceChildren(pending);
     return;
   }
   if (!state.checkouts.length) {
     const empty = document.createElement("p");
     empty.className = "note";
-    empty.textContent = "No checkout directories.";
+    empty.textContent = "No worktree directories.";
     els.checkoutList.replaceChildren(empty);
     return;
   }
@@ -2711,7 +2738,13 @@ async function createFlowFromTicket(ticket, options = {}) {
   try {
     data = await api("/api/flows", {
       method: "POST",
-      body: JSON.stringify({ issue: ticket.url || ticket.identifier, title: ticket.title }),
+      body: JSON.stringify({
+        issue: ticket.identifier,
+        title: ticket.title,
+        url: ticket.url,
+        linearStatus: linearStatusName(ticket),
+        state: ticket.state || null,
+      }),
     });
   } catch (error) {
     if (isGitCloneError(error)) {
