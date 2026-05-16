@@ -177,6 +177,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function parseEnvEditorRows(contents)");
     expect(app).toContain('keyInput.placeholder = "KEYNAME";');
     expect(app).toContain('valueInput.placeholder = "VALUE";');
+    expect(app).toContain("function maskedEnvValue(value)");
+    expect(app).toContain('valueInput.dataset.envValue = value;');
+    expect(app).toContain("valueInput.value = maskedEnvValue(value);");
+    expect(app).toContain("function revealEnvValueInput(input)");
+    expect(app).toContain("function maskEnvValueInput(input)");
+    expect(app).toContain('els.envEditor.addEventListener("focusin", handleEnvEditorFocusIn);');
     expect(app).toContain("function envEditorContents()");
     expect(app).toContain("function handleEnvEditorPaste(event)");
     expect(app).toContain("if (!row || !envRowIsEmpty(row)) return;");

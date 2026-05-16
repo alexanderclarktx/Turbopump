@@ -23,5 +23,7 @@ then in settings:
 
 - runs on `http://localhost:3999`
 - pulls Linear tickets via API
-- pulls your repo in the background, then on fresh sessions -> creates Git worktree-backed sessions
+- keeps a warmed copy of your repo in `.flow/repo` and pulls it in the background
+- creates each ticket session as an isolated Git worktree under `.flow/worktrees`
+- starts prompts and shell commands from that ticket's worktree directory
 - does not provide any credentials for Codex (configure separately)

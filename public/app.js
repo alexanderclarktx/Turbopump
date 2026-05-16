@@ -1095,6 +1095,23 @@ function parseEnvEditorRows(contents) {
     .filter(Boolean);
 }
 
+function maskedEnvValue(value) {
+  return value ? "*".repeat(value.length) : "";
+}
+
+function revealEnvValueInput(input) {
+  if (!input?.classList?.contains("env-value")) return;
+  input.value = input.dataset.envValue || "";
+  input.dataset.envMasked = "false";
+}
+
+function maskEnvValueInput(input) {
+  if (!input?.classList?.contains("env-value")) return;
+  input.dataset.envValue = input.value;
+  input.value = maskedEnvValue(input.dataset.envValue);
+  input.dataset.envMasked = "true";
+}
+
 function createEnvRow(key = "", value = "") {
   const row = document.createElement("div");
   row.className = "env-row";
@@ -1111,16 +1128,19 @@ function createEnvRow(key = "", value = "") {
   valueInput.placeholder = "VALUE";
   valueInput.autocomplete = "off";
   valueInput.spellcheck = false;
-  valueInput.value = value;
+  valueInput.dataset.envValue = value;
+  valueInput.dataset.envMasked = "true";
+  valueInput.value = maskedEnvValue(value);
 
   row.append(keyInput, valueInput);
   return row;
 }
 
 function envRowValues(row) {
+  const valueInput = row.querySelector(".env-value");
   return {
     key: row.querySelector(".env-key")?.value.trim() || "",
-    value: row.querySelector(".env-value")?.value || "",
+    value: valueInput?.dataset.envValue ?? valueInput?.value ?? "",
   };
 }
 
@@ -1156,12 +1176,11 @@ async function saveEnv() {
   clearTimeout(envSaveTimer);
   const contents = envEditorContents();
   if (contents === lastSavedEnv) return;
-  const result = await api("/api/env", {
+  await api("/api/env", {
     method: "PUT",
     body: JSON.stringify({ contents }),
   });
   lastSavedEnv = contents;
-  toast(result.restartedServe ? "Env updated and serve restarted" : "Env updated");
 }
 
 function flushEnvSaveOnPageHide() {
@@ -1177,9 +1196,15 @@ function flushEnvSaveOnPageHide() {
   }).catch(reportAutoSaveError);
 }
 
-function handleEnvEditorInput() {
+function handleEnvEditorInput(event) {
+  const valueInput = event.target.closest(".env-value");
+  if (valueInput) valueInput.dataset.envValue = valueInput.value;
   ensureTrailingEnvRow();
   scheduleEnvSave();
+}
+
+function handleEnvEditorFocusIn(event) {
+  revealEnvValueInput(event.target.closest(".env-value"));
 }
 
 function handleEnvEditorPaste(event) {
@@ -1194,7 +1219,9 @@ function handleEnvEditorPaste(event) {
   pastedRows.forEach((envRow, index) => {
     const targetRow = index === 0 ? row : createEnvRow();
     targetRow.querySelector(".env-key").value = envRow.key;
-    targetRow.querySelector(".env-value").value = envRow.value;
+    const valueInput = targetRow.querySelector(".env-value");
+    valueInput.dataset.envValue = envRow.value;
+    valueInput.value = maskedEnvValue(envRow.value);
     if (index > 0) {
       insertAfter.after(targetRow);
       insertAfter = targetRow;
@@ -1206,6 +1233,7 @@ function handleEnvEditorPaste(event) {
 }
 
 function handleEnvEditorFocusOut(event) {
+  maskEnvValueInput(event.target.closest(".env-value"));
   if (event.relatedTarget && els.envEditor.contains(event.relatedTarget)) return;
   void saveEnv().catch(reportAutoSaveError);
 }
@@ -4114,6 +4142,7 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
   void saveAgentConfig().catch(reportAutoSaveError);
 });
 els.envEditor.addEventListener("input", handleEnvEditorInput);
+els.envEditor.addEventListener("focusin", handleEnvEditorFocusIn);
 els.envEditor.addEventListener("paste", handleEnvEditorPaste);
 els.envEditor.addEventListener("focusout", handleEnvEditorFocusOut);
 window.addEventListener("pagehide", flushEnvSaveOnPageHide);
