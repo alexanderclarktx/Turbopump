@@ -127,6 +127,15 @@ function initialInputHistory(key) {
   }
 }
 
+function emptyTicketInputState() {
+  return {
+    promptValue: "",
+    shellValue: "",
+    historySearch: null,
+    historyNavigation: null,
+  };
+}
+
 function clampFlowSplitSize(value) {
   return Math.min(100, Math.max(0, value));
 }
@@ -187,6 +196,8 @@ const state = {
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
   promptHistoryOrder: new Map(),
   shellHistoryOrder: new Map(),
+  ticketInputStates: new Map(),
+  activeInputIssueId: "",
   historySearch: null,
   historyNavigation: null,
   terminalFollowPaused: false,
@@ -441,6 +452,57 @@ function matchingInputHistory(query, mode = inputHistoryMode()) {
   return inputHistory(mode).filter((item) => item.toLowerCase().includes(needle));
 }
 
+function cloneHistorySearch(search) {
+  if (!search) return null;
+  return {
+    ...search,
+    matches: [...(search.matches || [])],
+  };
+}
+
+function cloneHistoryNavigation(navigation) {
+  return navigation ? { ...navigation } : null;
+}
+
+function ticketInputState(issueId) {
+  if (!state.ticketInputStates.has(issueId)) state.ticketInputStates.set(issueId, emptyTicketInputState());
+  return state.ticketInputStates.get(issueId);
+}
+
+function saveActiveTicketInputState() {
+  const issueId = state.activeInputIssueId;
+  if (!issueId) return;
+  const inputState = ticketInputState(issueId);
+  const messageInput = promptInput();
+  const commandInput = shellInput();
+  if (messageInput) inputState.promptValue = messageInput.value;
+  if (commandInput) inputState.shellValue = commandInput.value;
+  inputState.historySearch = cloneHistorySearch(state.historySearch);
+  inputState.historyNavigation = cloneHistoryNavigation(state.historyNavigation);
+}
+
+function restoreTicketInputState(issueId) {
+  const inputState = issueId ? ticketInputState(issueId) : emptyTicketInputState();
+  const messageInput = promptInput();
+  const commandInput = shellInput();
+  if (messageInput) messageInput.value = inputState.promptValue;
+  if (commandInput) commandInput.value = inputState.shellValue;
+  state.historySearch = cloneHistorySearch(inputState.historySearch);
+  state.historyNavigation = cloneHistoryNavigation(inputState.historyNavigation);
+  state.slashCommandIndex = 0;
+  updateMessageInputMode();
+  resizeMessageInput();
+  renderHistorySearchIndicator();
+}
+
+function syncTicketInputState(issueId) {
+  const nextIssueId = issueId || "";
+  if (state.activeInputIssueId === nextIssueId) return;
+  saveActiveTicketInputState();
+  state.activeInputIssueId = nextIssueId;
+  restoreTicketInputState(nextIssueId);
+}
+
 function applyHistorySearchResult(input) {
   const search = state.historySearch;
   if (!search) return false;
@@ -625,6 +687,7 @@ function focusInputPane(kind) {
   if (!input) return false;
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  saveActiveTicketInputState();
   input.focus({ preventScroll: true });
   return true;
 }
@@ -671,6 +734,14 @@ function flowAgentRunning(flow) {
   return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "agent";
 }
 
+function flowAgentCompacting(flow) {
+  return flowAgentRunning(flow) && Boolean(flow?.agentCompacting);
+}
+
+function flowAgentQueuedMessage(flow) {
+  return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);
+}
+
 function flowShellRunning(flow) {
   return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "shell";
 }
@@ -691,7 +762,7 @@ function canSubmitPromptMessage() {
       (flow || ticket) &&
       !state.messageSubmitting &&
       !state.agentImageUploading &&
-      !flowAgentRunning(flow),
+      (!flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow))),
   );
 }
 
@@ -1024,6 +1095,23 @@ function parseEnvEditorRows(contents) {
     .filter(Boolean);
 }
 
+function maskedEnvValue(value) {
+  return value ? "*".repeat(value.length) : "";
+}
+
+function revealEnvValueInput(input) {
+  if (!input?.classList?.contains("env-value")) return;
+  input.value = input.dataset.envValue || "";
+  input.dataset.envMasked = "false";
+}
+
+function maskEnvValueInput(input) {
+  if (!input?.classList?.contains("env-value")) return;
+  input.dataset.envValue = input.value;
+  input.value = maskedEnvValue(input.dataset.envValue);
+  input.dataset.envMasked = "true";
+}
+
 function createEnvRow(key = "", value = "") {
   const row = document.createElement("div");
   row.className = "env-row";
@@ -1040,16 +1128,19 @@ function createEnvRow(key = "", value = "") {
   valueInput.placeholder = "VALUE";
   valueInput.autocomplete = "off";
   valueInput.spellcheck = false;
-  valueInput.value = value;
+  valueInput.dataset.envValue = value;
+  valueInput.dataset.envMasked = "true";
+  valueInput.value = maskedEnvValue(value);
 
   row.append(keyInput, valueInput);
   return row;
 }
 
 function envRowValues(row) {
+  const valueInput = row.querySelector(".env-value");
   return {
     key: row.querySelector(".env-key")?.value.trim() || "",
-    value: row.querySelector(".env-value")?.value || "",
+    value: valueInput?.dataset.envValue ?? valueInput?.value ?? "",
   };
 }
 
@@ -1085,12 +1176,11 @@ async function saveEnv() {
   clearTimeout(envSaveTimer);
   const contents = envEditorContents();
   if (contents === lastSavedEnv) return;
-  const result = await api("/api/env", {
+  await api("/api/env", {
     method: "PUT",
     body: JSON.stringify({ contents }),
   });
   lastSavedEnv = contents;
-  toast(result.restartedServe ? "Env updated and serve restarted" : "Env updated");
 }
 
 function flushEnvSaveOnPageHide() {
@@ -1106,9 +1196,15 @@ function flushEnvSaveOnPageHide() {
   }).catch(reportAutoSaveError);
 }
 
-function handleEnvEditorInput() {
+function handleEnvEditorInput(event) {
+  const valueInput = event.target.closest(".env-value");
+  if (valueInput) valueInput.dataset.envValue = valueInput.value;
   ensureTrailingEnvRow();
   scheduleEnvSave();
+}
+
+function handleEnvEditorFocusIn(event) {
+  revealEnvValueInput(event.target.closest(".env-value"));
 }
 
 function handleEnvEditorPaste(event) {
@@ -1123,7 +1219,9 @@ function handleEnvEditorPaste(event) {
   pastedRows.forEach((envRow, index) => {
     const targetRow = index === 0 ? row : createEnvRow();
     targetRow.querySelector(".env-key").value = envRow.key;
-    targetRow.querySelector(".env-value").value = envRow.value;
+    const valueInput = targetRow.querySelector(".env-value");
+    valueInput.dataset.envValue = envRow.value;
+    valueInput.value = maskedEnvValue(envRow.value);
     if (index > 0) {
       insertAfter.after(targetRow);
       insertAfter = targetRow;
@@ -1135,6 +1233,7 @@ function handleEnvEditorPaste(event) {
 }
 
 function handleEnvEditorFocusOut(event) {
+  maskEnvValueInput(event.target.closest(".env-value"));
   if (event.relatedTarget && els.envEditor.contains(event.relatedTarget)) return;
   void saveEnv().catch(reportAutoSaveError);
 }
@@ -1375,9 +1474,34 @@ function render() {
 }
 
 function setFlows(flows) {
-  state.flows = flows || [];
+  const nextFlows = flows || [];
+  const nextIds = new Set(nextFlows.map((flow) => flow.id));
+  for (const flow of state.flows) {
+    if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
+  }
+  state.flows = nextFlows;
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
+}
+
+function clearFlowClientState(flowId) {
+  state.logs.delete(flowId);
+  state.logIds.delete(flowId);
+  state.lastLogId.delete(flowId);
+  state.shellOutputClearAfterLogId.delete(flowId);
+  state.openTraceGroups.delete(flowId);
+  state.shellInterruptingFlowIds.delete(flowId);
+  state.flowDiffs.delete(flowId);
+  state.flowDiffLoadingIds.delete(flowId);
+  if (state.diffModalFlowId === flowId) {
+    state.diffModalFlowId = "";
+    state.diffModalDiff = null;
+  }
+  if (state.diffModalLoadingFlowId === flowId) state.diffModalLoadingFlowId = "";
+  if (state.selectedFlowId === flowId) {
+    state.selectedFlowId = "";
+    localStorage.removeItem("flow.selectedFlowId");
+  }
 }
 
 function syncShellOutputClearState(flows) {
@@ -1461,9 +1585,11 @@ function scheduleCheckoutsLoaded() {
 
 async function deleteCheckout(name) {
   if (!name) return;
-  await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
-  state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
-  renderCheckouts();
+  const data = await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (data.flows) setFlows(data.flows);
+  if (data.checkouts) setCheckouts(data.checkouts);
+  else state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
+  render();
 }
 
 function renderCheckoutCard(checkout) {
@@ -1476,7 +1602,7 @@ function renderCheckoutCard(checkout) {
 
   const ticketName = document.createElement("span");
   ticketName.className = "checkout-ticket-name";
-  ticketName.textContent = checkout.ticketName || checkout.name || "Unknown checkout";
+  ticketName.textContent = checkout.ticketName || checkout.name || "Unknown worktree";
 
   const ticketId = document.createElement("span");
   ticketId.className = "checkout-ticket-id";
@@ -1502,8 +1628,8 @@ function renderCheckoutCard(checkout) {
   const button = document.createElement("button");
   button.className = "checkout-delete";
   button.type = "button";
-  button.title = "Delete checkout";
-  button.setAttribute("aria-label", `Delete checkout ${checkout.name}`);
+  button.title = "Delete worktree";
+  button.setAttribute("aria-label", `Delete worktree ${checkout.name}`);
   button.innerHTML = `
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 6h18" />
@@ -1529,7 +1655,7 @@ function renderCheckoutCard(checkout) {
   if (state.deletingCheckoutNames.has(checkout.name)) {
     const spinner = document.createElement("span");
     spinner.className = "checkout-spinner";
-    spinner.setAttribute("aria-label", `Deleting checkout ${checkout.name}`);
+    spinner.setAttribute("aria-label", `Deleting worktree ${checkout.name}`);
     spinner.setAttribute("role", "status");
     card.replaceChildren(title, ticketId, meta, spinner);
   } else {
@@ -1544,21 +1670,21 @@ function renderCheckouts() {
   if (state.checkoutsLoading) {
     const loading = document.createElement("p");
     loading.className = "note";
-    loading.textContent = "Loading checkouts.";
+    loading.textContent = "Loading worktrees.";
     els.checkoutList.replaceChildren(loading);
     return;
   }
   if (!state.checkoutsLoaded) {
     const pending = document.createElement("p");
     pending.className = "note";
-    pending.textContent = "Open settings to load checkout directories.";
+    pending.textContent = "Open settings to load worktree directories.";
     els.checkoutList.replaceChildren(pending);
     return;
   }
   if (!state.checkouts.length) {
     const empty = document.createElement("p");
     empty.className = "note";
-    empty.textContent = "No checkout directories.";
+    empty.textContent = "No worktree directories.";
     els.checkoutList.replaceChildren(empty);
     return;
   }
@@ -2454,6 +2580,7 @@ function renderFlowPane() {
   const agentEnabled = repoUrlConfigured();
   const agentPanel = els.flowPane.querySelector(".agent-panel");
 
+  syncTicketInputState(issueId);
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
   renderAgentContext(flow);
@@ -2639,7 +2766,13 @@ async function createFlowFromTicket(ticket, options = {}) {
   try {
     data = await api("/api/flows", {
       method: "POST",
-      body: JSON.stringify({ issue: ticket.url || ticket.identifier, title: ticket.title }),
+      body: JSON.stringify({
+        issue: ticket.identifier,
+        title: ticket.title,
+        url: ticket.url,
+        linearStatus: linearStatusName(ticket),
+        state: ticket.state || null,
+      }),
     });
   } catch (error) {
     if (isGitCloneError(error)) {
@@ -2690,6 +2823,7 @@ async function loadLogs(id, options = {}) {
 
 function logMeta(source) {
   const userLabel = state.linearViewer?.name || state.linearViewerName || "user";
+  if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };
   const map = {
     user: { label: userLabel, marker: ">", tone: "user" },
     "agent:message": { label: "codex", marker: ">", tone: "assistant" },
@@ -2753,10 +2887,12 @@ function parseTraceGroup(log) {
     const afterId = Number(payload.afterId);
     const beforeId = Number(payload.beforeId);
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId) return null;
+    const count = Number(payload.count || 0);
+    if (count <= 1) return null;
     return {
       afterId,
       beforeId,
-      count: Number(payload.count || 0),
+      count,
       kind: typeof payload.kind === "string" ? payload.kind : "",
       key: `${afterId}:${beforeId}`,
     };
@@ -2806,7 +2942,7 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
     const key = `${afterId}:${beforeId}`;
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
     const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
-    if (!count) continue;
+    if (count <= 1) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
   }
@@ -2826,7 +2962,7 @@ function syntheticSteerTraceRanges(logs, existingRanges) {
         const key = `${afterId}:${beforeId}`;
         if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
           const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
-          if (count) {
+          if (count > 1) {
             ranges.push({ afterId, beforeId, count, key });
             existingKeys.add(key);
           }
@@ -2864,6 +3000,21 @@ function appendTerminalGroup(groups, log) {
   };
   groups.push(group);
   return group;
+}
+
+function flattenSingleChildTraceGroups(groups) {
+  const result = [];
+  for (const group of groups) {
+    if (group.source === "agent:trace-group") {
+      const children = group.children || [];
+      if (children.length <= 1) {
+        result.push(...children);
+        continue;
+      }
+    }
+    result.push(group);
+  }
+  return result;
 }
 
 function isHiddenTerminalLog(log) {
@@ -2931,7 +3082,7 @@ function terminalGroups(logs, flow) {
     }
     appendTerminalGroup(groups, log);
   }
-  return groups;
+  return flattenSingleChildTraceGroups(groups);
 }
 
 function agentPaneLogs(logs, flow) {
@@ -3144,7 +3295,7 @@ function formatTerminalTimestamp(value) {
 }
 
 function usesTerminalBlockMarkdown(source) {
-  return ["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
+  return ["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
 
 function usesTerminalMarkdownToggle(source) {
@@ -3991,6 +4142,7 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
   void saveAgentConfig().catch(reportAutoSaveError);
 });
 els.envEditor.addEventListener("input", handleEnvEditorInput);
+els.envEditor.addEventListener("focusin", handleEnvEditorFocusIn);
 els.envEditor.addEventListener("paste", handleEnvEditorPaste);
 els.envEditor.addEventListener("focusout", handleEnvEditorFocusOut);
 window.addEventListener("pagehide", flushEnvSaveOnPageHide);
@@ -4069,11 +4221,13 @@ promptInput().addEventListener("input", () => {
   updateMessageInputMode();
   resizeMessageInput();
   renderSlashMenu();
+  saveActiveTicketInputState();
 });
 
 shellInput().addEventListener("input", () => {
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  saveActiveTicketInputState();
 });
 
 els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
@@ -4197,6 +4351,7 @@ async function submitShellCommand(value) {
     cancelHistorySearch();
     resetInputHistoryNavigation();
     input.value = "";
+    saveActiveTicketInputState();
     await clearShellOutputPane();
     input.focus({ preventScroll: true });
     return;
@@ -4214,6 +4369,7 @@ async function submitShellCommand(value) {
   resetInputHistoryNavigation();
   state.shellSubmitting = true;
   input.value = "";
+  saveActiveTicketInputState();
   hideSlashMenu();
   renderTickets();
   renderShellOutputPane(selectedFlow()?.id || "");
@@ -4255,6 +4411,7 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   event.preventDefault();
   promptInput().value = command;
   resizeMessageInput();
+  saveActiveTicketInputState();
   if (slashCommandHasExpansions(command)) {
     state.slashCommandIndex = 0;
     renderSlashMenu();
@@ -4281,6 +4438,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   input.value = "";
   updateMessageInputMode();
   resizeMessageInput();
+  saveActiveTicketInputState();
   hideSlashMenu();
   renderTickets();
   renderFlowPane();
@@ -4292,10 +4450,11 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     scheduleAgentWorkingPoll(flow.id);
     renderFlowPane();
     renderLogs(flow.id, { force: true, scrollToLatest: true });
-    await api(`/api/flows/${flow.id}/message`, {
+    const data = await api(`/api/flows/${flow.id}/message`, {
       method: "POST",
       body: JSON.stringify({ message: agentMessage }),
     });
+    if (data.flow) upsertFlow(data.flow);
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;

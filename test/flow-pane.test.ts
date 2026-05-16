@@ -177,6 +177,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function parseEnvEditorRows(contents)");
     expect(app).toContain('keyInput.placeholder = "KEYNAME";');
     expect(app).toContain('valueInput.placeholder = "VALUE";');
+    expect(app).toContain("function maskedEnvValue(value)");
+    expect(app).toContain('valueInput.dataset.envValue = value;');
+    expect(app).toContain("valueInput.value = maskedEnvValue(value);");
+    expect(app).toContain("function revealEnvValueInput(input)");
+    expect(app).toContain("function maskEnvValueInput(input)");
+    expect(app).toContain('els.envEditor.addEventListener("focusin", handleEnvEditorFocusIn);');
     expect(app).toContain("function envEditorContents()");
     expect(app).toContain("function handleEnvEditorPaste(event)");
     expect(app).toContain("if (!row || !envRowIsEmpty(row)) return;");
@@ -265,9 +271,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("prUrl: flow.prUrl,");
   });
 
-  test("shows checkout cleanup cards in Settings without deleting traces", () => {
+  test("shows worktree cleanup cards in Settings and deletes trace data with the workspace", () => {
     expect(html).toContain('<section class="settings-section checkout-settings">');
-    expect(html).toContain("<span>Checkouts</span>");
+    expect(html).toContain("<span>Worktrees</span>");
     expect(html).toContain('id="checkoutList"');
     expect(app).toContain("checkouts: []");
     expect(app).toContain("checkoutsLoaded: false");
@@ -287,6 +293,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('["Linear", renderLinearStatusIcon(checkout.linearStatus)]');
     expect(app).not.toContain('["Phase", checkout.flowPhase || "No flow"]');
     expect(app).toContain("function deleteCheckout(name)");
+    expect(app).toContain("function clearFlowClientState(flowId)");
+    expect(app).toContain("if (data.flows) setFlows(data.flows);");
+    expect(app).toContain("if (data.checkouts) setCheckouts(data.checkouts);");
     expect(app).toContain("Date.parse(a.lastPromptAt || a.createdAt || 0)");
     expect(app).toContain("deletingCheckoutNames: new Set()");
     expect(app).toContain('spinner.className = "checkout-spinner";');
@@ -303,17 +312,25 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".checkout-spinner");
     expect(css).toContain("@keyframes checkout-spinner");
     expect(css).toContain("pointer-events: none;");
-    expect(server).toContain("function listCheckouts()");
+    expect(server).toContain("function listWorktrees()");
     expect(server).toContain("Date.parse(a.lastPromptAt || a.createdAt || \"\")");
-    expect(server).toContain("async function refreshCheckoutLinearStatuses()");
-    expect(server).toContain("await refreshCheckoutLinearStatuses();");
+    expect(server).toContain("async function refreshWorktreeLinearStatuses()");
+    expect(server).toContain("await refreshWorktreeLinearStatuses();");
     expect(server).toContain("if (linearBackoffRemainingMs() > 0) return;");
     expect(server).toContain("for (const flow of flows) {");
     expect(server).toContain("if (error instanceof LinearUnavailableError) return;");
     expect(server).toContain("latestPromptTimestamp(flow.id)");
     expect(server).toContain('url.pathname === "/api/checkouts"');
     expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
-    expect(server).toContain("function deleteCheckout(name: string)");
+    expect(server).toContain("function deleteWorktree(name: string)");
+    expect(server).toContain("function deleteFlowTraceData(flowId: string)");
+    expect(server).toContain("function stopFlowRuntimesForDelete(flowId: string)");
+    expect(server).toContain("deleteLogsByFlowIdStmt.run(flowId);");
+    expect(server).toContain("deleteShellOutputStateByFlowIdStmt.run(flowId);");
+    expect(server).toContain("deleteSettingByKeyStmt.run(codexThreadSettingKey(flowId));");
+    expect(server).toContain("deleteFlowByIdStmt.run(flowId);");
+    expect(server).toContain('broadcast("flows", listClientFlows());');
+    expect(server).toContain("return json({ ok: true, ...result, flows: listClientFlows(), checkouts: listWorktrees() });");
     expect(server).toContain("rmSync(target, { recursive: true, force: true });");
   });
 
@@ -469,21 +486,63 @@ describe("Turbopump pane markup", () => {
   });
 
   test("uses the Linear ticket id as the default flow branch name", () => {
-    expect(server).toContain('const branch = `turbo/${safeSlug(issueId)}`;');
+    expect(server).toContain('let branch = `turbo/${safeSlug(issueId)}`;');
     expect(server).not.toContain('const branch = `flow/${safeSlug(issueId)}`;');
     expect(server).not.toContain('const branch = `flow/${safeSlug(issueId)}-${flowId.slice(0, 8)}`;');
   });
 
-  test("uses a warmed repo checkout when creating flow checkouts", () => {
+  test("uses git worktrees instead of copied checkouts for flow workspaces", () => {
+    expect(server).toContain('const worktreeDir = join(dataDir, "worktrees");');
+    expect(server).not.toContain("const checkoutDir = worktreeDir;");
+    expect(server).not.toContain('join(dataDir, "checkouts")');
+    expect(server).not.toContain('join(dataDir, "threadtrees")');
+    expect(server).not.toContain("function checkoutRoots()");
+    expect(server).toContain("const warmedRepoPullIntervalMs = 60000;");
+    expect(server).toContain("let warmedRepoPulling = false;");
+    expect(server).toContain("function pullWarmedRepo()");
+    expect(server).toContain("if (warmedRepoPulling) return;");
+    expect(server).toContain('runGit(["pull", "--ff-only"], repoCheckoutDir);');
+    expect(server).toContain("setInterval(pullWarmedRepo, warmedRepoPullIntervalMs);");
+    expect(server).not.toContain("type TimingEntry = {");
+    expect(server).not.toContain("function timeStep");
+    expect(server).not.toContain("function insertTimingLogs");
+    expect(server).toContain("function createWorktree(flowId: string, issueId: string)");
     expect(server).toContain('const repoCheckoutDir = join(dataDir, "repo");');
     expect(server).toContain("function ensureRepoCheckout(repoUrl: string)");
-    expect(server).toContain('runGit(["clone", repoUrl, repoCheckoutDir]);');
-    expect(server).toContain('runGit(["remote", "get-url", "origin"], repoCheckoutDir);');
-    expect(server).toContain("rmSync(repoCheckoutDir, { recursive: true, force: true });");
-    expect(server).toContain('runGit(["pull", "--ff-only"], repoCheckoutDir);');
-    expect(server).toContain("ensureRepoCheckout(repoUrl);");
-    expect(server).toContain("cpSync(repoCheckoutDir, target, { recursive: true, force: false, errorOnExist: true });");
+    expect(server).toContain('runGit(["clone", repoUrl, repoCheckoutDir])');
+    expect(server).toContain('runGit(["remote", "get-url", "origin"], repoCheckoutDir)');
+    expect(server).toContain("rmSync(repoCheckoutDir, { recursive: true, force: true })");
+    expect(server).toContain('runGit(["worktree", "prune"], repoCheckoutDir)');
+    expect(server).toContain("ensureRepoCheckout(repoUrl)");
+    expect(server).toContain('runGit(["rev-parse", "HEAD"], repoCheckoutDir)');
+    expect(server).toContain('runGit(["worktree", "add", "-b", branch, target, baseSha], repoCheckoutDir)');
+    expect(server).toContain('branch = `${branch}-${flowId.slice(0, 8)}`;');
+    expect(server).toContain('runGit(["worktree", "remove", "--force", target], repoCheckoutDir);');
+    expect(server).toContain('insertLog(id, "flow", `Created worktree ${branch}\\n`);');
+    expect(server).not.toContain("flow:timing");
+    expect(server).toContain("const linearIssueCache = new Map<string, LinearIssue>();");
+    expect(server).toContain("function cachedLinearIssue(identifier: string)");
+    expect(app).toContain("issue: ticket.identifier,");
+    expect(app).toContain("url: ticket.url,");
+    expect(app).toContain("linearStatus: linearStatusName(ticket),");
+    expect(server).toContain("const linearIssue = cachedLinearIssue(parsed.identifier);");
+    expect(server).toContain("const { target, branch, baseSha } = createWorktree(id, parsed.identifier);");
+    expect(server).not.toContain("cpSync(");
     expect(server).not.toContain('runGit(["clone", repoUrl, target]);');
+    expect(server).not.toContain('runGit(["checkout", "-b", branch], target);');
+  });
+
+  test("allocates missing worktrees lazily for prompts and shell commands", () => {
+    expect(server).toContain("function flowHasWorktree(flow: Flow)");
+    expect(server).toContain("function ensureFlowWorktree(flow: Flow)");
+    expect(server).toContain("flow = ensureFlowWorktree(flow);");
+    const startAgentBody = server.slice(server.indexOf("async function startAgent("), server.indexOf("function startShellCommand("));
+    expect(startAgentBody).toContain("flow = ensureFlowWorktree(flow);");
+    const shellBody = server.slice(server.indexOf("function startShellCommand("), server.indexOf("function interruptShellCommand"));
+    expect(shellBody).toContain("flow = ensureFlowWorktree(flow);");
+    expect(server).toContain("updateFlow(flow.id, { checkoutPath: target, branchName: branch, baseSha });");
+    expect(server).toContain('throw new Error(`Worktree does not exist: ${flow.checkoutPath}`);');
+    expect(server).not.toContain("repaired worktree path");
   });
 
   test("shows visible error toasts for git clone failures", () => {
@@ -497,14 +556,14 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('`${gitCommandLabel(args)} failed: ${output}`');
   });
 
-  test("trusts flow checkouts before starting the Codex app server", () => {
+  test("trusts flow worktrees before starting the Codex app server", () => {
     expect(server).toContain("function ensureCodexProjectTrusted(projectPath: string)");
     expect(server).toContain('const codexHome = codexEnv.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");');
     expect(server).toContain('const header = `[projects.${tomlBasicString(resolve(projectPath))}]`;');
     expect(server).toContain('appendFileSync(configPath, `${prefix}\\n${header}\\ntrust_level = "trusted"\\n`, "utf8");');
     expect(server).toContain('Bun.spawn(["/bin/zsh", "-lc", command], {');
-    expect(server).toContain("function repairFlowCheckoutPath(flow: Flow)");
-    expect(server).toContain("const activeFlow = repairFlowCheckoutPath(flow);");
+    expect(server).toContain("function assertFlowWorktree(flow: Flow)");
+    expect(server).toContain("const activeFlow = assertFlowWorktree(flow);");
     expect(server).toContain("ensureCodexProjectTrusted(activeFlow.checkoutPath);");
     const codexStartup = server.slice(server.indexOf("async function startCodexAppServer"));
     expect(codexStartup.indexOf("ensureCodexProjectTrusted(activeFlow.checkoutPath);")).toBeLessThan(
@@ -672,7 +731,7 @@ describe("Turbopump pane markup", () => {
   test("renders Markdown headings, inline formatting, and code blocks in Linear and Agent panes", () => {
     expect(app).toContain('import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js";');
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");
-    expect(app).toContain('["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
+    expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain('document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre")');
     expect(app).toContain("function usesTerminalMarkdownToggle(source)");
     expect(app).toContain('["agent", "agent:message"].includes(source)');
@@ -769,6 +828,9 @@ describe("Turbopump pane markup", () => {
 
   test("keeps ticket flow status synced when flows update", () => {
     expect(app).toContain("function setFlows(flows)");
+    expect(app).toContain("const nextIds = new Set(nextFlows.map((flow) => flow.id));");
+    expect(app).toContain("if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);");
+    expect(app).toContain('localStorage.removeItem("flow.selectedFlowId");');
     expect(app).toContain("function runtimeOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain('const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);');
     expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) renderLogs(flow.id, { force: true });\n        return;\n      }");
@@ -950,12 +1012,12 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("updateFlow(runtime.flowId, { agentModel: toModel });");
   });
 
-  test("refreshes the displayed checkout branch after each agent turn", () => {
-    expect(server).toContain("function checkoutBranchUpdate(flowId: string): Partial<Flow>");
+  test("refreshes the displayed worktree branch after each agent turn", () => {
+    expect(server).toContain("function worktreeBranchUpdate(flowId: string): Partial<Flow>");
     expect(server).toContain('runGit(["rev-parse", "--abbrev-ref", "HEAD"], flow.checkoutPath);');
     expect(server).toContain("branchName && branchName !== flow.branchName ? { branchName } : {}");
-    expect(server).toContain('insertLog(flowId, "agent:status", `could not read checkout branch: ${String(error)}`);');
-    expect(server).toContain("...checkoutBranchUpdate(runtime.flowId),");
+    expect(server).toContain('insertLog(flowId, "agent:status", `could not read worktree branch: ${String(error)}`);');
+    expect(server).toContain("...worktreeBranchUpdate(runtime.flowId),");
     expect(server).toContain('agentStatus: turn?.status === "failed" ? "failed" : "idle",');
     expect(app).toContain('branch.textContent = flow?.branchName || "";');
   });
@@ -1064,6 +1126,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('flow.agentStatus !== "running" &&');
     expect(app).toContain('flow.agentStatus !== "interrupting"');
     expect(app).toContain('flow?.agentRuntimeKind === "shell" ? "shell" : "agent"');
+    expect(app).toContain("function flowAgentCompacting(flow)");
+    expect(app).toContain("return flowAgentRunning(flow) && Boolean(flow?.agentCompacting);");
+    expect(app).toContain("function flowAgentQueuedMessage(flow)");
+    expect(app).toContain("return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);");
     expect(app).toContain("if (state.interruptSubmitting) return false;");
     expect(app).toContain('flow?.agentStatus === "running" || flow?.agentStatus === "interrupting"');
     expect(app).toContain("state.interruptSubmitting = true;");
@@ -1092,6 +1158,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('focusedInputPaneKind() === "shell" &&\n    flowShellRunning(selectedFlow())');
     expect(app).not.toContain('els.flowPane.querySelector(".agent-interrupt").addEventListener("click"');
     expect(app).toContain("function canSubmitPromptMessage()");
+    expect(app).toContain("(!flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow)))");
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).toContain("function flashBlockedInput(input)");
     expect(app).toContain("async function uploadAgentImages(files)");
@@ -1131,7 +1198,14 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("const shellRuntime = shellProcesses.get(flow.id);");
     expect(server).toContain('const shellStatus = shellRuntime.stopping ? "interrupting" : "running";');
     expect(server).toContain('agentRuntimeKind: "shell"');
+    expect(server).toContain("agentRuntime?.activeTurnId || agentRuntime?.compacting");
+    expect(server).toContain("agentCompacting: Boolean(agentRuntime.compacting)");
+    expect(server).toContain("agentQueuedMessage: Boolean(agentRuntime.queuedAgentMessages?.length)");
     expect(server).toContain('flow.agentStatus !== "running" && flow.agentStatus !== "interrupting"');
+    expect(server).toContain("const compactingStartedAt = runtime.compactingStartedAt ?? runtime.lastSeenAt ?? nowMs;");
+    expect(server).toContain("context compaction timed out after");
+    expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
+    expect(server).not.toContain("if (runtime.compacting) return flow;");
     expect(server).toContain('insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
     expect(server).toContain("setInterval(sweepAgentHeartbeats, agentHeartbeatSweepIntervalMs);");
     expect(server).toContain('parts[3] === "agent" && parts[4] === "status" && request.method === "GET"');
@@ -1439,6 +1513,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('kind === "shell" ? "shell:trace-group" : "agent:trace-group"');
     expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
     expect(server).toContain('function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "")');
+    expect(server).toContain("if (traceCount <= 1) return;");
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
     expect(server).toContain("function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number)");
     expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
@@ -1456,6 +1531,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("function syntheticShellTraceRanges(logs, existingRanges)");
     expect(app).not.toContain("function latestInputLogId(logs)");
     expect(app).toContain('if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;');
+    expect(app).toContain("if (count <= 1) return null;");
     expect(app).toContain('defaultOpen: false');
     expect(app).toContain("group.defaultOpen || (group.flowId && group.traceKey");
     expect(app).toContain("function syntheticSteerTraceRanges(logs, existingRanges)");
@@ -1464,6 +1540,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function isRoutineShellExitLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
     expect(app).toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
+    expect(app).toContain("if (count <= 1) continue;");
     expect(app).toContain('filter((range) => range && range.kind !== "shell")');
     expect(app).toContain("function isShellTraceGroupLog(log)");
     expect(app).toContain("if (isShellTraceGroupLog(log)) continue;");
@@ -1474,6 +1551,10 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("...shellTraceRanges,");
     expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
+    expect(app).toContain("function flattenSingleChildTraceGroups(groups)");
+    expect(app).toContain('if (group.source === "agent:trace-group") {');
+    expect(app).toContain("if (children.length <= 1) {");
+    expect(app).toContain("return flattenSingleChildTraceGroups(groups);");
     expect(app).toContain("openTraceGroups: new Map()");
     expect(app).toContain("traceKey: traceRange.key,");
     expect(app).toContain("flowId: log.flowId,");
@@ -1577,6 +1658,62 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('sessionStartSource,');
     expect(server).toContain('insertLog(flow.id, "agent:status", "context cleared")');
     expect(server).toContain('insertLog(flow.id, "agent:status", "compact requested")');
+    expect(server).toContain("runtime.compacting = true;");
+    expect(server).toContain("runtime.compactingStartedAt = Date.now();");
+    expect(server).toContain("runtime.compactionPromptLogId = promptLogId;");
+    expect(server).toContain("runtime.compacting = false;");
+    expect(server).toContain("runtime.compactingStartedAt = undefined;");
+    expect(server).toContain("runtime.compactionPromptLogId = undefined;");
+    const turnStartedHandler = server.slice(
+      server.indexOf('if (method === "turn/started")'),
+      server.indexOf('if (method === "turn/completed")'),
+    );
+    expect(turnStartedHandler).not.toContain("runtime.compacting = false;");
+    const turnCompletedHandler = server.slice(
+      server.indexOf('if (method === "turn/completed")'),
+      server.indexOf('if (method === "thread/compacted")'),
+    );
+    expect(server).toContain("function finishCodexCompaction(runtime: RuntimeProcess");
+    expect(server).toContain("updateRuntimeThreadFromParams(runtime, params);");
+    expect(server).toContain("const compactionPromptLogId = runtime.compactionPromptLogId;");
+    expect(server).toContain('const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", "context compacted");');
+    expect(server).toContain("deleteQueuedAgentMessagePlaceholders(runtime);");
+    expect(server).toContain(
+      'if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId, "compact");',
+    );
+    expect(turnCompletedHandler).toContain('if (runtime.compacting && turn?.status !== "failed") {');
+    expect(turnCompletedHandler).toContain("finishCodexCompaction(runtime, params);");
+    const threadCompactedHandler = server.slice(
+      server.indexOf('if (method === "thread/compacted")'),
+      server.indexOf('if (method === "model/rerouted")'),
+    );
+    expect(threadCompactedHandler).toContain("if (runtime.compacting) finishCodexCompaction(runtime, params);");
+    expect(threadCompactedHandler).toContain("else updateRuntimeThreadFromParams(runtime, params);");
+    expect(server).toContain('insertLog(flowId, "agent:status", "compact interrupted")');
+    expect(server).toContain("runtime.queuedAgentMessages = [];");
+    expect(server).toContain("queuedAgentMessages?: Array<{ message: string; queuedLogId: number }>");
+    expect(server).toContain("compactionPromptLogId?: number;");
+    expect(server).toContain("function startNextQueuedAgentMessage(runtime: RuntimeProcess)");
+    expect(server).toContain("function deleteQueuedUserLog(flowId: string, id: number)");
+    expect(server).toContain("function deleteQueuedAgentMessagePlaceholders(runtime: RuntimeProcess)");
+    expect(server).toContain('log.source !== "user:queued"');
+    expect(server).toContain("deleteLogByIdStmt.run(id);");
+    expect(server).toContain('broadcast("logs-deleted", { flowId, ids: [id] });');
+    expect(server).toContain("deleteQueuedUserLog(flow.id, queued.queuedLogId);");
+    expect(server).toContain('const userLogId = insertLog(flow.id, "user", `${queued.message}\\n`);');
+    const startAgentBody = server.slice(
+      server.indexOf("async function startAgent("),
+      server.indexOf("function startShellCommand("),
+    );
+    expect(startAgentBody.indexOf("existingRuntime?.compacting")).toBeLessThan(
+      startAgentBody.indexOf("handleSlashCommand(flow, userMessage)"),
+    );
+    expect(server).toContain('throw new Error("A message is already queued until context compaction finishes.");');
+    expect(server).toContain('insertLog(flow.id, "agent:status", "message queued until context compaction finishes")');
+    expect(server).toContain('const queuedLogId = insertLog(flow.id, "user:queued", `${userMessage}\\n`);');
+    expect(server).toContain("existingRuntime.queuedAgentMessages.push({ message: userMessage, queuedLogId });");
+    expect(server).toContain("await compactCodexThread(runtime, flow, userLogId);");
+    expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
     expect(server).toContain('updateFlow(flow.id, { agentStatus: "running" });');
     expect(server).toContain("const reviewFindingInstructions =");
     expect(server).toContain("function reviewPromptForSlashCommand(message: string)");
@@ -1584,6 +1721,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("await startAgentTurnAfterUserLog(flow, userLogId, reviewPromptForSlashCommand(message));");
     expect(server).toContain('"Usage: /review base [branch]|uncommitted|commit [ref]|custom [instructions]"');
     expect(app).toContain("function canSubmitPromptMessage()");
+    expect(app).toContain('if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };');
+    expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
+    expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).not.toContain("agentInterrupt.disabled");
   });
@@ -1670,8 +1810,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("shellHistory: initialInputHistory(SHELL_HISTORY_KEY)");
     expect(app).toContain("promptHistoryOrder: new Map()");
     expect(app).toContain("shellHistoryOrder: new Map()");
+    expect(app).toContain("ticketInputStates: new Map()");
+    expect(app).toContain('activeInputIssueId: ""');
     expect(app).toContain("historySearch: null");
     expect(app).toContain("historyNavigation: null");
+    expect(app).toContain("function emptyTicketInputState()");
+    expect(app).toContain('promptValue: ""');
+    expect(app).toContain('shellValue: ""');
     expect(app).toContain("function inputHistoryMode(input = document.activeElement)");
     expect(app).toContain('return input?.classList?.contains("shell-input") ? "shell" : "prompt";');
     expect(app).toContain("function rememberInputHistory(value, mode = inputHistoryMode(), orderValue = Date.now())");
@@ -1696,6 +1841,25 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("history.splice(MAX_INPUT_HISTORY_ITEMS);");
     expect(app).toContain("function matchingInputHistory(query, mode = inputHistoryMode())");
     expect(app).toContain("item.toLowerCase().includes(needle)");
+    expect(app).toContain("function cloneHistorySearch(search)");
+    expect(app).toContain("matches: [...(search.matches || [])]");
+    expect(app).toContain("function cloneHistoryNavigation(navigation)");
+    expect(app).toContain("function ticketInputState(issueId)");
+    expect(app).toContain("state.ticketInputStates.set(issueId, emptyTicketInputState())");
+    expect(app).toContain("function saveActiveTicketInputState()");
+    expect(app).toContain("inputState.promptValue = messageInput.value;");
+    expect(app).toContain("inputState.shellValue = commandInput.value;");
+    expect(app).toContain("inputState.historySearch = cloneHistorySearch(state.historySearch);");
+    expect(app).toContain("inputState.historyNavigation = cloneHistoryNavigation(state.historyNavigation);");
+    expect(app).toContain("function restoreTicketInputState(issueId)");
+    expect(app).toContain("messageInput.value = inputState.promptValue;");
+    expect(app).toContain("commandInput.value = inputState.shellValue;");
+    expect(app).toContain("state.historySearch = cloneHistorySearch(inputState.historySearch);");
+    expect(app).toContain("state.historyNavigation = cloneHistoryNavigation(inputState.historyNavigation);");
+    expect(app).toContain("function syncTicketInputState(issueId)");
+    expect(app).toContain("if (state.activeInputIssueId === nextIssueId) return;");
+    expect(app).toContain("saveActiveTicketInputState();\n  state.activeInputIssueId = nextIssueId;\n  restoreTicketInputState(nextIssueId);");
+    expect(app).toContain("syncTicketInputState(issueId);");
     expect(app).toContain("function renderHistorySearchIndicator()");
     expect(app).toContain('form?.classList.toggle("history-searching", Boolean(search));');
     expect(app).toContain('indicator.setAttribute("aria-hidden", String(!search));');
@@ -1739,6 +1903,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function setInputMode(mode)");
     expect(app).toContain('focusInputPane(mode === "command" || mode === "shell" ? "shell" : "prompt");');
     expect(app).toContain("input.focus({ preventScroll: true });");
+    expect(app).toContain("cancelHistorySearch();\n  resetInputHistoryNavigation();\n  saveActiveTicketInputState();\n  input.focus({ preventScroll: true });");
     expect(app).toContain("focusInputPane(\"prompt\");");
     expect(app).toContain("function canSwitchInputPane()");
     expect(app).toContain("const ticket = selectedTicket();");
@@ -1774,6 +1939,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (isEditableKeyTarget(event.target)) return false;");
     expect(app).toContain("if (handleGlobalHistorySearchKeydown(event)) return;");
     expect(app).toContain("if (handleHistorySearchKeydown(event)) return;");
+    expect(app).toContain("renderSlashMenu();\n  saveActiveTicketInputState();");
+    expect(app).toContain("resetInputHistoryNavigation();\n  saveActiveTicketInputState();");
     expect(app).toContain('rememberInputHistory(command, "shell");');
     expect(app).toContain('rememberInputHistory(message, "prompt");');
     expect(app).toContain("cancelHistorySearch();");
