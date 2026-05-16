@@ -131,14 +131,22 @@
             <h2>Linear Tickets</h2>
             <p id="ticketState">Connect Linear to load assigned tickets.</p>
           </div>
-          <button id="refreshLinearTickets" class="icon-button" type="button" aria-label="Refresh tickets" title="Refresh tickets">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 6v5h-5" />
-              <path d="M4 18v-5h5" />
-              <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
-              <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
-            </svg>
-          </button>
+          <div class="ticket-drawer-actions">
+            <button id="refreshLinearTickets" class="icon-button" type="button" aria-label="Refresh tickets" title="Refresh tickets">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 6v5h-5" />
+                <path d="M4 18v-5h5" />
+                <path d="M18.1 9A7 7 0 0 0 6.6 6.4L4 9" />
+                <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
+              </svg>
+            </button>
+            <button id="createLinearTicket" class="icon-button" type="button" aria-label="Create pinned In Eng ticket" title="Create pinned In Eng ticket">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14" />
+                <path d="M5 12h14" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="ticket-grid" id="ticketGrid"></div>
       </aside>

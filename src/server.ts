@@ -68,7 +68,7 @@ type LinearIssue = {
   createdAt?: string;
   updatedAt?: string;
   state?: { id?: string; name: string; color?: string; type?: string };
-  team?: { key: string; name: string };
+  team?: { id?: string; key: string; name: string };
   project?: { name: string } | null;
   assignee?: { name: string } | null;
   creator?: { name: string } | null;
@@ -82,6 +82,14 @@ type LinearIssue = {
       user?: { name: string } | null;
     }[];
   };
+};
+
+type LinearWorkflowState = {
+  id: string;
+  name: string;
+  color?: string;
+  type?: string;
+  team?: { id: string; key: string; name: string } | null;
 };
 
 const stages: Stage[] = ["planning", "working", "reviewing", "done"];
@@ -2225,6 +2233,96 @@ async function updateLinearIssueStatus(identifier: string, issueId: string, stat
   return { issue, flow: flow ? getFlow(flow.id) : null };
 }
 
+function linearWorkflowKey(name = "") {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+async function createBlankInEngLinearIssue() {
+  const data = await linearGraphql<{
+    viewer: {
+      id: string;
+      name: string;
+      assignedIssues: {
+        nodes: LinearIssue[];
+      };
+    };
+    workflowStates: {
+      nodes: LinearWorkflowState[];
+    };
+  }>(`
+    query NewIssueContext {
+      viewer {
+        id
+        name
+        assignedIssues(first: 100) {
+          nodes {
+            team { id key name }
+          }
+        }
+      }
+      workflowStates(first: 250) {
+        nodes {
+          id
+          name
+          color
+          type
+          team { id key name }
+        }
+      }
+    }
+  `);
+  const teamRanks = new Map<string, number>();
+  for (const issue of data.viewer.assignedIssues.nodes) {
+    const key = issue.team?.key;
+    if (key) teamRanks.set(key, (teamRanks.get(key) ?? 0) + 1);
+  }
+  const inEngStates = data.workflowStates.nodes.filter((state) => linearWorkflowKey(state.name) === "in-eng" && state.team?.id);
+  const state = inEngStates.sort((a, b) => (teamRanks.get(b.team?.key ?? "") ?? 0) - (teamRanks.get(a.team?.key ?? "") ?? 0))[0];
+  if (!state?.team?.id) throw new Error('No Linear workflow state named "In Eng" was found.');
+
+  const created = await linearGraphql<{
+    issueCreate?: {
+      success: boolean;
+      issue?: LinearIssue;
+    };
+  }>(
+    `
+      mutation CreateBlankInEngIssue($input: IssueCreateInput!) {
+        issueCreate(input: $input) {
+          success
+          issue {
+            id
+            identifier
+            title
+            url
+            priority
+            estimate
+            createdAt
+            updatedAt
+            state { id name color type }
+            team { id key name }
+            project { name }
+            assignee { name }
+            labels { nodes { name color } }
+          }
+        }
+      }
+    `,
+    {
+      input: {
+        teamId: state.team.id,
+        stateId: state.id,
+        assigneeId: data.viewer.id,
+        title: "Untitled",
+      },
+    },
+  );
+  const issue = created.issueCreate?.issue;
+  if (!created.issueCreate?.success || !issue) throw new Error("Linear did not create the issue.");
+  cacheLinearIssue(issue);
+  return { issue, viewer: { id: data.viewer.id, name: data.viewer.name } };
+}
+
 function isDoneLinearIssue(issue: LinearIssue) {
   const stateName = issue.state?.name.trim().toLowerCase();
   const stateType = issue.state?.type?.trim().toLowerCase();
@@ -2466,6 +2564,12 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/linear/attachment" && request.method === "GET") {
     return await fetchLinearAttachment(url.searchParams.get("url") ?? "");
+  }
+
+  if (url.pathname === "/api/linear/issues" && request.method === "POST") {
+    const result = await createBlankInEngLinearIssue();
+    setSetting("linearViewerName", result.viewer.name);
+    return json({ ok: true, ...result });
   }
 
   if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && request.method === "GET") {

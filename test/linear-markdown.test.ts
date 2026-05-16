@@ -84,6 +84,12 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("1. first");
   });
 
+  test("can render blank lines as compact spacing", () => {
+    const gap = '<br><span class="markdown-blank-line" aria-hidden="true"></span>';
+    expect(renderLinearMarkdown("one\n\ntwo", "", { compactBlankLines: true })).toBe(`one${gap}two`);
+    expect(renderLinearMarkdown("one\n\n\ntwo", "", { compactBlankLines: true })).toBe(`one${gap}${gap}two`);
+  });
+
   test("renders Markdown tables", () => {
     const html = renderLinearMarkdown("confirmed\n| before | after |\n| -- | -- |\n| one | **two** |");
 

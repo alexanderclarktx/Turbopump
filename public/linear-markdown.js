@@ -1,5 +1,5 @@
 export function renderLinearMarkdown(value, fallback = "", options = {}) {
-  const { images = true, links = true } = options;
+  const { images = true, links = true, compactBlankLines = false } = options;
   const text = String(value || fallback);
   if (!text) return "";
 
@@ -44,8 +44,17 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
     }
 
     if (!line.trim()) {
-      blocks.push("<br>");
-      index += 1;
+      let blankCount = 0;
+      while (index + blankCount < lines.length && !lines[index + blankCount].trim()) blankCount += 1;
+      const hasPreviousContent = blocks.length > 0;
+      const hasNextContent = index + blankCount < lines.length;
+      const compactBreak = '<br><span class="markdown-blank-line" aria-hidden="true"></span>';
+      blocks.push(
+        compactBlankLines && hasPreviousContent && hasNextContent
+          ? compactBreak.repeat(blankCount)
+          : "<br>".repeat(blankCount),
+      );
+      index += blankCount;
       continue;
     }
 

@@ -211,6 +211,7 @@ const state = {
   defaultAgentDeveloperInstructions: "",
   deletingCheckoutNames: new Set(),
   deletingOutputLogIds: new Set(),
+  creatingLinearTicket: false,
 };
 
 const els = {
@@ -225,6 +226,7 @@ const els = {
   linearKeyForm: document.querySelector("#linearKeyForm"),
   linearApiKey: document.querySelector("#linearApiKey"),
   refreshLinearTickets: document.querySelector("#refreshLinearTickets"),
+  createLinearTicket: document.querySelector("#createLinearTicket"),
   linearState: document.querySelector("#linearState"),
   envEditor: document.querySelector("#envEditor"),
   checkoutList: document.querySelector("#checkoutList"),
@@ -2311,6 +2313,31 @@ function setLinearIssuePinned(identifier, pinned) {
   renderTickets();
 }
 
+function focusLinearTicketCard(identifier) {
+  requestAnimationFrame(() => {
+    const card = [...els.ticketGrid.querySelectorAll(".ticket-card")].find((item) => item.dataset.issue === identifier);
+    card?.focus({ preventScroll: true });
+    card?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function upsertLinearIssue(issue) {
+  const existing = state.linearTickets.some((ticket) => ticket.identifier === issue.identifier);
+  if (!existing) {
+    state.linearTickets = [issue, ...state.linearTickets];
+    return;
+  }
+  state.linearTickets = state.linearTickets.map((ticket) => {
+    if (ticket.identifier !== issue.identifier) return ticket;
+    return {
+      ...ticket,
+      ...issue,
+      flowId: ticket.flowId || "",
+      flowStage: ticket.flowStage || "",
+    };
+  });
+}
+
 function ticketCanMoveToStatus(issueId, group) {
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
   return Boolean(ticket && group.stateId && (isLinearIssuePinned(issueId) || linearStatusId(ticket) !== group.stateId));
@@ -2387,15 +2414,7 @@ function handlePinnedTicketDrop(event) {
 }
 
 function replaceLinearIssue(issue) {
-  state.linearTickets = state.linearTickets.map((ticket) => {
-    if (ticket.identifier !== issue.identifier) return ticket;
-    return {
-      ...ticket,
-      ...issue,
-      flowId: ticket.flowId || "",
-      flowStage: ticket.flowStage || "",
-    };
-  });
+  upsertLinearIssue(issue);
 
   const cached = state.linearDetails.get(issue.identifier);
   if (cached?.issue) {
@@ -2431,6 +2450,7 @@ async function moveTicketToLinearStatus(issueId, group) {
     syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
+    focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {
     state.linearTickets = previousTickets;
@@ -2439,6 +2459,35 @@ async function moveTicketToLinearStatus(issueId, group) {
     renderTickets();
     renderFlowPane();
     els.ticketState.textContent = error.message;
+  }
+}
+
+async function createPinnedLinearTicket() {
+  if (state.creatingLinearTicket) return;
+  state.creatingLinearTicket = true;
+  els.createLinearTicket.disabled = true;
+  els.ticketState.textContent = "Creating In Eng ticket.";
+
+  try {
+    const data = await api("/api/linear/issues", { method: "POST" });
+    const issue = data.issue;
+    if (!issue?.identifier) throw new Error("Linear did not return the created issue.");
+    upsertLinearIssue(issue);
+    state.pinnedLinearIssues.add(issue.identifier);
+    persistPinnedLinearIssues();
+    state.selectedLinearIssueId = issue.identifier;
+    localStorage.setItem("flow.selectedLinearIssueId", issue.identifier);
+    state.linearDetails.set(issue.identifier, { loading: false, issue });
+    syncLinearTicketsWithFlows();
+    renderTickets();
+    renderFlowPane();
+    els.ticketState.textContent = formatLastUpdated();
+  } catch (error) {
+    els.ticketState.textContent = error.message;
+    toast(error.message, { kind: "error" });
+  } finally {
+    state.creatingLinearTicket = false;
+    els.createLinearTicket.disabled = false;
   }
 }
 
@@ -3304,9 +3353,9 @@ function usesTerminalMarkdownToggle(source) {
 
 function renderTerminalMarkdownOutput(message, showToggle = false) {
   const toggle = showToggle
-    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Show raw markdown" title="Show raw markdown">Raw</button>`
+    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>`
     : "";
-  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true })}</div>`;
+  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true, compactBlankLines: true })}</div>`;
 }
 
 function ansiClassForCode(code) {
@@ -3514,12 +3563,12 @@ function toggleTerminalMarkdownOutput(button) {
   const raw = content.dataset.rawMarkdown || "";
   const showingRaw = body.classList.toggle("showing-raw-markdown");
   button.setAttribute("aria-pressed", String(showingRaw));
-  button.setAttribute("aria-label", showingRaw ? "Show rendered markdown" : "Show raw markdown");
-  button.title = showingRaw ? "Show rendered markdown" : "Show raw markdown";
-  button.textContent = showingRaw ? "Rendered" : "Raw";
+  button.setAttribute("aria-label", "Toggle raw markdown");
+  button.title = "Toggle raw markdown";
+  button.textContent = "Raw";
   content.innerHTML = showingRaw
     ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
-    : renderLinearMarkdown(raw, "", { images: false, links: true });
+    : renderLinearMarkdown(raw, "", { images: false, links: true, compactBlankLines: true });
   if (!showingRaw) highlightCodeBlocks(content);
 }
 
@@ -3591,8 +3640,11 @@ function appendTerminalBlock(fragment, group) {
   }
 
   header.replaceChildren(marker, label, ...(time ? [time] : []));
-  block.replaceChildren(header, body);
-  if (meta.tone === "output") block.appendChild(renderOutputDeleteButton(group));
+  block.replaceChildren(
+    header,
+    ...(meta.tone === "output" ? [renderOutputDeleteButton(group)] : []),
+    body,
+  );
   fragment.appendChild(block);
 }
 
@@ -3725,6 +3777,8 @@ function materializeTerminalTraceGroup(details) {
 function toggleTerminalTraceGroup(details) {
   const isClosing = details.classList.contains("terminal-trace-closing");
   const shouldOpen = isClosing || !details.open;
+  const terminal = details.closest(".terminal");
+  const shouldFollowLatest = terminal && !state.terminalFollowPaused && terminalAtLatest(terminal);
   if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
   details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
   if (shouldOpen) materializeTerminalTraceGroup(details);
@@ -3735,9 +3789,15 @@ function toggleTerminalTraceGroup(details) {
   const itemCount = details.querySelectorAll(":scope > .terminal-trace-body > *").length;
   const longestDelay = traceFoldDelay(Math.max(0, itemCount - 1));
   const duration = shouldOpen ? Math.max(110, 125 + longestDelay) : Math.max(55, 63 + longestDelay / 2);
+  if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, duration + 40);
   details._traceToggleTimer = window.setTimeout(() => {
-    if (!shouldOpen) details.open = false;
+    if (!shouldOpen) {
+      details.open = false;
+      details._traceBody?.remove();
+      details._traceBody = null;
+    }
     details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
+    if (shouldFollowLatest) scrollTerminalToLatestNow(terminal);
     details._traceToggleTimer = 0;
   }, duration);
 }
@@ -4120,6 +4180,16 @@ els.settingsPane.addEventListener("keydown", (event) => {
   setSettingsCollapsed(false);
 });
 
+els.settingsPane.addEventListener(
+  "wheel",
+  (event) => {
+    if (state.settingsCollapsed || event.target.closest(".settings-content")) return;
+    els.settingsContent.scrollTop += event.deltaY;
+    event.preventDefault();
+  },
+  { passive: false },
+);
+
 els.settingsContent.addEventListener("click", (event) => {
   const toggle = event.target.closest(".settings-section-toggle");
   if (!toggle) return;
@@ -4166,6 +4236,7 @@ els.linearKeyForm.addEventListener("submit", async (event) => {
 });
 
 els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));
+els.createLinearTicket.addEventListener("click", () => void createPinnedLinearTicket());
 
 els.flowPane.querySelector(".flow-resizer").addEventListener("pointerdown", startFlowSplitResize);
 els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) => {
@@ -4196,6 +4267,7 @@ els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
   event.preventDefault();
   event.stopPropagation();
   toggleTerminalMarkdownOutput(toggle);
+  if (event.detail > 0) toggle.blur();
 });
 
 els.flowPane.querySelector(".terminal").addEventListener(
