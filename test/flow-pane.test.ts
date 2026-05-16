@@ -672,7 +672,7 @@ describe("Turbopump pane markup", () => {
   test("renders Markdown headings, inline formatting, and code blocks in Linear and Agent panes", () => {
     expect(app).toContain('import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js";');
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");
-    expect(app).toContain('["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
+    expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain('document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre")');
     expect(app).toContain("function usesTerminalMarkdownToggle(source)");
     expect(app).toContain('["agent", "agent:message"].includes(source)');
@@ -1064,6 +1064,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('flow.agentStatus !== "running" &&');
     expect(app).toContain('flow.agentStatus !== "interrupting"');
     expect(app).toContain('flow?.agentRuntimeKind === "shell" ? "shell" : "agent"');
+    expect(app).toContain("function flowAgentCompacting(flow)");
+    expect(app).toContain("return flowAgentRunning(flow) && Boolean(flow?.agentCompacting);");
+    expect(app).toContain("function flowAgentQueuedMessage(flow)");
+    expect(app).toContain("return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);");
     expect(app).toContain("if (state.interruptSubmitting) return false;");
     expect(app).toContain('flow?.agentStatus === "running" || flow?.agentStatus === "interrupting"');
     expect(app).toContain("state.interruptSubmitting = true;");
@@ -1092,6 +1096,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('focusedInputPaneKind() === "shell" &&\n    flowShellRunning(selectedFlow())');
     expect(app).not.toContain('els.flowPane.querySelector(".agent-interrupt").addEventListener("click"');
     expect(app).toContain("function canSubmitPromptMessage()");
+    expect(app).toContain("(!flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow)))");
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).toContain("function flashBlockedInput(input)");
     expect(app).toContain("async function uploadAgentImages(files)");
@@ -1131,7 +1136,14 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("const shellRuntime = shellProcesses.get(flow.id);");
     expect(server).toContain('const shellStatus = shellRuntime.stopping ? "interrupting" : "running";');
     expect(server).toContain('agentRuntimeKind: "shell"');
+    expect(server).toContain("agentRuntime?.activeTurnId || agentRuntime?.compacting");
+    expect(server).toContain("agentCompacting: Boolean(agentRuntime.compacting)");
+    expect(server).toContain("agentQueuedMessage: Boolean(agentRuntime.queuedAgentMessages?.length)");
     expect(server).toContain('flow.agentStatus !== "running" && flow.agentStatus !== "interrupting"');
+    expect(server).toContain("const compactingStartedAt = runtime.compactingStartedAt ?? runtime.lastSeenAt ?? nowMs;");
+    expect(server).toContain("context compaction timed out after");
+    expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
+    expect(server).not.toContain("if (runtime.compacting) return flow;");
     expect(server).toContain('insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
     expect(server).toContain("setInterval(sweepAgentHeartbeats, agentHeartbeatSweepIntervalMs);");
     expect(server).toContain('parts[3] === "agent" && parts[4] === "status" && request.method === "GET"');
@@ -1439,6 +1451,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('kind === "shell" ? "shell:trace-group" : "agent:trace-group"');
     expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
     expect(server).toContain('function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "")');
+    expect(server).toContain("if (traceCount <= 1) return;");
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
     expect(server).toContain("function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number)");
     expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
@@ -1456,6 +1469,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("function syntheticShellTraceRanges(logs, existingRanges)");
     expect(app).not.toContain("function latestInputLogId(logs)");
     expect(app).toContain('if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;');
+    expect(app).toContain("if (count <= 1) return null;");
     expect(app).toContain('defaultOpen: false');
     expect(app).toContain("group.defaultOpen || (group.flowId && group.traceKey");
     expect(app).toContain("function syntheticSteerTraceRanges(logs, existingRanges)");
@@ -1464,6 +1478,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function isRoutineShellExitLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
     expect(app).toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
+    expect(app).toContain("if (count <= 1) continue;");
     expect(app).toContain('filter((range) => range && range.kind !== "shell")');
     expect(app).toContain("function isShellTraceGroupLog(log)");
     expect(app).toContain("if (isShellTraceGroupLog(log)) continue;");
@@ -1474,6 +1489,10 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("...shellTraceRanges,");
     expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
     expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
+    expect(app).toContain("function flattenSingleChildTraceGroups(groups)");
+    expect(app).toContain('if (group.source === "agent:trace-group") {');
+    expect(app).toContain("if (children.length <= 1) {");
+    expect(app).toContain("return flattenSingleChildTraceGroups(groups);");
     expect(app).toContain("openTraceGroups: new Map()");
     expect(app).toContain("traceKey: traceRange.key,");
     expect(app).toContain("flowId: log.flowId,");
@@ -1577,6 +1596,62 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('sessionStartSource,');
     expect(server).toContain('insertLog(flow.id, "agent:status", "context cleared")');
     expect(server).toContain('insertLog(flow.id, "agent:status", "compact requested")');
+    expect(server).toContain("runtime.compacting = true;");
+    expect(server).toContain("runtime.compactingStartedAt = Date.now();");
+    expect(server).toContain("runtime.compactionPromptLogId = promptLogId;");
+    expect(server).toContain("runtime.compacting = false;");
+    expect(server).toContain("runtime.compactingStartedAt = undefined;");
+    expect(server).toContain("runtime.compactionPromptLogId = undefined;");
+    const turnStartedHandler = server.slice(
+      server.indexOf('if (method === "turn/started")'),
+      server.indexOf('if (method === "turn/completed")'),
+    );
+    expect(turnStartedHandler).not.toContain("runtime.compacting = false;");
+    const turnCompletedHandler = server.slice(
+      server.indexOf('if (method === "turn/completed")'),
+      server.indexOf('if (method === "thread/compacted")'),
+    );
+    expect(server).toContain("function finishCodexCompaction(runtime: RuntimeProcess");
+    expect(server).toContain("updateRuntimeThreadFromParams(runtime, params);");
+    expect(server).toContain("const compactionPromptLogId = runtime.compactionPromptLogId;");
+    expect(server).toContain('const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", "context compacted");');
+    expect(server).toContain("deleteQueuedAgentMessagePlaceholders(runtime);");
+    expect(server).toContain(
+      'if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId, "compact");',
+    );
+    expect(turnCompletedHandler).toContain('if (runtime.compacting && turn?.status !== "failed") {');
+    expect(turnCompletedHandler).toContain("finishCodexCompaction(runtime, params);");
+    const threadCompactedHandler = server.slice(
+      server.indexOf('if (method === "thread/compacted")'),
+      server.indexOf('if (method === "model/rerouted")'),
+    );
+    expect(threadCompactedHandler).toContain("if (runtime.compacting) finishCodexCompaction(runtime, params);");
+    expect(threadCompactedHandler).toContain("else updateRuntimeThreadFromParams(runtime, params);");
+    expect(server).toContain('insertLog(flowId, "agent:status", "compact interrupted")');
+    expect(server).toContain("runtime.queuedAgentMessages = [];");
+    expect(server).toContain("queuedAgentMessages?: Array<{ message: string; queuedLogId: number }>");
+    expect(server).toContain("compactionPromptLogId?: number;");
+    expect(server).toContain("function startNextQueuedAgentMessage(runtime: RuntimeProcess)");
+    expect(server).toContain("function deleteQueuedUserLog(flowId: string, id: number)");
+    expect(server).toContain("function deleteQueuedAgentMessagePlaceholders(runtime: RuntimeProcess)");
+    expect(server).toContain('log.source !== "user:queued"');
+    expect(server).toContain("deleteLogByIdStmt.run(id);");
+    expect(server).toContain('broadcast("logs-deleted", { flowId, ids: [id] });');
+    expect(server).toContain("deleteQueuedUserLog(flow.id, queued.queuedLogId);");
+    expect(server).toContain('const userLogId = insertLog(flow.id, "user", `${queued.message}\\n`);');
+    const startAgentBody = server.slice(
+      server.indexOf("async function startAgent("),
+      server.indexOf("function startShellCommand("),
+    );
+    expect(startAgentBody.indexOf("existingRuntime?.compacting")).toBeLessThan(
+      startAgentBody.indexOf("handleSlashCommand(flow, userMessage)"),
+    );
+    expect(server).toContain('throw new Error("A message is already queued until context compaction finishes.");');
+    expect(server).toContain('insertLog(flow.id, "agent:status", "message queued until context compaction finishes")');
+    expect(server).toContain('const queuedLogId = insertLog(flow.id, "user:queued", `${userMessage}\\n`);');
+    expect(server).toContain("existingRuntime.queuedAgentMessages.push({ message: userMessage, queuedLogId });");
+    expect(server).toContain("await compactCodexThread(runtime, flow, userLogId);");
+    expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
     expect(server).toContain('updateFlow(flow.id, { agentStatus: "running" });');
     expect(server).toContain("const reviewFindingInstructions =");
     expect(server).toContain("function reviewPromptForSlashCommand(message: string)");
@@ -1584,6 +1659,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("await startAgentTurnAfterUserLog(flow, userLogId, reviewPromptForSlashCommand(message));");
     expect(server).toContain('"Usage: /review base [branch]|uncommitted|commit [ref]|custom [instructions]"');
     expect(app).toContain("function canSubmitPromptMessage()");
+    expect(app).toContain('if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };');
+    expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
+    expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).not.toContain("agentInterrupt.disabled");
   });
@@ -1670,8 +1748,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("shellHistory: initialInputHistory(SHELL_HISTORY_KEY)");
     expect(app).toContain("promptHistoryOrder: new Map()");
     expect(app).toContain("shellHistoryOrder: new Map()");
+    expect(app).toContain("ticketInputStates: new Map()");
+    expect(app).toContain('activeInputIssueId: ""');
     expect(app).toContain("historySearch: null");
     expect(app).toContain("historyNavigation: null");
+    expect(app).toContain("function emptyTicketInputState()");
+    expect(app).toContain('promptValue: ""');
+    expect(app).toContain('shellValue: ""');
     expect(app).toContain("function inputHistoryMode(input = document.activeElement)");
     expect(app).toContain('return input?.classList?.contains("shell-input") ? "shell" : "prompt";');
     expect(app).toContain("function rememberInputHistory(value, mode = inputHistoryMode(), orderValue = Date.now())");
@@ -1696,6 +1779,25 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("history.splice(MAX_INPUT_HISTORY_ITEMS);");
     expect(app).toContain("function matchingInputHistory(query, mode = inputHistoryMode())");
     expect(app).toContain("item.toLowerCase().includes(needle)");
+    expect(app).toContain("function cloneHistorySearch(search)");
+    expect(app).toContain("matches: [...(search.matches || [])]");
+    expect(app).toContain("function cloneHistoryNavigation(navigation)");
+    expect(app).toContain("function ticketInputState(issueId)");
+    expect(app).toContain("state.ticketInputStates.set(issueId, emptyTicketInputState())");
+    expect(app).toContain("function saveActiveTicketInputState()");
+    expect(app).toContain("inputState.promptValue = messageInput.value;");
+    expect(app).toContain("inputState.shellValue = commandInput.value;");
+    expect(app).toContain("inputState.historySearch = cloneHistorySearch(state.historySearch);");
+    expect(app).toContain("inputState.historyNavigation = cloneHistoryNavigation(state.historyNavigation);");
+    expect(app).toContain("function restoreTicketInputState(issueId)");
+    expect(app).toContain("messageInput.value = inputState.promptValue;");
+    expect(app).toContain("commandInput.value = inputState.shellValue;");
+    expect(app).toContain("state.historySearch = cloneHistorySearch(inputState.historySearch);");
+    expect(app).toContain("state.historyNavigation = cloneHistoryNavigation(inputState.historyNavigation);");
+    expect(app).toContain("function syncTicketInputState(issueId)");
+    expect(app).toContain("if (state.activeInputIssueId === nextIssueId) return;");
+    expect(app).toContain("saveActiveTicketInputState();\n  state.activeInputIssueId = nextIssueId;\n  restoreTicketInputState(nextIssueId);");
+    expect(app).toContain("syncTicketInputState(issueId);");
     expect(app).toContain("function renderHistorySearchIndicator()");
     expect(app).toContain('form?.classList.toggle("history-searching", Boolean(search));');
     expect(app).toContain('indicator.setAttribute("aria-hidden", String(!search));');
@@ -1739,6 +1841,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function setInputMode(mode)");
     expect(app).toContain('focusInputPane(mode === "command" || mode === "shell" ? "shell" : "prompt");');
     expect(app).toContain("input.focus({ preventScroll: true });");
+    expect(app).toContain("cancelHistorySearch();\n  resetInputHistoryNavigation();\n  saveActiveTicketInputState();\n  input.focus({ preventScroll: true });");
     expect(app).toContain("focusInputPane(\"prompt\");");
     expect(app).toContain("function canSwitchInputPane()");
     expect(app).toContain("const ticket = selectedTicket();");
@@ -1774,6 +1877,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (isEditableKeyTarget(event.target)) return false;");
     expect(app).toContain("if (handleGlobalHistorySearchKeydown(event)) return;");
     expect(app).toContain("if (handleHistorySearchKeydown(event)) return;");
+    expect(app).toContain("renderSlashMenu();\n  saveActiveTicketInputState();");
+    expect(app).toContain("resetInputHistoryNavigation();\n  saveActiveTicketInputState();");
     expect(app).toContain('rememberInputHistory(command, "shell");');
     expect(app).toContain('rememberInputHistory(message, "prompt");');
     expect(app).toContain("cancelHistorySearch();");

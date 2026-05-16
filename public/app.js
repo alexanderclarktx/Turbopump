@@ -127,6 +127,15 @@ function initialInputHistory(key) {
   }
 }
 
+function emptyTicketInputState() {
+  return {
+    promptValue: "",
+    shellValue: "",
+    historySearch: null,
+    historyNavigation: null,
+  };
+}
+
 function clampFlowSplitSize(value) {
   return Math.min(100, Math.max(0, value));
 }
@@ -187,6 +196,8 @@ const state = {
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
   promptHistoryOrder: new Map(),
   shellHistoryOrder: new Map(),
+  ticketInputStates: new Map(),
+  activeInputIssueId: "",
   historySearch: null,
   historyNavigation: null,
   terminalFollowPaused: false,
@@ -441,6 +452,57 @@ function matchingInputHistory(query, mode = inputHistoryMode()) {
   return inputHistory(mode).filter((item) => item.toLowerCase().includes(needle));
 }
 
+function cloneHistorySearch(search) {
+  if (!search) return null;
+  return {
+    ...search,
+    matches: [...(search.matches || [])],
+  };
+}
+
+function cloneHistoryNavigation(navigation) {
+  return navigation ? { ...navigation } : null;
+}
+
+function ticketInputState(issueId) {
+  if (!state.ticketInputStates.has(issueId)) state.ticketInputStates.set(issueId, emptyTicketInputState());
+  return state.ticketInputStates.get(issueId);
+}
+
+function saveActiveTicketInputState() {
+  const issueId = state.activeInputIssueId;
+  if (!issueId) return;
+  const inputState = ticketInputState(issueId);
+  const messageInput = promptInput();
+  const commandInput = shellInput();
+  if (messageInput) inputState.promptValue = messageInput.value;
+  if (commandInput) inputState.shellValue = commandInput.value;
+  inputState.historySearch = cloneHistorySearch(state.historySearch);
+  inputState.historyNavigation = cloneHistoryNavigation(state.historyNavigation);
+}
+
+function restoreTicketInputState(issueId) {
+  const inputState = issueId ? ticketInputState(issueId) : emptyTicketInputState();
+  const messageInput = promptInput();
+  const commandInput = shellInput();
+  if (messageInput) messageInput.value = inputState.promptValue;
+  if (commandInput) commandInput.value = inputState.shellValue;
+  state.historySearch = cloneHistorySearch(inputState.historySearch);
+  state.historyNavigation = cloneHistoryNavigation(inputState.historyNavigation);
+  state.slashCommandIndex = 0;
+  updateMessageInputMode();
+  resizeMessageInput();
+  renderHistorySearchIndicator();
+}
+
+function syncTicketInputState(issueId) {
+  const nextIssueId = issueId || "";
+  if (state.activeInputIssueId === nextIssueId) return;
+  saveActiveTicketInputState();
+  state.activeInputIssueId = nextIssueId;
+  restoreTicketInputState(nextIssueId);
+}
+
 function applyHistorySearchResult(input) {
   const search = state.historySearch;
   if (!search) return false;
@@ -625,6 +687,7 @@ function focusInputPane(kind) {
   if (!input) return false;
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  saveActiveTicketInputState();
   input.focus({ preventScroll: true });
   return true;
 }
@@ -671,6 +734,14 @@ function flowAgentRunning(flow) {
   return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "agent";
 }
 
+function flowAgentCompacting(flow) {
+  return flowAgentRunning(flow) && Boolean(flow?.agentCompacting);
+}
+
+function flowAgentQueuedMessage(flow) {
+  return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);
+}
+
 function flowShellRunning(flow) {
   return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "shell";
 }
@@ -691,7 +762,7 @@ function canSubmitPromptMessage() {
       (flow || ticket) &&
       !state.messageSubmitting &&
       !state.agentImageUploading &&
-      !flowAgentRunning(flow),
+      (!flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow))),
   );
 }
 
@@ -2454,6 +2525,7 @@ function renderFlowPane() {
   const agentEnabled = repoUrlConfigured();
   const agentPanel = els.flowPane.querySelector(".agent-panel");
 
+  syncTicketInputState(issueId);
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
   renderAgentContext(flow);
@@ -2690,6 +2762,7 @@ async function loadLogs(id, options = {}) {
 
 function logMeta(source) {
   const userLabel = state.linearViewer?.name || state.linearViewerName || "user";
+  if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };
   const map = {
     user: { label: userLabel, marker: ">", tone: "user" },
     "agent:message": { label: "codex", marker: ">", tone: "assistant" },
@@ -2753,10 +2826,12 @@ function parseTraceGroup(log) {
     const afterId = Number(payload.afterId);
     const beforeId = Number(payload.beforeId);
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId) return null;
+    const count = Number(payload.count || 0);
+    if (count <= 1) return null;
     return {
       afterId,
       beforeId,
-      count: Number(payload.count || 0),
+      count,
       kind: typeof payload.kind === "string" ? payload.kind : "",
       key: `${afterId}:${beforeId}`,
     };
@@ -2806,7 +2881,7 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
     const key = `${afterId}:${beforeId}`;
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
     const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
-    if (!count) continue;
+    if (count <= 1) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
   }
@@ -2826,7 +2901,7 @@ function syntheticSteerTraceRanges(logs, existingRanges) {
         const key = `${afterId}:${beforeId}`;
         if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
           const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
-          if (count) {
+          if (count > 1) {
             ranges.push({ afterId, beforeId, count, key });
             existingKeys.add(key);
           }
@@ -2864,6 +2939,21 @@ function appendTerminalGroup(groups, log) {
   };
   groups.push(group);
   return group;
+}
+
+function flattenSingleChildTraceGroups(groups) {
+  const result = [];
+  for (const group of groups) {
+    if (group.source === "agent:trace-group") {
+      const children = group.children || [];
+      if (children.length <= 1) {
+        result.push(...children);
+        continue;
+      }
+    }
+    result.push(group);
+  }
+  return result;
 }
 
 function isHiddenTerminalLog(log) {
@@ -2931,7 +3021,7 @@ function terminalGroups(logs, flow) {
     }
     appendTerminalGroup(groups, log);
   }
-  return groups;
+  return flattenSingleChildTraceGroups(groups);
 }
 
 function agentPaneLogs(logs, flow) {
@@ -3144,7 +3234,7 @@ function formatTerminalTimestamp(value) {
 }
 
 function usesTerminalBlockMarkdown(source) {
-  return ["user", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
+  return ["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
 
 function usesTerminalMarkdownToggle(source) {
@@ -4069,11 +4159,13 @@ promptInput().addEventListener("input", () => {
   updateMessageInputMode();
   resizeMessageInput();
   renderSlashMenu();
+  saveActiveTicketInputState();
 });
 
 shellInput().addEventListener("input", () => {
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  saveActiveTicketInputState();
 });
 
 els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
@@ -4197,6 +4289,7 @@ async function submitShellCommand(value) {
     cancelHistorySearch();
     resetInputHistoryNavigation();
     input.value = "";
+    saveActiveTicketInputState();
     await clearShellOutputPane();
     input.focus({ preventScroll: true });
     return;
@@ -4214,6 +4307,7 @@ async function submitShellCommand(value) {
   resetInputHistoryNavigation();
   state.shellSubmitting = true;
   input.value = "";
+  saveActiveTicketInputState();
   hideSlashMenu();
   renderTickets();
   renderShellOutputPane(selectedFlow()?.id || "");
@@ -4255,6 +4349,7 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   event.preventDefault();
   promptInput().value = command;
   resizeMessageInput();
+  saveActiveTicketInputState();
   if (slashCommandHasExpansions(command)) {
     state.slashCommandIndex = 0;
     renderSlashMenu();
@@ -4281,6 +4376,7 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
   input.value = "";
   updateMessageInputMode();
   resizeMessageInput();
+  saveActiveTicketInputState();
   hideSlashMenu();
   renderTickets();
   renderFlowPane();
@@ -4292,10 +4388,11 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     scheduleAgentWorkingPoll(flow.id);
     renderFlowPane();
     renderLogs(flow.id, { force: true, scrollToLatest: true });
-    await api(`/api/flows/${flow.id}/message`, {
+    const data = await api(`/api/flows/${flow.id}/message`, {
       method: "POST",
       body: JSON.stringify({ message: agentMessage }),
     });
+    if (data.flow) upsertFlow(data.flow);
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;

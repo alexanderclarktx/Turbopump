@@ -213,6 +213,10 @@ type RuntimeProcess = {
   stdoutBuffer?: string;
   threadId?: string;
   activeTurnId?: string;
+  compacting?: boolean;
+  compactingStartedAt?: number;
+  compactionPromptLogId?: number;
+  queuedAgentMessages?: Array<{ message: string; queuedLogId: number }>;
   lastSeenAt?: number;
   stopping?: boolean;
   pending?: Map<
@@ -384,6 +388,17 @@ function deleteOutputLogs(flowId: string, ids: number[]) {
   return uniqueIds;
 }
 
+function deleteQueuedUserLog(flowId: string, id: number) {
+  const log = logByIdStmt.get(id) as LogRow | null;
+  if (!log || log.flowId !== flowId || log.source !== "user:queued") return;
+  deleteLogByIdStmt.run(id);
+  broadcast("logs-deleted", { flowId, ids: [id] });
+}
+
+function deleteQueuedAgentMessagePlaceholders(runtime: RuntimeProcess) {
+  for (const queued of runtime.queuedAgentMessages ?? []) deleteQueuedUserLog(runtime.flowId, queued.queuedLogId);
+}
+
 function getFlow(id: string) {
   return flowByIdStmt.get(id) as Flow | null;
 }
@@ -424,11 +439,13 @@ function runtimeAdjustedFlow(flow: Flow) {
   }
 
   const agentRuntime = agentProcesses.get(flow.id);
-  if (agentRuntime?.activeTurnId) {
+  if (agentRuntime?.activeTurnId || agentRuntime?.compacting) {
     return {
       ...flow,
       agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running",
       agentRuntimeKind: "agent",
+      agentCompacting: Boolean(agentRuntime.compacting),
+      agentQueuedMessage: Boolean(agentRuntime.queuedAgentMessages?.length),
     };
   }
 
@@ -661,6 +678,18 @@ function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
     const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
     createTurnTraceGroup(flow.id, errorLogId);
     updateFlow(flow.id, { agentStatus: "failed" });
+    return getFlow(flow.id) ?? flow;
+  }
+
+  if (runtime.compacting) {
+    const compactingStartedAt = runtime.compactingStartedAt ?? runtime.lastSeenAt ?? nowMs;
+    if (nowMs - compactingStartedAt <= agentRuntimeStaleMs) return flow;
+    runtime.compacting = false;
+    runtime.compactingStartedAt = undefined;
+    runtime.compactionPromptLogId = undefined;
+    insertLog(flow.id, "agent:error", `context compaction timed out after ${Math.round(agentRuntimeStaleMs / 1000)}s\n`);
+    updateFlow(flow.id, { agentStatus: "failed" });
+    void startNextQueuedAgentMessage(runtime);
     return getFlow(flow.id) ?? flow;
   }
 
@@ -1276,7 +1305,7 @@ function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: 
 
   const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter((log) => log.id < beforeId);
   const traceCount = logs.length;
-  if (!traceCount) return;
+  if (traceCount <= 1) return;
 
   insertLog(
     flowId,
@@ -1338,6 +1367,27 @@ function checkoutBranchUpdate(flowId: string): Partial<Flow> {
   }
 }
 
+function updateRuntimeThreadFromParams(runtime: RuntimeProcess, params: Record<string, unknown>) {
+  const thread = params.thread as { id?: string } | undefined;
+  if (!thread?.id || thread.id === runtime.threadId) return;
+  runtime.threadId = thread.id;
+  setSetting(codexThreadSettingKey(runtime.flowId), thread.id);
+}
+
+function finishCodexCompaction(runtime: RuntimeProcess, params: Record<string, unknown>) {
+  updateRuntimeThreadFromParams(runtime, params);
+  runtime.activeTurnId = undefined;
+  runtime.compacting = false;
+  runtime.compactingStartedAt = undefined;
+  const compactionPromptLogId = runtime.compactionPromptLogId;
+  runtime.compactionPromptLogId = undefined;
+  const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", "context compacted");
+  deleteQueuedAgentMessagePlaceholders(runtime);
+  if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId, "compact");
+  updateFlow(runtime.flowId, { agentStatus: "idle" });
+  void startNextQueuedAgentMessage(runtime);
+}
+
 function handleCodexNotification(runtime: RuntimeProcess, message: Record<string, unknown>) {
   const method = String(message.method ?? "");
   const params = (message.params ?? {}) as Record<string, unknown>;
@@ -1358,17 +1408,26 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     createCompletedTurnTraceGroup(runtime.flowId);
     if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
+    if (runtime.compacting && turn?.status !== "failed") {
+      finishCodexCompaction(runtime, params);
+      return;
+    }
+    if (runtime.compacting) {
+      runtime.compacting = false;
+      runtime.compactingStartedAt = undefined;
+      runtime.compactionPromptLogId = undefined;
+    }
     updateFlow(runtime.flowId, {
       ...checkoutBranchUpdate(runtime.flowId),
       agentStatus: turn?.status === "failed" ? "failed" : "idle",
     });
+    if (turn?.status !== "failed") void startNextQueuedAgentMessage(runtime);
     return;
   }
 
   if (method === "thread/compacted") {
-    runtime.activeTurnId = undefined;
-    insertLog(runtime.flowId, "agent:status", "context compacted");
-    updateFlow(runtime.flowId, { agentStatus: "idle" });
+    if (runtime.compacting) finishCodexCompaction(runtime, params);
+    else updateRuntimeThreadFromParams(runtime, params);
     return;
   }
 
@@ -1416,7 +1475,14 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
 
   if (method === "error") {
     const error = params.error as { message?: string } | undefined;
+    const wasCompacting = Boolean(runtime.compacting);
+    if (wasCompacting) {
+      runtime.compacting = false;
+      runtime.compactingStartedAt = undefined;
+      runtime.compactionPromptLogId = undefined;
+    }
     insertLog(runtime.flowId, "agent:error", `${error?.message ?? JSON.stringify(params)}\n`);
+    if (wasCompacting) updateFlow(runtime.flowId, { agentStatus: runtime.activeTurnId ? "running" : "failed" });
   }
 }
 
@@ -1642,6 +1708,10 @@ async function ensureCodexRuntime(flow: Flow) {
 
 async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   if (runtime.activeTurnId) throw new Error("Cannot clear while a Codex turn is running.");
+  runtime.compacting = false;
+  runtime.compactingStartedAt = undefined;
+  runtime.compactionPromptLogId = undefined;
+  runtime.queuedAgentMessages = [];
   const threadResponse = (await sendCodexRequest(runtime, "thread/start", codexThreadParams(flow, "clear"))) as {
     thread?: { id?: string };
     model?: string;
@@ -1658,12 +1728,23 @@ async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   updateFlow(flow.id, { agentStatus: "idle" });
 }
 
-async function compactCodexThread(runtime: RuntimeProcess, flow: Flow) {
+async function compactCodexThread(runtime: RuntimeProcess, flow: Flow, promptLogId?: number) {
   if (!runtime.threadId) throw new Error("Codex thread is not ready.");
   if (runtime.activeTurnId) throw new Error("Cannot compact while a Codex turn is running.");
+  runtime.compacting = true;
+  runtime.compactingStartedAt = Date.now();
+  runtime.compactionPromptLogId = promptLogId;
   insertLog(flow.id, "agent:status", "compact requested");
   updateFlow(flow.id, { agentStatus: "running" });
-  await sendCodexRequest(runtime, "thread/compact/start", { threadId: runtime.threadId });
+  try {
+    await sendCodexRequest(runtime, "thread/compact/start", { threadId: runtime.threadId });
+  } catch (error) {
+    runtime.compacting = false;
+    runtime.compactingStartedAt = undefined;
+    runtime.compactionPromptLogId = undefined;
+    updateFlow(flow.id, { agentStatus: "failed" });
+    throw error;
+  }
 }
 
 async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMessage: string) {
@@ -1688,6 +1769,21 @@ async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMe
     updateFlow(flow.id, { agentStatus: "failed" });
     insertLog(flow.id, "agent:error", `${String(error)}\n`);
     throw error;
+  }
+}
+
+async function startNextQueuedAgentMessage(runtime: RuntimeProcess) {
+  if (runtime.stopping || runtime.compacting || runtime.activeTurnId) return;
+  const queued = runtime.queuedAgentMessages?.shift();
+  if (!queued) return;
+  const flow = getFlow(runtime.flowId);
+  if (!flow) return;
+  deleteQueuedUserLog(flow.id, queued.queuedLogId);
+  const userLogId = insertLog(flow.id, "user", `${queued.message}\n`);
+  try {
+    await startAgentTurnAfterUserLog(flow, userLogId, queued.message);
+  } catch {
+    // startAgentTurnAfterUserLog records the failure on the flow.
   }
 }
 
@@ -1728,7 +1824,7 @@ async function handleSlashCommand(flow: Flow, message: string) {
     return true;
   }
   if (command === "/compact") {
-    await compactCodexThread(runtime, flow);
+    await compactCodexThread(runtime, flow, userLogId);
     return true;
   }
   throw new Error(`Unknown slash command: ${command}`);
@@ -1736,15 +1832,26 @@ async function handleSlashCommand(flow: Flow, message: string) {
 
 async function startAgent(flow: Flow, userMessage = "") {
   flow = repairFlowCheckoutPath(flow);
-  if (userMessage && (await handleSlashCommand(flow, userMessage))) return;
   const message = userMessage.trim();
+  const existingRuntime = agentProcesses.get(flow.id);
+  if (message && existingRuntime?.compacting) {
+    if (existingRuntime.queuedAgentMessages?.length) {
+      throw new Error("A message is already queued until context compaction finishes.");
+    }
+    insertLog(flow.id, "agent:status", "message queued until context compaction finishes");
+    const queuedLogId = insertLog(flow.id, "user:queued", `${userMessage}\n`);
+    if (!existingRuntime.queuedAgentMessages) existingRuntime.queuedAgentMessages = [];
+    existingRuntime.queuedAgentMessages.push({ message: userMessage, queuedLogId });
+    updateFlow(flow.id, { agentStatus: "running" });
+    return;
+  }
+  if (userMessage && (await handleSlashCommand(flow, userMessage))) return;
   updateFlow(flow.id, {
     agentStatus: message ? "running" : "idle",
   });
   const updated = getFlow(flow.id);
   if (!updated) throw new Error("Flow disappeared while starting agent.");
 
-  const existingRuntime = agentProcesses.get(flow.id);
   const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);
   const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\n`) : 0;
   if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
@@ -1832,6 +1939,15 @@ async function interruptAgent(flowId: string) {
   if (interruptShellCommand(flowId)) return;
   const runtime = agentProcesses.get(flowId);
   if (!runtime) return;
+  if (runtime.compacting && !runtime.activeTurnId) {
+    runtime.compacting = false;
+    runtime.compactingStartedAt = undefined;
+    runtime.compactionPromptLogId = undefined;
+    runtime.queuedAgentMessages = [];
+    insertLog(flowId, "agent:status", "compact interrupted");
+    updateFlow(flowId, { agentStatus: "idle" });
+    return;
+  }
   if (!runtime.threadId || !runtime.activeTurnId) {
     updateFlow(flowId, { agentStatus: "idle" });
     return;
@@ -2373,7 +2489,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "agent" && request.method === "POST") {
       const body = await readJson<{ message?: string }>(request);
       await startAgent(flow, body.message ?? "");
-      return json({ ok: true });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "agent" && request.method === "DELETE") {
@@ -2384,7 +2500,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "message" && request.method === "POST") {
       const body = await readJson<{ message: string }>(request);
       await startAgent(flow, body.message);
-      return json({ ok: true });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "command" && parts[4] === "interrupt" && request.method === "POST") {
