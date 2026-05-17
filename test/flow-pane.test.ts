@@ -1019,7 +1019,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".diff-modal-summary .diff-deletions");
     expect(css).toContain(".diff-modal-code");
     expect(css).toContain(".diff-modal-code code");
-    expect(css).toContain(".diff-modal-close");
+    expect(html).not.toContain("diff-modal-close");
+    expect(app).not.toContain("diff-modal-close");
+    expect(css).not.toContain(".diff-modal-close");
     expect(css).toContain(".diff-modal-code .diff-code-line");
     expect(css).toContain(".diff-modal-code .diff-line-number");
     expect(css).toContain(".diff-modal-code .diff-line-text");
@@ -1132,10 +1134,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function syncAgentWorkingPoll(flowId, agentWorking)");
     expect(app).toContain("function pollAgentWorkingFlow()");
     expect(app).toContain('const data = await api(`/api/flows/${flowId}/agent/status`);');
-    expect(app).toContain(
-      "if (state.messageSubmitting || state.interruptSubmitting) {\n    state.agentWorkingPollInFlight = true;",
-    );
-    expect(app).toContain("await loadLogs(flowId);");
+    expect(app).toContain("await loadLogs(flowId, { scrollToLatest: state.messageSubmitting });");
+    expect(app).not.toContain("if (state.messageSubmitting || state.interruptSubmitting)");
     expect(app).toContain("terminal-entry-working-${runtimeKind}");
     expect(app).toContain('body.className = "terminal-entry-body agent-working agent-turn-working";');
     expect(app).toContain('dots.setAttribute("aria-label", "Agent working");');
@@ -1257,6 +1257,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
     expect(app).toContain("scheduleAgentWorkingPoll(flow.id);");
     expect(app).toContain("if (submittedFlowId) await loadLogs(submittedFlowId, { shellOnly: true });");
+    expect(app).toContain("if (submittedFlowId) await loadLogs(submittedFlowId, { scrollToLatest: true });");
     expect(app).toContain('await api(`/api/flows/${flow.id}/message`, {');
     expect(app).toContain("/agent/interrupt");
     expect(server).toContain("const agentHeartbeatSweepIntervalMs = 5000;");
@@ -1552,12 +1553,16 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function scheduleShellOutputRender(flowId)");
     expect(app).toContain("state.shellOutputRenderFrame = requestAnimationFrame(() => {");
     expect(app).toContain("if (isShellOnlyRenderLog(log)) {\n        scheduleShellOutputRender(log.flowId);\n        return;\n      }");
-    expect(app).toContain("scheduleLogRender(log.flowId);");
+    expect(app).toContain("shouldScrollToSubmittedPrompt");
+    expect(app).toContain('log.flowId === state.selectedFlowId &&\n        state.messageSubmitting &&');
+    expect(app).toContain('scheduleLogRender(log.flowId, shouldScrollToSubmittedPrompt ? { scrollToLatest: true } : {});');
     expect(app).toContain("while (true)");
     expect(app).toContain("if (!data.logs.length) break;");
     expect(app).toContain("if (data.logs.length < 1000) break;");
-    expect(app).toContain("state.lastLogId.set(id, highestLogId);");
+    expect(app).toContain("state.lastLogId.set(id, Math.max(state.lastLogId.get(id) || 0, highestLogId));");
     expect(app).toContain("if (flow) await loadLogs(flow.id);");
+    expect(app).toContain('ws.addEventListener("open", () => {');
+    expect(app).toContain("if (flow) void loadLogs(flow.id);");
   });
 
   test("renders logs in chronological order in the Agent pane", () => {

@@ -3151,13 +3151,6 @@ body.theme-dark .agent-context-diff:focus-visible {
   opacity: 1;
 }
 
-.diff-modal-close {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 1;
-}
-
 .diff-modal-summary,
 .diff-modal-code {
   margin: 0;

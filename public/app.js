@@ -2930,7 +2930,7 @@ async function loadLogs(id, options = {}) {
       if (appendLogEntry(log)) appendedLogs.push(log);
     }
 
-    state.lastLogId.set(id, highestLogId);
+    state.lastLogId.set(id, Math.max(state.lastLogId.get(id) || 0, highestLogId));
     if (data.logs.length < 1000) break;
   }
 
@@ -4038,21 +4038,9 @@ async function pollAgentWorkingFlow() {
     stopAgentWorkingPoll(flowId);
     return;
   }
-  if (state.messageSubmitting || state.interruptSubmitting) {
-    state.agentWorkingPollInFlight = true;
-    try {
-      await loadLogs(flowId);
-    } catch {
-      // Keep the polling loop alive; transient fetch failures should not freeze the indicator.
-    } finally {
-      state.agentWorkingPollInFlight = false;
-    }
-    scheduleAgentWorkingPoll(flowId);
-    return;
-  }
-
   state.agentWorkingPollInFlight = true;
   try {
+    await loadLogs(flowId, { scrollToLatest: state.messageSubmitting });
     const data = await api(`/api/flows/${flowId}/agent/status`);
     if (data.flow) upsertFlow(data.flow);
     render();
@@ -4194,6 +4182,10 @@ function formatDate(value) {
 
 function connectWs() {
   const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
+  ws.addEventListener("open", () => {
+    const flow = selectedFlow();
+    if (flow) void loadLogs(flow.id);
+  });
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "flows") {
@@ -4228,7 +4220,11 @@ function connectWs() {
         scheduleShellOutputRender(log.flowId);
         return;
       }
-      scheduleLogRender(log.flowId);
+      const shouldScrollToSubmittedPrompt =
+        log.flowId === state.selectedFlowId &&
+        state.messageSubmitting &&
+        (log.source === "user" || log.source === "user:queued");
+      scheduleLogRender(log.flowId, shouldScrollToSubmittedPrompt ? { scrollToLatest: true } : {});
     }
     if (message.event === "logs-deleted") {
       removeLogEntries(message.payload.flowId, message.payload.ids || []);
@@ -4669,14 +4665,13 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
-    if (submittedFlowId) await loadLogs(submittedFlowId);
+    if (submittedFlowId) await loadLogs(submittedFlowId, { scrollToLatest: true });
     renderTickets();
     renderFlowPane();
     promptInput().focus();
   }
 });
 
-els.diffModal?.querySelector(".diff-modal-close")?.addEventListener("click", closeDiffViewer);
 els.diffModal?.addEventListener("click", (event) => {
   if (event.target === els.diffModal) closeDiffViewer();
 });
