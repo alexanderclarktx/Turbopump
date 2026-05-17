@@ -170,6 +170,10 @@ const state = {
   logs: new Map(),
   logIds: new Map(),
   lastLogId: new Map(),
+  pendingLogRenders: new Map(),
+  logRenderFrame: 0,
+  pendingShellOutputRenders: new Set(),
+  shellOutputRenderFrame: 0,
   shellOutputClearAfterLogId: new Map(),
   openTraceGroups: new Map(),
   settingsCollapsed: true,
@@ -1494,6 +1498,8 @@ function clearFlowClientState(flowId) {
   state.logs.delete(flowId);
   state.logIds.delete(flowId);
   state.lastLogId.delete(flowId);
+  state.pendingLogRenders.delete(flowId);
+  state.pendingShellOutputRenders.delete(flowId);
   state.shellOutputClearAfterLogId.delete(flowId);
   state.openTraceGroups.delete(flowId);
   state.shellInterruptingFlowIds.delete(flowId);
@@ -2692,6 +2698,7 @@ function renderFlowPane() {
     const terminal = els.flowPane.querySelector(".terminal");
     terminal._flowLogFlowId = "";
     terminal._flowLogSignature = "";
+    terminal._flowLogRenderedKeys = null;
     terminal.textContent = "No agent session yet.";
   }
   void loadLinearDetail(issueId);
@@ -3022,9 +3029,12 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
   let latestUserLog = null;
-  for (const log of logs) {
+  let latestUserLogIndex = -1;
+  for (let index = 0; index < logs.length; index += 1) {
+    const log = logs[index];
     if (log.source === "user") {
       latestUserLog = log;
+      latestUserLogIndex = index;
       continue;
     }
     if (!latestUserLog || !isRuntimeDisappearedLog(log)) continue;
@@ -3032,7 +3042,7 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
     const beforeId = Number(log.id);
     const key = `${afterId}:${beforeId}`;
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
-    const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+    const count = index - latestUserLogIndex - 1;
     if (count <= 1) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
@@ -3044,15 +3054,17 @@ function syntheticSteerTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
   let latestUserLog = null;
+  let latestUserLogIndex = -1;
   let sawTurnCompletedSinceUser = false;
-  for (const log of logs) {
+  for (let index = 0; index < logs.length; index += 1) {
+    const log = logs[index];
     if (log.source === "user") {
       if (latestUserLog && !sawTurnCompletedSinceUser) {
         const afterId = Number(latestUserLog.id);
         const beforeId = Number(log.id);
         const key = `${afterId}:${beforeId}`;
         if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
-          const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+          const count = index - latestUserLogIndex - 1;
           if (count > 1) {
             ranges.push({ afterId, beforeId, count, key });
             existingKeys.add(key);
@@ -3060,6 +3072,7 @@ function syntheticSteerTraceRanges(logs, existingRanges) {
         }
       }
       latestUserLog = log;
+      latestUserLogIndex = index;
       sawTurnCompletedSinceUser = false;
       continue;
     }
@@ -3327,7 +3340,7 @@ function renderShellOutputPane(flowId) {
     pane._shellOutputSignature = "";
     return;
   }
-  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fshell-live:${shellLive}`;
+  const signature = `${terminalGroupsSignature(groups)}\u001fshell-live:${shellLive}`;
   if (pane._shellOutputSignature === signature) return;
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
@@ -3335,6 +3348,18 @@ function renderShellOutputPane(flowId) {
   pane.replaceChildren(fragment);
   pane._shellOutputSignature = signature;
   pane.scrollTop = pane.scrollHeight;
+}
+
+function scheduleShellOutputRender(flowId) {
+  if (!flowId) return;
+  state.pendingShellOutputRenders.add(flowId);
+  if (state.shellOutputRenderFrame) return;
+  state.shellOutputRenderFrame = requestAnimationFrame(() => {
+    state.shellOutputRenderFrame = 0;
+    const flowIds = [...state.pendingShellOutputRenders];
+    state.pendingShellOutputRenders.clear();
+    for (const id of flowIds) renderShellOutputPane(id);
+  });
 }
 
 async function clearShellOutputPane() {
@@ -3618,15 +3643,21 @@ function highlightCodeBlocks(root) {
   window.Prism?.highlightAllUnder?.(root);
 }
 
-function appendTerminalBlock(fragment, group) {
+function terminalGroupRenderKey(group) {
+  if (group.source === "agent:trace-group" && group.traceKey) return `trace:${group.traceKey}`;
+  return `${group.source}:${group.id}`;
+}
+
+function appendTerminalBlock(fragment, group, options = {}) {
   if (group.source === "agent:trace-group") {
-    appendTerminalTraceGroup(fragment, group);
+    appendTerminalTraceGroup(fragment, group, options);
     return;
   }
 
   const meta = logMeta(group.source);
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
+  if (options.incoming) block.classList.add("terminal-entry-incoming");
 
   if (group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command") {
     block.classList.add("terminal-entry-command");
@@ -3742,10 +3773,11 @@ async function deleteOutputLogGroup(flowId, ids) {
   }
 }
 
-function appendTerminalTraceGroup(fragment, group) {
+function appendTerminalTraceGroup(fragment, group, options = {}) {
   const meta = logMeta(group.source);
   const details = document.createElement("details");
   details.className = "terminal-trace-group";
+  if (options.incoming) details.classList.add("terminal-entry-incoming");
   details.dataset.traceKey = group.traceKey || "";
   details._traceChildren = group.children || [];
 
@@ -4034,6 +4066,43 @@ function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
   fragment.appendChild(block);
 }
 
+function terminalGroupSignaturePart(group) {
+  const logIds = group.logIds || [group.id];
+  const firstLogId = logIds[0] ?? group.id;
+  const lastLogId = logIds[logIds.length - 1] ?? group.id;
+  const children = group.children?.length ? `[${group.children.map((child) => terminalGroupSignaturePart(child)).join(",")}]` : "";
+  return [
+    group.source,
+    firstLogId,
+    lastLogId,
+    logIds.length,
+    group.createdAt,
+    group.lastAt,
+    String(group.message || "").length,
+    children,
+  ].join(":");
+}
+
+function terminalGroupsSignature(groups) {
+  return groups.map((group) => terminalGroupSignaturePart(group)).join("\u001f");
+}
+
+function scheduleLogRender(id, options = {}) {
+  if (!id) return;
+  const existing = state.pendingLogRenders.get(id) || {};
+  state.pendingLogRenders.set(id, {
+    force: Boolean(existing.force || options.force),
+    scrollToLatest: Boolean(existing.scrollToLatest || options.scrollToLatest),
+  });
+  if (state.logRenderFrame) return;
+  state.logRenderFrame = requestAnimationFrame(() => {
+    state.logRenderFrame = 0;
+    const entries = [...state.pendingLogRenders.entries()];
+    state.pendingLogRenders.clear();
+    for (const [flowId, renderOptions] of entries) renderLogs(flowId, renderOptions);
+  });
+}
+
 function renderLogs(id, options = {}) {
   if (id !== state.selectedFlowId) return;
   const terminal = els.flowPane.querySelector(".terminal");
@@ -4044,7 +4113,7 @@ function renderLogs(id, options = {}) {
   const agentWorking = agentWorkingForFlow(flow);
   const agentWorkingKind = agentWorking ? "agent" : "idle";
   syncAgentWorkingPoll(id, agentWorking);
-  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${agentWorkingKind}`;
+  const signature = `${terminalGroupsSignature(groups)}\u001fworking:${agentWorking}:${agentWorkingKind}`;
   if (
     terminal._flowLogFlowId === id &&
     terminal._flowLogSignature &&
@@ -4063,12 +4132,18 @@ function renderLogs(id, options = {}) {
   }
 
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
+  const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
+  const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
   const fragment = document.createDocumentFragment();
-  for (const group of groups) appendTerminalBlock(fragment, group);
+  for (const group of groups) {
+    const renderKey = terminalGroupRenderKey(group);
+    appendTerminalBlock(fragment, group, { incoming: Boolean(previousKeys && !previousKeys.has(renderKey)) });
+  }
   if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
+  terminal._flowLogRenderedKeys = nextKeys;
   terminal._flowLogPending = "";
   if (atLatest) scrollTerminalToLatest(terminal);
   renderShellOutputPane(id);
@@ -4105,7 +4180,7 @@ function connectWs() {
       if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {
         renderTickets();
         const flow = selectedFlow();
-        if (flow) renderLogs(flow.id, { force: true });
+        if (flow) scheduleLogRender(flow.id, { force: true });
         return;
       }
       render();
@@ -4128,10 +4203,10 @@ function connectWs() {
       };
       appendLogEntry(log);
       if (isShellOnlyRenderLog(log)) {
-        renderShellOutputPane(log.flowId);
+        scheduleShellOutputRender(log.flowId);
         return;
       }
-      renderLogs(log.flowId);
+      scheduleLogRender(log.flowId);
     }
     if (message.event === "logs-deleted") {
       removeLogEntries(message.payload.flowId, message.payload.ids || []);

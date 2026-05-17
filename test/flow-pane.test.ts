@@ -886,7 +886,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('localStorage.removeItem("flow.selectedFlowId");');
     expect(app).toContain("function runtimeOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain('const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);');
-    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) renderLogs(flow.id, { force: true });\n        return;\n      }");
+    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) scheduleLogRender(flow.id, { force: true });\n        return;\n      }");
     expect(app).toContain("function syncLinearTicketsWithFlows()");
     expect(app).toContain("function flowUpdatedAtMs(flow)");
     expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
@@ -1523,6 +1523,8 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("loadAllLogs");
     expect(app).toContain("function appendLogEntry(log)");
     expect(app).toContain("logIds: new Map()");
+    expect(app).toContain("pendingLogRenders: new Map()");
+    expect(app).toContain("pendingShellOutputRenders: new Set()");
     expect(app).toContain("state.logIds.set(flowId, new Set((state.logs.get(flowId) || []).map((entry) => Number(entry.id))));");
     expect(app).toContain("if (ids.has(id)) return false;");
     expect(app).toContain("ids.add(id);");
@@ -1532,7 +1534,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function isShellOnlyRenderLog(log)");
     expect(app).toContain("appendedLogs.length && appendedLogs.every(isShellOnlyRenderLog)");
     expect(app).toContain("const log = {\n        id: message.payload.id,");
-    expect(app).toContain("if (isShellOnlyRenderLog(log)) {\n        renderShellOutputPane(log.flowId);\n        return;\n      }");
+    expect(app).toContain("function scheduleLogRender(id, options = {})");
+    expect(app).toContain("state.logRenderFrame = requestAnimationFrame(() => {");
+    expect(app).toContain("function scheduleShellOutputRender(flowId)");
+    expect(app).toContain("state.shellOutputRenderFrame = requestAnimationFrame(() => {");
+    expect(app).toContain("if (isShellOnlyRenderLog(log)) {\n        scheduleShellOutputRender(log.flowId);\n        return;\n      }");
+    expect(app).toContain("scheduleLogRender(log.flowId);");
     expect(app).toContain("while (true)");
     expect(app).toContain("if (!data.logs.length) break;");
     expect(app).toContain("if (data.logs.length < 1000) break;");
@@ -1562,6 +1569,17 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("terminal._flowLogPending = \"\";");
     expect(app).toContain('els.flowPane.querySelector(".terminal").addEventListener("scroll"');
     expect(app).toContain("for (const group of groups) appendTerminalBlock(fragment, group);");
+    expect(app).toContain("function terminalGroupsSignature(groups)");
+    expect(app).toContain("function terminalGroupSignaturePart(group)");
+    expect(app).toContain("function terminalGroupRenderKey(group)");
+    expect(app).toContain('if (options.incoming) block.classList.add("terminal-entry-incoming");');
+    expect(app).toContain("const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;");
+    expect(app).toContain("const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));");
+    expect(app).toContain("appendTerminalBlock(fragment, group, { incoming: Boolean(previousKeys && !previousKeys.has(renderKey)) });");
+    expect(app).toContain("terminal._flowLogRenderedKeys = nextKeys;");
+    expect(css).toContain(".terminal > .terminal-entry-incoming {\n  animation: terminal-entry-fade-in 200ms ease-out both;\n}");
+    expect(css).toContain("@keyframes terminal-entry-fade-in");
+    expect(css).toContain(".terminal > .terminal-entry-incoming {\n    animation-duration: 1ms;");
     expect(app).not.toContain("[...groups].reverse()");
     expect(app).not.toContain("activeFlowTab");
     expect(app).toContain("terminal._flowLogFlowId === id && terminal._flowLogSignature === signature && !options.force");
@@ -1570,6 +1588,9 @@ describe("Turbopump pane markup", () => {
   test("collapses completed-turn traces between the prompt and final message", () => {
     expect(server).toContain('kind === "shell" ? "shell:trace-group" : "agent:trace-group"');
     expect(server).toContain("const latestUserLogBeforeStmt = db.query(");
+    expect(server).toContain("create index if not exists logs_flow_id_id_idx on logs(flowId, id);");
+    expect(server).toContain("create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);");
+    expect(server).toContain("create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);");
     expect(server).toContain('function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "")');
     expect(server).toContain("if (traceCount <= 1) return;");
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
@@ -1608,7 +1629,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("...runtimeDisappearedTraceRanges,");
     expect(app).not.toContain("...shellTraceRanges,");
     expect(app).toContain("...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),");
-    expect(app).toContain("function appendTerminalTraceGroup(fragment, group)");
+    expect(app).toContain("function appendTerminalTraceGroup(fragment, group, options = {})");
     expect(app).toContain("function flattenSingleChildTraceGroups(groups)");
     expect(app).toContain('if (group.source === "agent:trace-group") {');
     expect(app).toContain("if (children.length <= 1) {");
@@ -1657,6 +1678,7 @@ describe("Turbopump pane markup", () => {
   test("repaints agent logs after navigating through a ticket without a flow", () => {
     expect(app).toContain('terminal._flowLogFlowId = "";');
     expect(app).toContain('terminal._flowLogSignature = "";');
+    expect(app).toContain("terminal._flowLogRenderedKeys = null;");
     expect(app).toContain('terminal.textContent = "No agent session yet.";');
     expect(app).toContain("terminal._flowLogFlowId === id && terminal._flowLogSignature === signature && !options.force");
     expect(app).toContain("terminal._flowLogFlowId = id;");

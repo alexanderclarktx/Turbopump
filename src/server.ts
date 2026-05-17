@@ -198,6 +198,10 @@ db.exec(`
     clearAfterLogId integer not null default 0,
     updatedAt text not null
   );
+
+  create index if not exists logs_flow_id_id_idx on logs(flowId, id);
+  create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);
+  create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
 `);
 tryMigration("update flows set stage = 'planning' where stage = 'not_started'");
 tryMigration("alter table flows add column agentModel text not null default ''");

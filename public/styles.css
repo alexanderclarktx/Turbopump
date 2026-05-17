@@ -2192,6 +2192,10 @@ body.theme-dark .terminal-entry-body a {
   min-width: 0;
 }
 
+.terminal > .terminal-entry-incoming {
+  animation: terminal-entry-fade-in 200ms ease-out both;
+}
+
 .terminal-trace-group {
   display: grid;
   min-width: 0;
@@ -2605,6 +2609,16 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
     opacity: 0;
     overflow: hidden;
     transform: translateY(-4px) scaleY(0.92);
+  }
+}
+
+@keyframes terminal-entry-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
   }
 }
 
@@ -3481,7 +3495,8 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   }
 
   .terminal-trace-opening > .terminal-trace-body > *,
-  .terminal-trace-closing > .terminal-trace-body > * {
+  .terminal-trace-closing > .terminal-trace-body > *,
+  .terminal > .terminal-entry-incoming {
     animation-duration: 1ms;
     animation-delay: 0ms;
   }
