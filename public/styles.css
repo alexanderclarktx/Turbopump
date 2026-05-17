@@ -546,6 +546,10 @@ body.theme-dark .terminal-entry-body code {
   color: var(--terminal-ink);
 }
 
+body.theme-dark .linear-comment strong {
+  color: var(--terminal-ink);
+}
+
 body.theme-dark .linear-markdown code,
 body.theme-dark .terminal-entry-body code {
   border-color: var(--line);
@@ -2145,6 +2149,21 @@ body.theme-dark .terminal-entry-body a {
   gap: 7px;
   width: fit-content;
   max-width: 100%;
+}
+
+.linear-comment-replies {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 2px;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
+
+.linear-comment-reply {
+  width: 100%;
 }
 
 .linear-comment header {

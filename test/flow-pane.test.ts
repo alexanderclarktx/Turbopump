@@ -140,6 +140,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("body.theme-dark .ticket-status-separator {\n  color: var(--muted);\n}");
     expect(css).toContain("body.theme-dark .ticket-title {\n  color: var(--terminal-ink);\n}");
     expect(css).toContain("body.theme-dark .terminal-entry-user .terminal-entry-body {\n  color: var(--terminal-ink);");
+    expect(css).toContain("body.theme-dark .linear-comment strong {\n  color: var(--terminal-ink);\n}");
     expect(css).toContain(".terminal-entry-user .terminal-entry-marker,\n.terminal-entry-user .terminal-entry-label {\n  color: #d97706;\n}");
     expect(css).toContain("body.theme-dark .terminal-entry-user .terminal-entry-marker,\nbody.theme-dark .terminal-entry-user .terminal-entry-label {\n  color: #fbbf24;\n}");
   });
@@ -378,6 +379,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('state.linearDetails.set(identifier, { loading: false, deleted: true, error: "Linear issue not found" });');
     expect(app).toContain("error.status = response.status;");
     expect(server).toContain("comments(first: 50)");
+    expect(server).toContain("parent { id }");
     expect(server).toContain("description");
     expect(server).toContain("archivedAt");
     expect(server).toContain("function isDeletedLinearIssue(issue: LinearIssue)");
@@ -405,8 +407,19 @@ describe("Turbopump pane markup", () => {
   });
 
   test("renders Linear comments oldest to newest", () => {
-    expect(app).toContain("const comments = [...(issue.comments?.nodes || [])].sort(");
+    expect(app).toContain("function linearCommentTree(comments)");
+    expect(app).toContain("const sorted = [...comments].sort(");
     expect(app).toContain("new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()");
+  });
+
+  test("renders nested Linear comments as replies", () => {
+    expect(app).toContain("function linearCommentParentId(comment)");
+    expect(app).toContain('return comment.parent?.id || comment.parentId || "";');
+    expect(app).toContain("if (parent) parent.replies.push(comment);");
+    expect(app).toContain('class="linear-comment${nested ? " linear-comment-reply" : ""}"');
+    expect(app).toContain('class="linear-comment-replies"');
+    expect(css).toContain(".linear-comment-replies {\n  display: grid;");
+    expect(css).toContain("border-left: 2px solid var(--line);");
   });
 
   test("uses higher contrast border tokens for subtle element outlines", () => {

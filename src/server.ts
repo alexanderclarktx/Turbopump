@@ -81,6 +81,7 @@ type LinearIssue = {
       createdAt: string;
       updatedAt?: string;
       user?: { name: string } | null;
+      parent?: { id: string } | null;
     }[];
   };
 };
@@ -2179,6 +2180,7 @@ async function fetchLinearIssueDetail(identifier: string) {
                 createdAt
                 updatedAt
                 user { name }
+                parent { id }
               }
             }
           }

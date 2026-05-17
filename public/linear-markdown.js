@@ -349,9 +349,9 @@ export function renderInlineMarkdown(value, options = {}) {
     if (code !== undefined) {
       html += `<code>${escapeHtml(code)}</code>`;
     } else if (bold !== undefined) {
-      html += `<strong>${escapeHtml(bold)}</strong>`;
+      html += `<strong>${renderInlineMarkdown(bold, options)}</strong>`;
     } else if (emphasis !== undefined) {
-      html += `<em>${escapeHtml(emphasis)}</em>`;
+      html += `<em>${renderInlineMarkdown(emphasis, options)}</em>`;
     } else if (imageMarker && images) {
       const imageSrc = linearImageSource(url);
       html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" data-image-preview data-image-preview-alt="${escapeAttribute(label || "Linear attachment")}"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;

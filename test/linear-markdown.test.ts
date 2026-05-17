@@ -82,6 +82,15 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("<strong>Recommended MVP</strong>");
   });
 
+  test("renders inline code inside bold list text", () => {
+    const html = renderLinearMarkdown("2. **Split the public API shapes instead of making `reactions` optional**");
+
+    expect(html).toContain(
+      "<ol start=\"2\"><li><strong>Split the public API shapes instead of making <code>reactions</code> optional</strong></li></ol>",
+    );
+    expect(html).not.toContain("`reactions`");
+  });
+
   test("renders bullet and numbered lists", () => {
     const html = renderLinearMarkdown("- `apple`\n- banana\n\n1. first\n2. second");
 

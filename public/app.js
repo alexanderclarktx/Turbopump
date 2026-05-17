@@ -2770,6 +2770,41 @@ async function uploadAgentImages(files) {
   }
 }
 
+function linearCommentParentId(comment) {
+  return comment.parent?.id || comment.parentId || "";
+}
+
+function linearCommentTree(comments) {
+  const sorted = [...comments].sort(
+    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+  );
+  const byId = new Map(sorted.map((comment) => [comment.id, { ...comment, replies: [] }]));
+  const roots = [];
+
+  for (const comment of byId.values()) {
+    const parentId = linearCommentParentId(comment);
+    const parent = parentId ? byId.get(parentId) : null;
+    if (parent) parent.replies.push(comment);
+    else roots.push(comment);
+  }
+
+  return roots;
+}
+
+function renderLinearComment(comment, nested = false) {
+  const replies = comment.replies || [];
+  return `
+    <article class="linear-comment${nested ? " linear-comment-reply" : ""}">
+      <header>
+        <strong>${escapeHtml(comment.user?.name || "Unknown")}</strong>
+        <time>${escapeHtml(formatDate(comment.createdAt))}</time>
+      </header>
+      <div class="linear-comment-body linear-markdown">${renderLinearMarkdown(comment.body)}</div>
+      ${replies.length ? `<div class="linear-comment-replies">${replies.map((reply) => renderLinearComment(reply, true)).join("")}</div>` : ""}
+    </article>
+  `;
+}
+
 function renderLinearDetail(context) {
   const container = els.flowPane.querySelector(".linear-detail");
   const cached = state.linearDetails.get(context.issueId);
@@ -2779,9 +2814,8 @@ function renderLinearDetail(context) {
     url: context.issueUrl,
   };
   const labels = issue.labels?.nodes || [];
-  const comments = [...(issue.comments?.nodes || [])].sort(
-    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
-  );
+  const comments = issue.comments?.nodes || [];
+  const commentTree = linearCommentTree(comments);
   const meta = [
     issue.project?.name,
     issue.assignee?.name ? `Assignee: ${issue.assignee.name}` : "",
@@ -2817,19 +2851,7 @@ function renderLinearDetail(context) {
         cached?.error
           ? `<p class="linear-error">${escapeHtml(cached.error)}</p>`
           : comments.length
-            ? comments
-                .map(
-                  (comment) => `
-                    <article class="linear-comment">
-                      <header>
-                        <strong>${escapeHtml(comment.user?.name || "Unknown")}</strong>
-                        <time>${escapeHtml(formatDate(comment.createdAt))}</time>
-                      </header>
-                      <div class="linear-comment-body linear-markdown">${renderLinearMarkdown(comment.body)}</div>
-                    </article>
-                  `,
-                )
-                .join("")
+            ? commentTree.map((comment) => renderLinearComment(comment)).join("")
             : `<p class="linear-empty-copy">${cached?.loading ? "Loading comments." : "No comments."}</p>`
       }
     </section>
