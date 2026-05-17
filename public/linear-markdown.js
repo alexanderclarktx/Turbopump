@@ -337,12 +337,12 @@ export function renderInlineMarkdown(value, options = {}) {
   const { images = true, links = true } = options;
   const text = String(value || "");
   const markdownPattern =
-    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/|\/)[^)>\s]+))\s*\)|(https?:\/\/[^\s<>()]+)/g;
+    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/|\/)[^)>\s]+))\s*\)|(https?:\/\/[^\s<>()]+)/g;
   let cursor = 0;
   let html = "";
 
   for (const match of text.matchAll(markdownPattern)) {
-    const [markdown, code, bold, imageMarker, label, angleUrl, plainUrl, bareUrl] = match;
+    const [markdown, code, bold, emphasis, imageMarker, label, angleUrl, plainUrl, bareUrl] = match;
     const url = angleUrl || plainUrl || bareUrl;
     html += escapeHtml(text.slice(cursor, match.index));
 
@@ -350,6 +350,8 @@ export function renderInlineMarkdown(value, options = {}) {
       html += `<code>${escapeHtml(code)}</code>`;
     } else if (bold !== undefined) {
       html += `<strong>${escapeHtml(bold)}</strong>`;
+    } else if (emphasis !== undefined) {
+      html += `<em>${escapeHtml(emphasis)}</em>`;
     } else if (imageMarker && images) {
       const imageSrc = linearImageSource(url);
       html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" data-image-preview data-image-preview-alt="${escapeAttribute(label || "Linear attachment")}"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;

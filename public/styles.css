@@ -2292,6 +2292,10 @@ body.theme-dark .terminal-entry-body a {
   position: relative;
 }
 
+.terminal > .terminal-entry-assistant:last-child {
+  padding-bottom: 8px;
+}
+
 .terminal-command-line {
   display: flex;
   align-items: baseline;
@@ -2858,6 +2862,10 @@ body.shell-pane-hidden .shell-command-panel {
 
 .agent-working-dots span:nth-child(3) {
   animation-delay: 0.32s;
+}
+
+.terminal-entry-working:last-child {
+  padding-bottom: 8px;
 }
 
 .terminal-entry-working-shell .agent-working {

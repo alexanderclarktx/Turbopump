@@ -62,6 +62,7 @@ type LinearIssue = {
   identifier: string;
   title: string;
   url: string;
+  archivedAt?: string | null;
   priority?: number;
   estimate?: number | null;
   description?: string | null;
@@ -883,6 +884,10 @@ function parseLinearIssue(input: string) {
 
 function cacheLinearIssue(issue: LinearIssue | null | undefined) {
   if (!issue?.identifier) return;
+  if (isDeletedLinearIssue(issue)) {
+    linearIssueCache.delete(issue.identifier.toUpperCase());
+    return;
+  }
   linearIssueCache.set(issue.identifier.toUpperCase(), issue);
 }
 
@@ -2113,63 +2118,77 @@ function startServe(flow: Flow) {
 
 async function fetchLinearIssue(identifier: string) {
   if (!linearAuthHeader()) return null;
-  const body = await linearGraphql<{ issue?: LinearIssue }>(
-    `
-      query Issue($id: String!) {
-        issue(id: $id) {
-          id
-          identifier
-          title
-          url
-          state { id name color type }
+  let body: { issue?: LinearIssue };
+  try {
+    body = await linearGraphql<{ issue?: LinearIssue }>(
+      `
+        query Issue($id: String!) {
+          issue(id: $id) {
+            id
+            identifier
+            title
+            url
+            archivedAt
+            state { id name color type }
+          }
         }
-      }
-    `,
-    { id: identifier },
-  );
+      `,
+      { id: identifier },
+    );
+  } catch (error) {
+    if (isLinearIssueNotFoundError(error)) return null;
+    throw error;
+  }
   const issue = body.issue ?? null;
   cacheLinearIssue(issue);
-  return issue;
+  return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
 
 async function fetchLinearIssueDetail(identifier: string) {
   if (!linearAuthHeader()) return null;
-  const body = await linearGraphql<{ issue?: LinearIssue }>(
-    `
-      query IssueDetail($id: String!) {
-        issue(id: $id) {
-          id
-          identifier
-          title
-          url
-          description
-          priority
-          estimate
-          createdAt
-          updatedAt
-          state { id name color type }
-          team { key name }
-          project { name }
-          assignee { name }
-          creator { name }
-          labels { nodes { name color } }
-          comments(first: 50) {
-            nodes {
-              id
-              body
-              createdAt
-              updatedAt
-              user { name }
+  let body: { issue?: LinearIssue };
+  try {
+    body = await linearGraphql<{ issue?: LinearIssue }>(
+      `
+        query IssueDetail($id: String!) {
+          issue(id: $id) {
+            id
+            identifier
+            title
+            url
+            archivedAt
+            description
+            priority
+            estimate
+            createdAt
+            updatedAt
+            state { id name color type }
+            team { key name }
+            project { name }
+            assignee { name }
+            creator { name }
+            labels { nodes { name color } }
+            comments(first: 50) {
+              nodes {
+                id
+                body
+                createdAt
+                updatedAt
+                user { name }
+              }
             }
           }
         }
-      }
-    `,
-    { id: identifier },
-  );
+      `,
+      { id: identifier },
+    );
+  } catch (error) {
+    if (isLinearIssueNotFoundError(error)) return null;
+    throw error;
+  }
   const issue = body.issue ?? null;
   cacheLinearIssue(issue);
-  return issue;
+  return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
 
 async function syncLinearStatus(flow: Flow) {
@@ -2329,6 +2348,14 @@ function isDoneLinearIssue(issue: LinearIssue) {
   return stateName === "done" || stateType === "completed";
 }
 
+function isDeletedLinearIssue(issue: LinearIssue) {
+  return Boolean(issue.archivedAt);
+}
+
+function isLinearIssueNotFoundError(error: unknown) {
+  return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
+}
+
 async function listAssignedLinearIssues(apiKey?: string) {
   const data = await linearGraphql<{
     viewer: {
@@ -2349,6 +2376,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
             identifier
             title
             url
+            archivedAt
             priority
             estimate
             createdAt
@@ -2368,6 +2396,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
     viewer: { id: data.viewer.id, name: data.viewer.name },
     issues: data.viewer.assignedIssues.nodes.flatMap((issue) => {
       const flow = flowsByIssue.get(issue.identifier);
+      if (isDeletedLinearIssue(issue)) return [];
       if (isDoneLinearIssue(issue) && !flow) return [];
       return [
         {

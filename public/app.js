@@ -353,7 +353,11 @@ async function api(path, options = {}) {
     headers,
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || response.statusText);
+  if (!response.ok) {
+    const error = new Error(body.error || response.statusText);
+    error.status = response.status;
+    throw error;
+  }
   return body;
 }
 
@@ -2101,6 +2105,32 @@ function syncLinearTicketsWithFlows() {
   });
 }
 
+function clearSelectedLinearIssue(identifier) {
+  if (state.selectedLinearIssueId !== identifier || flowForLinearIssue(identifier)) return;
+  state.selectedLinearIssueId = "";
+  localStorage.removeItem("flow.selectedLinearIssueId");
+}
+
+function removeLinearIssueFromTurbopump(identifier) {
+  if (!identifier) return false;
+  const issueId = String(identifier).toUpperCase();
+  const previousLength = state.linearTickets.length;
+  state.linearTickets = state.linearTickets.filter((ticket) => ticket.identifier !== issueId);
+  state.linearDetails.delete(issueId);
+  state.ticketInputStates.delete(issueId);
+  const removedPin = state.pinnedLinearIssues.delete(issueId);
+  if (removedPin) persistPinnedLinearIssues();
+  clearSelectedLinearIssue(issueId);
+  return removedPin || state.linearTickets.length !== previousLength;
+}
+
+function reconcileRemovedLinearTickets(previousTickets, nextTickets) {
+  const nextIssueIds = new Set(nextTickets.map((ticket) => ticket.identifier));
+  for (const ticket of previousTickets) {
+    if (!nextIssueIds.has(ticket.identifier)) removeLinearIssueFromTurbopump(ticket.identifier);
+  }
+}
+
 function updateLinearState(linear) {
   state.linearSignedIn = Boolean(linear.signedIn);
   state.linearViewerName = linear.viewerName || state.linearViewer?.name || "";
@@ -2120,9 +2150,12 @@ async function loadLinearTickets(options = {}) {
   try {
     els.ticketState.textContent = "Loading assigned tickets.";
     const data = await api("/api/linear/issues");
+    const previousTickets = state.linearTickets;
+    const nextTickets = data.issues || [];
     state.linearViewer = data.viewer;
     state.linearViewerName = data.viewer?.name || state.linearViewerName;
-    state.linearTickets = data.issues || [];
+    reconcileRemovedLinearTickets(previousTickets, nextTickets);
+    state.linearTickets = nextTickets;
     state.linearTicketsLoaded = true;
     if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
@@ -2805,6 +2838,15 @@ async function loadLinearDetail(identifier) {
     const data = await api(`/api/linear/issues/${encodeURIComponent(identifier)}`);
     state.linearDetails.set(identifier, { loading: false, issue: data.issue });
   } catch (error) {
+    if (error.status === 404) {
+      removeLinearIssueFromTurbopump(identifier);
+      if (flowForLinearIssue(identifier)) {
+        state.linearDetails.set(identifier, { loading: false, deleted: true, error: "Linear issue not found" });
+      }
+      renderTickets();
+      renderFlowPane();
+      return;
+    }
     state.linearDetails.set(identifier, { loading: false, error: error.message });
   }
   renderFlowPane();

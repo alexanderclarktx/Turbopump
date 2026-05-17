@@ -362,13 +362,27 @@ describe("Turbopump pane markup", () => {
 
   test("refreshes cached Linear descriptions and comments from the ticket refresh button", () => {
     expect(app).toContain("async function loadLinearTickets(options = {})");
+    expect(app).toContain("function reconcileRemovedLinearTickets(previousTickets, nextTickets)");
+    expect(app).toContain("function removeLinearIssueFromTurbopump(identifier)");
+    expect(app).toContain("state.linearDetails.delete(issueId);");
+    expect(app).toContain("state.ticketInputStates.delete(issueId);");
+    expect(app).toContain("const removedPin = state.pinnedLinearIssues.delete(issueId);");
+    expect(app).toContain("clearSelectedLinearIssue(issueId);");
+    expect(app).toContain("reconcileRemovedLinearTickets(previousTickets, nextTickets);");
     expect(app).toContain("if (options.refreshDetails) state.linearDetails.clear();");
     expect(app).toContain(
       'els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));',
     );
     expect(app).toContain('const data = await api(`/api/linear/issues/${encodeURIComponent(identifier)}`);');
+    expect(app).toContain("if (error.status === 404)");
+    expect(app).toContain('state.linearDetails.set(identifier, { loading: false, deleted: true, error: "Linear issue not found" });');
+    expect(app).toContain("error.status = response.status;");
     expect(server).toContain("comments(first: 50)");
     expect(server).toContain("description");
+    expect(server).toContain("archivedAt");
+    expect(server).toContain("function isDeletedLinearIssue(issue: LinearIssue)");
+    expect(server).toContain("if (isDeletedLinearIssue(issue)) return [];");
+    expect(server).toContain("function isLinearIssueNotFoundError(error: unknown)");
   });
 
   test("creates new pinned In Eng Linear tickets from the ticket drawer", () => {
@@ -1257,6 +1271,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("grid-template-rows: minmax(0, 1fr) auto;");
     expect(css).toContain("border-top: 1px solid var(--line);");
     expect(css).toContain(".agent-working");
+    expect(css).toContain(".terminal > .terminal-entry-assistant:last-child {\n  padding-bottom: 8px;\n}");
+    expect(css).toContain(".terminal-entry-working:last-child {\n  padding-bottom: 8px;\n}");
     expect(css).toContain(".terminal-entry-working-agent .agent-working");
     expect(css).toContain("color: #6d28d9;");
     expect(css).toContain("body.theme-dark .terminal-entry-working-agent .agent-working");

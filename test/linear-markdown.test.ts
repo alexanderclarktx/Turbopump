@@ -68,6 +68,13 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("**Recommended MVP**");
   });
 
+  test("renders emphasized text", () => {
+    const html = renderLinearMarkdown("Read *East of Eden*.");
+
+    expect(html).toContain("Read <em>East of Eden</em>.");
+    expect(html).not.toContain("*East of Eden*");
+  });
+
   test("does not parse bold text inside inline code", () => {
     const html = renderLinearMarkdown("Use `**Recommended MVP**`.");
 
