@@ -39,6 +39,11 @@ type Flow = {
   createdAt: string;
   updatedAt: string;
   shellOutputClearAfterLogId?: number;
+  agentRuntimeKind?: "agent" | "shell";
+  agentRuntimeStatus?: "running" | "interrupting" | "";
+  shellRuntimeStatus?: "running" | "interrupting" | "";
+  agentCompacting?: boolean;
+  agentQueuedMessage?: boolean;
 };
 
 type LogRow = {
@@ -452,26 +457,28 @@ function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number) 
 
 function runtimeAdjustedFlow(flow: Flow) {
   const shellRuntime = shellProcesses.get(flow.id);
-  if (shellRuntime) {
-    return {
-      ...flow,
-      agentStatus: shellRuntime.stopping ? "interrupting" : "running",
-      agentRuntimeKind: "shell",
-    };
-  }
-
   const agentRuntime = agentProcesses.get(flow.id);
-  if (agentRuntime?.activeTurnId || agentRuntime?.compacting) {
-    return {
-      ...flow,
-      agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running",
-      agentRuntimeKind: "agent",
-      agentCompacting: Boolean(agentRuntime.compacting),
-      agentQueuedMessage: Boolean(agentRuntime.queuedAgentMessages?.length),
-    };
-  }
+  const agentRuntimeActive = Boolean(agentRuntime?.activeTurnId || agentRuntime?.compacting);
+  const shellRuntimeStatus = shellRuntime ? (shellRuntime.stopping ? "interrupting" : "running") : "";
+  const agentRuntimeStatus = agentRuntimeActive
+    ? agentRuntime?.stopping || flow.agentStatus === "interrupting"
+      ? "interrupting"
+      : "running"
+    : "";
 
-  return flow;
+  if (!shellRuntimeStatus && !agentRuntimeStatus) return flow;
+
+  const agentStatus =
+    agentRuntimeStatus === "interrupting" || shellRuntimeStatus === "interrupting" ? "interrupting" : "running";
+  return {
+    ...flow,
+    agentStatus,
+    agentRuntimeKind: shellRuntimeStatus && !agentRuntimeStatus ? "shell" : "agent",
+    agentRuntimeStatus,
+    shellRuntimeStatus,
+    agentCompacting: Boolean(agentRuntime?.compacting),
+    agentQueuedMessage: Boolean(agentRuntime?.queuedAgentMessages?.length),
+  };
 }
 
 function clientFlow(flow: Flow) {
@@ -2065,7 +2072,6 @@ function interruptShellCommand(flowId: string) {
 }
 
 async function interruptAgent(flowId: string) {
-  if (interruptShellCommand(flowId)) return;
   const runtime = agentProcesses.get(flowId);
   if (!runtime) return;
   if (runtime.compacting && !runtime.activeTurnId) {

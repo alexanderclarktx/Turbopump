@@ -357,12 +357,12 @@ body.app-booting .ticket-drawer {
   color: var(--ink);
 }
 
-.theme-icon-moon,
-body.theme-dark .theme-icon-sun {
+.theme-icon-sun,
+body.theme-dark .theme-icon-moon {
   display: none;
 }
 
-body.theme-dark .theme-icon-moon {
+body.theme-dark .theme-icon-sun {
   display: block;
 }
 
@@ -1539,6 +1539,8 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .agent-panel {
+  --terminal-message-max-lines: 50;
+  --terminal-message-max-height: 77.5em;
   position: relative;
   overflow: hidden;
 }
@@ -2278,6 +2280,7 @@ body.theme-dark .terminal-entry-body a {
 }
 
 .terminal-entry-body {
+  overflow: visible;
   margin: 0;
   min-width: 0;
   padding-left: 23px;
@@ -2285,6 +2288,33 @@ body.theme-dark .terminal-entry-body a {
   font: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.terminal-entry-body-content {
+  display: block;
+  max-height: var(--terminal-message-max-height);
+  overflow: hidden;
+  min-width: 0;
+  white-space: inherit;
+  overflow-wrap: inherit;
+}
+
+.shell-output-pane .terminal-entry-body-content {
+  max-height: none;
+  overflow: visible;
+}
+
+.shell-output-pane .terminal-entry-overflow-marker {
+  display: none;
+}
+
+.terminal-entry-assistant .terminal-entry-body-content {
+  max-height: none;
+  overflow: visible;
+}
+
+.terminal-entry-assistant .terminal-entry-overflow-marker {
+  display: none;
 }
 
 .terminal-entry-thinking .terminal-entry-marker,
@@ -2333,6 +2363,22 @@ body.theme-dark .terminal-entry-body a {
   font-size: 10px;
 }
 
+.terminal-entry-overflow-marker {
+  min-width: 0;
+  color: #64748b;
+  font: inherit;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.terminal-entry-command .terminal-entry-overflow-marker {
+  font-size: 10px;
+}
+
+.terminal-entry-shell.terminal-entry-command .terminal-entry-overflow-marker {
+  font-size: 12px;
+}
+
 .terminal-trace-body .terminal-entry-assistant,
 .terminal-trace-body .terminal-entry-assistant .terminal-entry-time,
 .terminal-entry-output,
@@ -2352,7 +2398,7 @@ body.theme-dark .terminal-entry-body a {
 
 .terminal-entry-output .terminal-entry-body,
 .terminal-entry-error .terminal-entry-body {
-  overflow-x: auto;
+  overflow: visible;
   overflow-wrap: normal;
   white-space: pre;
 }
@@ -3055,6 +3101,10 @@ body.theme-dark .terminal-entry-working-shell .agent-working {
 
 .agent-context a[href] {
   color: var(--link);
+}
+
+.agent-context-branch:not([href]) {
+  cursor: pointer;
 }
 
 .agent-context-diff {

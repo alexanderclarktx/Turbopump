@@ -157,6 +157,21 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("<ol start=");
   });
 
+  test("ends ordered lists before separate unindented paragraphs and headings", () => {
+    const html = renderLinearMarkdown(
+      "It awaits:\n\n1. `createOrReuseCallSessionInternal`\n2. `generateLiveKitCredentials`\n3. return `{ call, credentials }`\n\nSo if the client API phase is slow, check credentials.\n\n**Highest Impact Changes**\n\n1. Defer jam message side effects.",
+    );
+
+    expect(html).toContain(
+      "<ol><li><code>createOrReuseCallSessionInternal</code></li><li><code>generateLiveKitCredentials</code></li><li>return <code>{ call, credentials }</code></li></ol>",
+    );
+    expect(html).toContain("</ol>So if the client API phase is slow, check credentials.");
+    expect(html).toContain("<strong>Highest Impact Changes</strong>");
+    expect(html).toContain("<ol><li>Defer jam message side effects.</li></ol>");
+    expect(html).not.toContain("<ol start=");
+    expect(html).not.toContain("<li>return <code>{ call, credentials }</code><br>");
+  });
+
   test("renders fenced code blocks while escaping HTML", () => {
     const html = renderLinearMarkdown("```ts\nconst apple = `<red>`;\n```");
 
@@ -184,7 +199,8 @@ describe("renderLinearMarkdown", () => {
       "1. initialize\n2. notifications/initialized\n3. tools/call\n4. DELETE session in finally\nIf tools/call gets 400, execute wraps it as:\n```text\nError calling Ando MCP tool ...\n```\n\nThe wrapper can retry.",
     );
 
-    expect(html).toContain('<li>DELETE session in finally<br>If tools/call gets 400, execute wraps it as:<pre class="markdown-code-block"><code>Error calling Ando MCP tool ...</code></pre><br>The wrapper can retry.</li>');
+    expect(html).toContain('<li>DELETE session in finally<br>If tools/call gets 400, execute wraps it as:<pre class="markdown-code-block"><code>Error calling Ando MCP tool ...</code></pre></li>');
+    expect(html).toContain("</ol>The wrapper can retry.");
     expect(html).not.toContain("```text");
   });
 

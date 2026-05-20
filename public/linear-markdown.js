@@ -5,7 +5,6 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
 
   const lines = text.split("\n");
   const blocks = [];
-  const orderedListStarts = new Map();
 
   for (let index = 0; index < lines.length; ) {
     const line = lines[index];
@@ -34,11 +33,8 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
 
     const list = matchListLine(line);
     if (list) {
-      const orderedKey = String(list.indent);
-      const startNumber = list.ordered ? (orderedListStarts.get(orderedKey) || list.number) : 1;
-      const parsed = renderList(lines, index, list.indent, list.ordered, { images, links }, startNumber);
+      const parsed = renderList(lines, index, list.indent, list.ordered, { images, links }, list.number);
       blocks.push(parsed.html);
-      if (list.ordered) orderedListStarts.set(orderedKey, startNumber + parsed.itemCount);
       index = parsed.index;
       continue;
     }
@@ -262,10 +258,6 @@ function renderList(lines, startIndex, indent, ordered, options, startNumber = 1
         }
         if (nextContentList && nextContentList.indent > indent) {
           index = nextContentIndex;
-          continue;
-        }
-        if (ordered && !nextContentList) {
-          index += 1;
           continue;
         }
         index += 1;
