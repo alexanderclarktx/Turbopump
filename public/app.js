@@ -170,6 +170,11 @@ const state = {
   logs: new Map(),
   logIds: new Map(),
   lastLogId: new Map(),
+  logBackfilledFlowIds: new Set(),
+  pendingLogRenders: new Map(),
+  logRenderFrame: 0,
+  pendingShellOutputRenders: new Set(),
+  shellOutputRenderFrame: 0,
   shellOutputClearAfterLogId: new Map(),
   openTraceGroups: new Map(),
   settingsCollapsed: true,
@@ -207,10 +212,12 @@ const state = {
   diffModalDiff: null,
   diffModalLoadingFlowId: "",
   draggingLinearIssueId: "",
+  ticketDragScrollStep: 0,
   suppressTicketClick: false,
   defaultAgentDeveloperInstructions: "",
   deletingCheckoutNames: new Set(),
   deletingOutputLogIds: new Set(),
+  creatingLinearTicket: false,
 };
 
 const els = {
@@ -225,6 +232,7 @@ const els = {
   linearKeyForm: document.querySelector("#linearKeyForm"),
   linearApiKey: document.querySelector("#linearApiKey"),
   refreshLinearTickets: document.querySelector("#refreshLinearTickets"),
+  createLinearTicket: document.querySelector("#createLinearTicket"),
   linearState: document.querySelector("#linearState"),
   envEditor: document.querySelector("#envEditor"),
   checkoutList: document.querySelector("#checkoutList"),
@@ -242,9 +250,12 @@ let envSaveTimer = 0;
 let diffModalTransitionTimer = 0;
 let imagePreviewTransitionTimer = 0;
 let checkoutLoadFrame = 0;
+let ticketDragScrollFrame = 0;
 let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
 let lastSavedEnv = "";
+const TICKET_DRAG_SCROLL_EDGE_PX = 72;
+const TICKET_DRAG_SCROLL_MAX_STEP_PX = 18;
 
 function linearStatusName(ticket) {
   return ticket.state?.name || "No status";
@@ -351,7 +362,11 @@ async function api(path, options = {}) {
     headers,
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || response.statusText);
+  if (!response.ok) {
+    const error = new Error(body.error || response.statusText);
+    error.status = response.status;
+    throw error;
+  }
   return body;
 }
 
@@ -715,15 +730,21 @@ function updateMessageInputMode() {
 }
 
 function flowRuntimeActive(flow) {
-  return flow?.agentStatus === "running" || flow?.agentStatus === "interrupting";
+  if (hasSplitRuntimeStatus(flow)) {
+    return runtimeStatusActive(flow.agentRuntimeStatus) || runtimeStatusActive(flow.shellRuntimeStatus);
+  }
+  return runtimeStatusActive(flow?.agentStatus);
 }
 
 function flowRuntimeKind(flow) {
+  if (hasSplitRuntimeStatus(flow)) {
+    if (flowShellRunning(flow) && !flowAgentRunning(flow)) return "shell";
+    return "agent";
+  }
   if (
     flow?.id === state.selectedFlowId &&
     state.shellSubmitting &&
-    flow.agentStatus !== "running" &&
-    flow.agentStatus !== "interrupting"
+    !runtimeStatusActive(flow.agentStatus)
   ) {
     return "shell";
   }
@@ -731,7 +752,9 @@ function flowRuntimeKind(flow) {
 }
 
 function flowAgentRunning(flow) {
-  return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "agent";
+  if (!flow) return false;
+  if (hasSplitRuntimeStatus(flow)) return runtimeStatusActive(flow.agentRuntimeStatus);
+  return runtimeStatusActive(flow.agentStatus) && flowRuntimeKind(flow) === "agent";
 }
 
 function flowAgentCompacting(flow) {
@@ -743,15 +766,25 @@ function flowAgentQueuedMessage(flow) {
 }
 
 function flowShellRunning(flow) {
-  return flowRuntimeActive(flow) && flowRuntimeKind(flow) === "shell";
+  if (!flow) return false;
+  if (hasSplitRuntimeStatus(flow)) return runtimeStatusActive(flow.shellRuntimeStatus);
+  return runtimeStatusActive(flow.agentStatus) && flowRuntimeKind(flow) === "shell";
 }
 
 function flowShellLive(flow) {
-  return (
-    flow?.agentStatus === "running" &&
-    flowRuntimeKind(flow) === "shell" &&
-    !state.shellInterruptingFlowIds.has(flow.id)
-  );
+  if (!flow) return false;
+  const running = hasSplitRuntimeStatus(flow)
+    ? flow.shellRuntimeStatus === "running"
+    : flow.agentStatus === "running" && flowRuntimeKind(flow) === "shell";
+  return running && !state.shellInterruptingFlowIds.has(flow.id);
+}
+
+function hasSplitRuntimeStatus(flow) {
+  return Boolean(flow && ("agentRuntimeStatus" in flow || "shellRuntimeStatus" in flow));
+}
+
+function runtimeStatusActive(status) {
+  return status === "running" || status === "interrupting";
 }
 
 function canSubmitPromptMessage() {
@@ -1488,6 +1521,9 @@ function clearFlowClientState(flowId) {
   state.logs.delete(flowId);
   state.logIds.delete(flowId);
   state.lastLogId.delete(flowId);
+  state.logBackfilledFlowIds.delete(flowId);
+  state.pendingLogRenders.delete(flowId);
+  state.pendingShellOutputRenders.delete(flowId);
   state.shellOutputClearAfterLogId.delete(flowId);
   state.openTraceGroups.delete(flowId);
   state.shellInterruptingFlowIds.delete(flowId);
@@ -1517,7 +1553,13 @@ function syncShellOutputClearState(flows) {
 }
 
 function runtimeOnlyFlowChanges(previousFlows, nextFlows) {
-  const ignoredKeys = new Set(["agentStatus", "agentRuntimeKind", "updatedAt"]);
+  const ignoredKeys = new Set([
+    "agentStatus",
+    "agentRuntimeKind",
+    "agentRuntimeStatus",
+    "shellRuntimeStatus",
+    "updatedAt",
+  ]);
   if ((previousFlows || []).length !== (nextFlows || []).length) return false;
   const previousById = new Map((previousFlows || []).map((flow) => [flow.id, flow]));
   for (const next of nextFlows || []) {
@@ -1819,17 +1861,32 @@ function renderAgentContext(flow) {
   diffButton.title = "Open diff viewer";
   diffButton.disabled = !flow;
   diffButton.onclick = flow ? () => openDiffViewer(flow.id) : null;
-  branch.textContent = flow?.branchName || "";
+  const branchName = flow?.branchName || "";
+  branch.textContent = branchName;
   if (flow?.prUrl) {
     branch.href = flow.prUrl;
     branch.target = "_blank";
     branch.rel = "noreferrer";
     branch.title = flow.prUrl;
+    branch.onclick = null;
+    branch.onkeydown = null;
+    branch.removeAttribute("role");
+    branch.removeAttribute("tabindex");
+    branch.removeAttribute("aria-label");
   } else {
     branch.removeAttribute("href");
     branch.removeAttribute("target");
     branch.removeAttribute("rel");
-    branch.removeAttribute("title");
+    branch.title = branchName ? "Copy branch name" : "";
+    branch.setAttribute("role", "button");
+    branch.setAttribute("tabindex", "0");
+    branch.setAttribute("aria-label", "Copy branch name");
+    branch.onclick = () => copyAgentBranchName(branchName);
+    branch.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      void copyAgentBranchName(branchName);
+    };
   }
   if (flow?.id && !diff && !state.flowDiffLoadingIds.has(diffLoadingKey(flow.id))) void loadFlowDiff(flow.id);
 }
@@ -2056,22 +2113,31 @@ function appendLogEntry(log) {
   const list = state.logs.get(flowId);
   const ids = state.logIds.get(flowId);
   if (ids.has(id)) return false;
-  list.push({
+  const entry = {
     id,
     flowId,
     source: log.source,
     message: log.message,
     createdAt: log.createdAt || new Date().toISOString(),
-  });
+  };
+  const lastEntry = list[list.length - 1];
+  if (!lastEntry || Number(lastEntry.id) < id) {
+    list.push(entry);
+  } else {
+    const insertAt = list.findIndex((item) => Number(item.id) > id);
+    list.splice(insertAt === -1 ? list.length : insertAt, 0, entry);
+  }
   ids.add(id);
   rememberLogHistory(log);
-  state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
+  if (state.logBackfilledFlowIds.has(flowId)) {
+    state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
+  }
   return true;
 }
 
 function upsertFlow(flow) {
   if (!flow?.id) return;
-  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") {
+  if (!flowShellRunning(flow)) {
     state.shellInterruptingFlowIds.delete(flow.id);
   }
   const next = [...state.flows];
@@ -2099,6 +2165,32 @@ function syncLinearTicketsWithFlows() {
   });
 }
 
+function clearSelectedLinearIssue(identifier) {
+  if (state.selectedLinearIssueId !== identifier || flowForLinearIssue(identifier)) return;
+  state.selectedLinearIssueId = "";
+  localStorage.removeItem("flow.selectedLinearIssueId");
+}
+
+function removeLinearIssueFromTurbopump(identifier) {
+  if (!identifier) return false;
+  const issueId = String(identifier).toUpperCase();
+  const previousLength = state.linearTickets.length;
+  state.linearTickets = state.linearTickets.filter((ticket) => ticket.identifier !== issueId);
+  state.linearDetails.delete(issueId);
+  state.ticketInputStates.delete(issueId);
+  const removedPin = state.pinnedLinearIssues.delete(issueId);
+  if (removedPin) persistPinnedLinearIssues();
+  clearSelectedLinearIssue(issueId);
+  return removedPin || state.linearTickets.length !== previousLength;
+}
+
+function reconcileRemovedLinearTickets(previousTickets, nextTickets) {
+  const nextIssueIds = new Set(nextTickets.map((ticket) => ticket.identifier));
+  for (const ticket of previousTickets) {
+    if (!nextIssueIds.has(ticket.identifier)) removeLinearIssueFromTurbopump(ticket.identifier);
+  }
+}
+
 function updateLinearState(linear) {
   state.linearSignedIn = Boolean(linear.signedIn);
   state.linearViewerName = linear.viewerName || state.linearViewer?.name || "";
@@ -2118,9 +2210,12 @@ async function loadLinearTickets(options = {}) {
   try {
     els.ticketState.textContent = "Loading assigned tickets.";
     const data = await api("/api/linear/issues");
+    const previousTickets = state.linearTickets;
+    const nextTickets = data.issues || [];
     state.linearViewer = data.viewer;
     state.linearViewerName = data.viewer?.name || state.linearViewerName;
-    state.linearTickets = data.issues || [];
+    reconcileRemovedLinearTickets(previousTickets, nextTickets);
+    state.linearTickets = nextTickets;
     state.linearTicketsLoaded = true;
     if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
@@ -2143,7 +2238,7 @@ async function loadLinearTickets(options = {}) {
 
 function renderTickets() {
   const tickets = sortedLinearTickets(state.linearTickets);
-  const pinnedTickets = tickets.filter((ticket) => isLinearIssuePinned(ticket.identifier));
+  const pinnedTickets = orderedPinnedTickets(tickets);
   const groups = groupedTicketsByLinearStatus(tickets.filter((ticket) => !isLinearIssuePinned(ticket.identifier)));
   const signature = tickets
     .map((ticket) =>
@@ -2160,7 +2255,7 @@ function renderTickets() {
     )
     .join("\u001e")
     .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"))
-    .concat("\u001d", [...state.pinnedLinearIssues].sort().join("\u001f"));
+    .concat("\u001d", [...state.pinnedLinearIssues].join("\u001f"));
 
   if (els.ticketGrid.dataset.ticketSignature === signature) {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
@@ -2196,6 +2291,11 @@ function compareLinearTickets(a, b) {
 
 function sortedLinearTickets(tickets) {
   return [...tickets].sort(compareLinearTickets);
+}
+
+function orderedPinnedTickets(tickets) {
+  const ticketsByIdentifier = new Map(tickets.map((ticket) => [ticket.identifier, ticket]));
+  return [...state.pinnedLinearIssues].map((identifier) => ticketsByIdentifier.get(identifier)).filter(Boolean);
 }
 
 function groupedTicketsByLinearStatus(tickets) {
@@ -2304,11 +2404,54 @@ function persistPinnedLinearIssues() {
   localStorage.setItem(PINNED_LINEAR_ISSUES_KEY, JSON.stringify([...state.pinnedLinearIssues]));
 }
 
+function setPinnedLinearIssueOrder(identifiers) {
+  const knownIssueIds = new Set(state.linearTickets.map((ticket) => ticket.identifier));
+  const nextPinnedIssueIds = identifiers.filter((identifier) => knownIssueIds.has(identifier));
+  for (const identifier of state.pinnedLinearIssues) {
+    if (knownIssueIds.has(identifier) && !nextPinnedIssueIds.includes(identifier)) nextPinnedIssueIds.push(identifier);
+  }
+  state.pinnedLinearIssues = new Set(nextPinnedIssueIds);
+  persistPinnedLinearIssues();
+}
+
+function moveLinearIssueToPinnedPosition(identifier, index) {
+  const pinnedIssueIds = [...state.pinnedLinearIssues].filter((issueId) => issueId !== identifier);
+  const insertionIndex = Math.max(0, Math.min(index, pinnedIssueIds.length));
+  pinnedIssueIds.splice(insertionIndex, 0, identifier);
+  setPinnedLinearIssueOrder(pinnedIssueIds);
+  renderTickets();
+}
+
 function setLinearIssuePinned(identifier, pinned) {
   if (pinned) state.pinnedLinearIssues.add(identifier);
   else state.pinnedLinearIssues.delete(identifier);
   persistPinnedLinearIssues();
   renderTickets();
+}
+
+function focusLinearTicketCard(identifier) {
+  requestAnimationFrame(() => {
+    const card = [...els.ticketGrid.querySelectorAll(".ticket-card")].find((item) => item.dataset.issue === identifier);
+    card?.focus({ preventScroll: true });
+    card?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function upsertLinearIssue(issue) {
+  const existing = state.linearTickets.some((ticket) => ticket.identifier === issue.identifier);
+  if (!existing) {
+    state.linearTickets = [issue, ...state.linearTickets];
+    return;
+  }
+  state.linearTickets = state.linearTickets.map((ticket) => {
+    if (ticket.identifier !== issue.identifier) return ticket;
+    return {
+      ...ticket,
+      ...issue,
+      flowId: ticket.flowId || "",
+      flowStage: ticket.flowStage || "",
+    };
+  });
 }
 
 function ticketCanMoveToStatus(issueId, group) {
@@ -2320,10 +2463,51 @@ function setTicketStatusGroupDragOver(groupElement, active) {
   groupElement.classList.toggle("drag-over", active);
 }
 
+function ticketDragScrollStep(event) {
+  if (!state.draggingLinearIssueId) return 0;
+  const grid = els.ticketGrid;
+  const rect = grid.getBoundingClientRect();
+  const maxScrollTop = grid.scrollHeight - grid.clientHeight;
+  const topDistance = event.clientY - rect.top;
+  const bottomDistance = rect.bottom - event.clientY;
+  if (topDistance < TICKET_DRAG_SCROLL_EDGE_PX && grid.scrollTop > 0) {
+    const edgeProgress = Math.min(1, (TICKET_DRAG_SCROLL_EDGE_PX - topDistance) / TICKET_DRAG_SCROLL_EDGE_PX);
+    return -TICKET_DRAG_SCROLL_MAX_STEP_PX * edgeProgress;
+  }
+  if (bottomDistance < TICKET_DRAG_SCROLL_EDGE_PX && grid.scrollTop < maxScrollTop) {
+    const edgeProgress = Math.min(1, (TICKET_DRAG_SCROLL_EDGE_PX - bottomDistance) / TICKET_DRAG_SCROLL_EDGE_PX);
+    return TICKET_DRAG_SCROLL_MAX_STEP_PX * edgeProgress;
+  }
+  return 0;
+}
+
+function stopTicketDragAutoScroll() {
+  if (ticketDragScrollFrame) cancelAnimationFrame(ticketDragScrollFrame);
+  ticketDragScrollFrame = 0;
+  state.ticketDragScrollStep = 0;
+}
+
+function runTicketDragAutoScroll() {
+  ticketDragScrollFrame = 0;
+  if (!state.draggingLinearIssueId || !state.ticketDragScrollStep) return;
+  els.ticketGrid.scrollTop += state.ticketDragScrollStep;
+  ticketDragScrollFrame = requestAnimationFrame(runTicketDragAutoScroll);
+}
+
+function updateTicketDragAutoScroll(event) {
+  state.ticketDragScrollStep = ticketDragScrollStep(event);
+  if (!state.ticketDragScrollStep) {
+    stopTicketDragAutoScroll();
+    return;
+  }
+  if (!ticketDragScrollFrame) ticketDragScrollFrame = requestAnimationFrame(runTicketDragAutoScroll);
+}
+
 function clearTicketDragState() {
   state.draggingLinearIssueId = "";
-  for (const element of els.ticketGrid.querySelectorAll(".ticket-status-group.drag-over, .ticket-card.dragging")) {
-    element.classList.remove("drag-over", "dragging");
+  stopTicketDragAutoScroll();
+  for (const element of els.ticketGrid.querySelectorAll(".ticket-status-group.drag-over, .ticket-card.dragging, .ticket-card.drop-before, .ticket-card.drop-after")) {
+    element.classList.remove("drag-over", "dragging", "drop-before", "drop-after");
   }
 }
 
@@ -2334,6 +2518,7 @@ function handleTicketStatusDragEnter(event, group) {
 }
 
 function handleTicketStatusDragOver(event, group) {
+  updateTicketDragAutoScroll(event);
   if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
@@ -2362,7 +2547,32 @@ function handleTicketStatusDrop(event, group) {
 }
 
 function ticketCanMoveToPinned(issueId) {
-  return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId) && !isLinearIssuePinned(issueId));
+  return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId));
+}
+
+function clearPinnedTicketDropTarget(section) {
+  for (const card of section.querySelectorAll(".ticket-card.drop-before, .ticket-card.drop-after")) {
+    card.classList.remove("drop-before", "drop-after");
+  }
+}
+
+function pinnedTicketDropIndex(event) {
+  const cards = [...event.currentTarget.querySelectorAll(".ticket-card.pinned:not(.dragging)")];
+  for (const [index, card] of cards.entries()) {
+    const rect = card.getBoundingClientRect();
+    if (event.clientY < rect.top + rect.height / 2) return index;
+  }
+  return cards.length;
+}
+
+function updatePinnedTicketDropTarget(event) {
+  const section = event.currentTarget;
+  clearPinnedTicketDropTarget(section);
+  const cards = [...section.querySelectorAll(".ticket-card.pinned:not(.dragging)")];
+  if (!cards.length) return;
+  const index = pinnedTicketDropIndex(event);
+  const target = cards[Math.min(index, cards.length - 1)];
+  target.classList.add(index >= cards.length ? "drop-after" : "drop-before");
 }
 
 function handlePinnedTicketDragEnter(event) {
@@ -2372,30 +2582,30 @@ function handlePinnedTicketDragEnter(event) {
 }
 
 function handlePinnedTicketDragOver(event) {
+  updateTicketDragAutoScroll(event);
   if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
   setTicketStatusGroupDragOver(event.currentTarget, true);
+  updatePinnedTicketDropTarget(event);
+}
+
+function handleTicketGridDragOver(event) {
+  if (!state.draggingLinearIssueId) return;
+  updateTicketDragAutoScroll(event);
 }
 
 function handlePinnedTicketDrop(event) {
   const issueId = state.draggingLinearIssueId || event.dataTransfer.getData("text/plain");
   if (!ticketCanMoveToPinned(issueId)) return;
+  const index = pinnedTicketDropIndex(event);
   event.preventDefault();
   clearTicketDragState();
-  setLinearIssuePinned(issueId, true);
+  moveLinearIssueToPinnedPosition(issueId, index);
 }
 
 function replaceLinearIssue(issue) {
-  state.linearTickets = state.linearTickets.map((ticket) => {
-    if (ticket.identifier !== issue.identifier) return ticket;
-    return {
-      ...ticket,
-      ...issue,
-      flowId: ticket.flowId || "",
-      flowStage: ticket.flowStage || "",
-    };
-  });
+  upsertLinearIssue(issue);
 
   const cached = state.linearDetails.get(issue.identifier);
   if (cached?.issue) {
@@ -2431,6 +2641,7 @@ async function moveTicketToLinearStatus(issueId, group) {
     syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
+    focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {
     state.linearTickets = previousTickets;
@@ -2439,6 +2650,35 @@ async function moveTicketToLinearStatus(issueId, group) {
     renderTickets();
     renderFlowPane();
     els.ticketState.textContent = error.message;
+  }
+}
+
+async function createPinnedLinearTicket() {
+  if (state.creatingLinearTicket) return;
+  state.creatingLinearTicket = true;
+  els.createLinearTicket.disabled = true;
+  els.ticketState.textContent = "Creating In Eng ticket.";
+
+  try {
+    const data = await api("/api/linear/issues", { method: "POST" });
+    const issue = data.issue;
+    if (!issue?.identifier) throw new Error("Linear did not return the created issue.");
+    upsertLinearIssue(issue);
+    state.pinnedLinearIssues.add(issue.identifier);
+    persistPinnedLinearIssues();
+    state.selectedLinearIssueId = issue.identifier;
+    localStorage.setItem("flow.selectedLinearIssueId", issue.identifier);
+    state.linearDetails.set(issue.identifier, { loading: false, issue });
+    syncLinearTicketsWithFlows();
+    renderTickets();
+    renderFlowPane();
+    els.ticketState.textContent = formatLastUpdated();
+  } catch (error) {
+    els.ticketState.textContent = error.message;
+    toast(error.message, { kind: "error" });
+  } finally {
+    state.creatingLinearTicket = false;
+    els.createLinearTicket.disabled = false;
   }
 }
 
@@ -2533,8 +2773,9 @@ async function selectFlow(id) {
   state.selectedLinearIssueId = flow.linearIssueId;
   localStorage.setItem("flow.selectedFlowId", id);
   localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
+  resumeTerminalFollow();
   render();
-  await loadLogs(id);
+  await loadLogs(id, { force: true, resetCursor: true, scrollToLatest: true });
   void loadFlowDiff(id, { force: true });
   void loadLinearDetail(flow.linearIssueId);
 }
@@ -2550,9 +2791,10 @@ async function openTicketInFlowPane(ticket) {
     state.selectedFlowId = "";
     localStorage.removeItem("flow.selectedFlowId");
   }
+  resumeTerminalFollow();
   render();
   if (flow) {
-    await loadLogs(flow.id);
+    await loadLogs(flow.id, { force: true, resetCursor: true, scrollToLatest: true });
     void loadFlowDiff(flow.id, { force: true });
   }
   void loadLinearDetail(ticket.identifier);
@@ -2610,6 +2852,7 @@ function renderFlowPane() {
     const terminal = els.flowPane.querySelector(".terminal");
     terminal._flowLogFlowId = "";
     terminal._flowLogSignature = "";
+    terminal._flowLogRenderedKeys = null;
     terminal.textContent = "No agent session yet.";
   }
   void loadLinearDetail(issueId);
@@ -2681,6 +2924,41 @@ async function uploadAgentImages(files) {
   }
 }
 
+function linearCommentParentId(comment) {
+  return comment.parent?.id || comment.parentId || "";
+}
+
+function linearCommentTree(comments) {
+  const sorted = [...comments].sort(
+    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+  );
+  const byId = new Map(sorted.map((comment) => [comment.id, { ...comment, replies: [] }]));
+  const roots = [];
+
+  for (const comment of byId.values()) {
+    const parentId = linearCommentParentId(comment);
+    const parent = parentId ? byId.get(parentId) : null;
+    if (parent) parent.replies.push(comment);
+    else roots.push(comment);
+  }
+
+  return roots;
+}
+
+function renderLinearComment(comment, nested = false) {
+  const replies = comment.replies || [];
+  return `
+    <article class="linear-comment${nested ? " linear-comment-reply" : ""}">
+      <header>
+        <strong>${escapeHtml(comment.user?.name || "Unknown")}</strong>
+        <time>${escapeHtml(formatDate(comment.createdAt))}</time>
+      </header>
+      <div class="linear-comment-body linear-markdown">${renderLinearMarkdown(comment.body)}</div>
+      ${replies.length ? `<div class="linear-comment-replies">${replies.map((reply) => renderLinearComment(reply, true)).join("")}</div>` : ""}
+    </article>
+  `;
+}
+
 function renderLinearDetail(context) {
   const container = els.flowPane.querySelector(".linear-detail");
   const cached = state.linearDetails.get(context.issueId);
@@ -2690,9 +2968,8 @@ function renderLinearDetail(context) {
     url: context.issueUrl,
   };
   const labels = issue.labels?.nodes || [];
-  const comments = [...(issue.comments?.nodes || [])].sort(
-    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
-  );
+  const comments = issue.comments?.nodes || [];
+  const commentTree = linearCommentTree(comments);
   const meta = [
     issue.project?.name,
     issue.assignee?.name ? `Assignee: ${issue.assignee.name}` : "",
@@ -2728,19 +3005,7 @@ function renderLinearDetail(context) {
         cached?.error
           ? `<p class="linear-error">${escapeHtml(cached.error)}</p>`
           : comments.length
-            ? comments
-                .map(
-                  (comment) => `
-                    <article class="linear-comment">
-                      <header>
-                        <strong>${escapeHtml(comment.user?.name || "Unknown")}</strong>
-                        <time>${escapeHtml(formatDate(comment.createdAt))}</time>
-                      </header>
-                      <div class="linear-comment-body linear-markdown">${renderLinearMarkdown(comment.body)}</div>
-                    </article>
-                  `,
-                )
-                .join("")
+            ? commentTree.map((comment) => renderLinearComment(comment)).join("")
             : `<p class="linear-empty-copy">${cached?.loading ? "Loading comments." : "No comments."}</p>`
       }
     </section>
@@ -2756,6 +3021,15 @@ async function loadLinearDetail(identifier) {
     const data = await api(`/api/linear/issues/${encodeURIComponent(identifier)}`);
     state.linearDetails.set(identifier, { loading: false, issue: data.issue });
   } catch (error) {
+    if (error.status === 404) {
+      removeLinearIssueFromTurbopump(identifier);
+      if (flowForLinearIssue(identifier)) {
+        state.linearDetails.set(identifier, { loading: false, deleted: true, error: "Linear issue not found" });
+      }
+      renderTickets();
+      renderFlowPane();
+      return;
+    }
     state.linearDetails.set(identifier, { loading: false, error: error.message });
   }
   renderFlowPane();
@@ -2797,28 +3071,32 @@ async function ensureSelectedFlow() {
 
 async function loadLogs(id, options = {}) {
   if (!state.logs.has(id)) state.logs.set(id, []);
+  const shouldBackfill = options.resetCursor || !state.logBackfilledFlowIds.has(id);
+  let cursor = shouldBackfill ? 0 : state.lastLogId.get(id) || 0;
+  if (shouldBackfill) state.lastLogId.set(id, 0);
 
   const appendedLogs = [];
   while (true) {
-    const after = state.lastLogId.get(id) || 0;
-    const data = await api(`/api/flows/${id}/logs?after=${after}`);
+    const data = await api(`/api/flows/${id}/logs?after=${cursor}`);
     if (!data.logs.length) break;
 
-    let highestLogId = after;
+    let highestLogId = cursor;
     for (const log of data.logs) {
       highestLogId = Math.max(highestLogId, log.id);
       if (appendLogEntry(log)) appendedLogs.push(log);
     }
 
-    state.lastLogId.set(id, highestLogId);
+    cursor = Math.max(cursor, highestLogId);
+    state.lastLogId.set(id, Math.max(state.lastLogId.get(id) || 0, cursor));
     if (data.logs.length < 1000) break;
   }
+  state.logBackfilledFlowIds.add(id);
 
   if (options.shellOnly || (appendedLogs.length && appendedLogs.every(isShellOnlyRenderLog))) {
     renderShellOutputPane(id);
     return;
   }
-  renderLogs(id);
+  renderLogs(id, options);
 }
 
 function logMeta(source) {
@@ -2931,9 +3209,12 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
   let latestUserLog = null;
-  for (const log of logs) {
+  let latestUserLogIndex = -1;
+  for (let index = 0; index < logs.length; index += 1) {
+    const log = logs[index];
     if (log.source === "user") {
       latestUserLog = log;
+      latestUserLogIndex = index;
       continue;
     }
     if (!latestUserLog || !isRuntimeDisappearedLog(log)) continue;
@@ -2941,7 +3222,7 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
     const beforeId = Number(log.id);
     const key = `${afterId}:${beforeId}`;
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
-    const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+    const count = index - latestUserLogIndex - 1;
     if (count <= 1) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
@@ -2953,15 +3234,17 @@ function syntheticSteerTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
   let latestUserLog = null;
+  let latestUserLogIndex = -1;
   let sawTurnCompletedSinceUser = false;
-  for (const log of logs) {
+  for (let index = 0; index < logs.length; index += 1) {
+    const log = logs[index];
     if (log.source === "user") {
       if (latestUserLog && !sawTurnCompletedSinceUser) {
         const afterId = Number(latestUserLog.id);
         const beforeId = Number(log.id);
         const key = `${afterId}:${beforeId}`;
         if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
-          const count = logs.filter((item) => Number(item.id) > afterId && Number(item.id) < beforeId).length;
+          const count = index - latestUserLogIndex - 1;
           if (count > 1) {
             ranges.push({ afterId, beforeId, count, key });
             existingKeys.add(key);
@@ -2969,6 +3252,7 @@ function syntheticSteerTraceRanges(logs, existingRanges) {
         }
       }
       latestUserLog = log;
+      latestUserLogIndex = index;
       sawTurnCompletedSinceUser = false;
       continue;
     }
@@ -3153,7 +3437,7 @@ function isShellOnlyRenderLog(log) {
 }
 
 function runningShellGroups(logs, flow, clearAfterLogId = 0) {
-  if (!flowRuntimeActive(flow) || flowRuntimeKind(flow) !== "shell") return [];
+  if (!flowShellRunning(flow)) return [];
   return latestShellGroups(logs, clearAfterLogId);
 }
 
@@ -3236,7 +3520,7 @@ function renderShellOutputPane(flowId) {
     pane._shellOutputSignature = "";
     return;
   }
-  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fshell-live:${shellLive}`;
+  const signature = `${terminalGroupsSignature(groups)}\u001fshell-live:${shellLive}`;
   if (pane._shellOutputSignature === signature) return;
   const fragment = document.createDocumentFragment();
   for (const group of groups) appendTerminalBlock(fragment, group);
@@ -3244,6 +3528,18 @@ function renderShellOutputPane(flowId) {
   pane.replaceChildren(fragment);
   pane._shellOutputSignature = signature;
   pane.scrollTop = pane.scrollHeight;
+}
+
+function scheduleShellOutputRender(flowId) {
+  if (!flowId) return;
+  state.pendingShellOutputRenders.add(flowId);
+  if (state.shellOutputRenderFrame) return;
+  state.shellOutputRenderFrame = requestAnimationFrame(() => {
+    state.shellOutputRenderFrame = 0;
+    const flowIds = [...state.pendingShellOutputRenders];
+    state.pendingShellOutputRenders.clear();
+    for (const id of flowIds) renderShellOutputPane(id);
+  });
 }
 
 async function clearShellOutputPane() {
@@ -3304,9 +3600,9 @@ function usesTerminalMarkdownToggle(source) {
 
 function renderTerminalMarkdownOutput(message, showToggle = false) {
   const toggle = showToggle
-    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Show raw markdown" title="Show raw markdown">Raw</button>`
+    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>`
     : "";
-  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true })}</div>`;
+  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true, compactBlankLines: true })}</div>`;
 }
 
 function ansiClassForCode(code) {
@@ -3514,28 +3810,115 @@ function toggleTerminalMarkdownOutput(button) {
   const raw = content.dataset.rawMarkdown || "";
   const showingRaw = body.classList.toggle("showing-raw-markdown");
   button.setAttribute("aria-pressed", String(showingRaw));
-  button.setAttribute("aria-label", showingRaw ? "Show rendered markdown" : "Show raw markdown");
-  button.title = showingRaw ? "Show rendered markdown" : "Show raw markdown";
-  button.textContent = showingRaw ? "Rendered" : "Raw";
+  button.setAttribute("aria-label", "Toggle raw markdown");
+  button.title = "Toggle raw markdown";
+  button.textContent = "Raw";
   content.innerHTML = showingRaw
     ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
-    : renderLinearMarkdown(raw, "", { images: false, links: true });
+    : renderLinearMarkdown(raw, "", { images: false, links: true, compactBlankLines: true });
   if (!showingRaw) highlightCodeBlocks(content);
+  applyTerminalMessageClamps(body.closest(".terminal-entry") || body);
 }
 
 function highlightCodeBlocks(root) {
   window.Prism?.highlightAllUnder?.(root);
 }
 
-function appendTerminalBlock(fragment, group) {
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+async function copyAgentBranchName(branchName) {
+  if (!branchName) return;
+  try {
+    await copyTextToClipboard(branchName);
+    toast("Branch copied");
+  } catch {
+    toast("Could not copy branch", { kind: "error" });
+  }
+}
+
+function terminalMessageMaxLines(root) {
+  const panel = root.closest?.(".agent-panel") || els.flowPane.querySelector(".agent-panel");
+  const value = getComputedStyle(panel || document.documentElement)
+    .getPropertyValue("--terminal-message-max-lines")
+    .trim();
+  const maxLines = Number.parseInt(value, 10);
+  return Number.isFinite(maxLines) && maxLines > 0 ? maxLines : 50;
+}
+
+function applyTerminalMessageClamps(root) {
+  if (!root) return;
+  if (root.closest?.(".shell-output-pane")) return;
+  const maxLines = terminalMessageMaxLines(root);
+  const bodies = root.matches?.(".terminal-entry-body")
+    ? [root]
+    : Array.from(root.querySelectorAll(".terminal-entry-body"));
+  for (const body of bodies) {
+    const entry = body.closest(".terminal-entry");
+    if (
+      !entry ||
+      body.classList.contains("agent-working") ||
+      body.closest(".shell-output-pane") ||
+      entry.classList.contains("terminal-entry-assistant")
+    ) {
+      continue;
+    }
+    const content = terminalMessageContent(body);
+    body.querySelectorAll(":scope > .terminal-entry-overflow-marker").forEach((marker) => marker.remove());
+    const style = getComputedStyle(body);
+    const lineHeight = Number.parseFloat(style.lineHeight);
+    if (Number.isFinite(lineHeight) && lineHeight > 0) {
+      content.style.setProperty("--terminal-message-max-height", `${lineHeight * maxLines}px`);
+    }
+    for (const image of content.querySelectorAll("img")) {
+      if (!image.complete) image.addEventListener("load", () => applyTerminalMessageClamps(entry), { once: true });
+    }
+    if (content.scrollHeight <= content.clientHeight + 1) continue;
+    const marker = document.createElement("div");
+    marker.className = "terminal-entry-overflow-marker";
+    marker.textContent = ". . .";
+    body.appendChild(marker);
+  }
+}
+
+function terminalMessageContent(body) {
+  const existing = body.querySelector(":scope > .terminal-entry-body-content");
+  if (existing) return existing;
+  const content = document.createElement(body.tagName === "PRE" ? "span" : "div");
+  content.className = "terminal-entry-body-content";
+  while (body.firstChild) content.appendChild(body.firstChild);
+  body.appendChild(content);
+  return content;
+}
+
+function terminalGroupRenderKey(group) {
+  if (group.source === "agent:trace-group" && group.traceKey) return `trace:${group.traceKey}`;
+  return `${group.source}:${group.id}`;
+}
+
+function appendTerminalBlock(fragment, group, options = {}) {
   if (group.source === "agent:trace-group") {
-    appendTerminalTraceGroup(fragment, group);
+    appendTerminalTraceGroup(fragment, group, options);
     return;
   }
 
   const meta = logMeta(group.source);
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
+  if (options.incoming) block.classList.add("terminal-entry-incoming");
 
   if (group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command") {
     block.classList.add("terminal-entry-command");
@@ -3591,8 +3974,11 @@ function appendTerminalBlock(fragment, group) {
   }
 
   header.replaceChildren(marker, label, ...(time ? [time] : []));
-  block.replaceChildren(header, body);
-  if (meta.tone === "output") block.appendChild(renderOutputDeleteButton(group));
+  block.replaceChildren(
+    header,
+    ...(meta.tone === "output" ? [renderOutputDeleteButton(group)] : []),
+    body,
+  );
   fragment.appendChild(block);
 }
 
@@ -3648,10 +4034,11 @@ async function deleteOutputLogGroup(flowId, ids) {
   }
 }
 
-function appendTerminalTraceGroup(fragment, group) {
+function appendTerminalTraceGroup(fragment, group, options = {}) {
   const meta = logMeta(group.source);
   const details = document.createElement("details");
   details.className = "terminal-trace-group";
+  if (options.incoming) details.classList.add("terminal-entry-incoming");
   details.dataset.traceKey = group.traceKey || "";
   details._traceChildren = group.children || [];
 
@@ -3719,12 +4106,15 @@ function materializeTerminalTraceGroup(details) {
 
   details._traceBody = body;
   details.appendChild(body);
+  applyTerminalMessageClamps(body);
   return body;
 }
 
 function toggleTerminalTraceGroup(details) {
   const isClosing = details.classList.contains("terminal-trace-closing");
   const shouldOpen = isClosing || !details.open;
+  const terminal = details.closest(".terminal");
+  const shouldFollowLatest = terminal && !state.terminalFollowPaused && terminalAtLatest(terminal);
   if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
   details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
   if (shouldOpen) materializeTerminalTraceGroup(details);
@@ -3735,9 +4125,15 @@ function toggleTerminalTraceGroup(details) {
   const itemCount = details.querySelectorAll(":scope > .terminal-trace-body > *").length;
   const longestDelay = traceFoldDelay(Math.max(0, itemCount - 1));
   const duration = shouldOpen ? Math.max(110, 125 + longestDelay) : Math.max(55, 63 + longestDelay / 2);
+  if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, duration + 40);
   details._traceToggleTimer = window.setTimeout(() => {
-    if (!shouldOpen) details.open = false;
+    if (!shouldOpen) {
+      details.open = false;
+      details._traceBody?.remove();
+      details._traceBody = null;
+    }
     details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
+    if (shouldFollowLatest) scrollTerminalToLatestNow(terminal);
     details._traceToggleTimer = 0;
   }, duration);
 }
@@ -3882,21 +4278,9 @@ async function pollAgentWorkingFlow() {
     stopAgentWorkingPoll(flowId);
     return;
   }
-  if (state.messageSubmitting || state.interruptSubmitting) {
-    state.agentWorkingPollInFlight = true;
-    try {
-      await loadLogs(flowId);
-    } catch {
-      // Keep the polling loop alive; transient fetch failures should not freeze the indicator.
-    } finally {
-      state.agentWorkingPollInFlight = false;
-    }
-    scheduleAgentWorkingPoll(flowId);
-    return;
-  }
-
   state.agentWorkingPollInFlight = true;
   try {
+    await loadLogs(flowId, { scrollToLatest: state.messageSubmitting });
     const data = await api(`/api/flows/${flowId}/agent/status`);
     if (data.flow) upsertFlow(data.flow);
     render();
@@ -3932,6 +4316,43 @@ function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
   fragment.appendChild(block);
 }
 
+function terminalGroupSignaturePart(group) {
+  const logIds = group.logIds || [group.id];
+  const firstLogId = logIds[0] ?? group.id;
+  const lastLogId = logIds[logIds.length - 1] ?? group.id;
+  const children = group.children?.length ? `[${group.children.map((child) => terminalGroupSignaturePart(child)).join(",")}]` : "";
+  return [
+    group.source,
+    firstLogId,
+    lastLogId,
+    logIds.length,
+    group.createdAt,
+    group.lastAt,
+    String(group.message || "").length,
+    children,
+  ].join(":");
+}
+
+function terminalGroupsSignature(groups) {
+  return groups.map((group) => terminalGroupSignaturePart(group)).join("\u001f");
+}
+
+function scheduleLogRender(id, options = {}) {
+  if (!id) return;
+  const existing = state.pendingLogRenders.get(id) || {};
+  state.pendingLogRenders.set(id, {
+    force: Boolean(existing.force || options.force),
+    scrollToLatest: Boolean(existing.scrollToLatest || options.scrollToLatest),
+  });
+  if (state.logRenderFrame) return;
+  state.logRenderFrame = requestAnimationFrame(() => {
+    state.logRenderFrame = 0;
+    const entries = [...state.pendingLogRenders.entries()];
+    state.pendingLogRenders.clear();
+    for (const [flowId, renderOptions] of entries) renderLogs(flowId, renderOptions);
+  });
+}
+
 function renderLogs(id, options = {}) {
   if (id !== state.selectedFlowId) return;
   const terminal = els.flowPane.querySelector(".terminal");
@@ -3942,7 +4363,7 @@ function renderLogs(id, options = {}) {
   const agentWorking = agentWorkingForFlow(flow);
   const agentWorkingKind = agentWorking ? "agent" : "idle";
   syncAgentWorkingPoll(id, agentWorking);
-  const signature = `${groups.map((group) => `${group.source}:${group.createdAt}:${group.message}`).join("\u001f")}\u001fworking:${agentWorking}:${agentWorkingKind}`;
+  const signature = `${terminalGroupsSignature(groups)}\u001fworking:${agentWorking}:${agentWorkingKind}`;
   if (
     terminal._flowLogFlowId === id &&
     terminal._flowLogSignature &&
@@ -3961,12 +4382,19 @@ function renderLogs(id, options = {}) {
   }
 
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
+  const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
+  const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
   const fragment = document.createDocumentFragment();
-  for (const group of groups) appendTerminalBlock(fragment, group);
+  for (const group of groups) {
+    const renderKey = terminalGroupRenderKey(group);
+    appendTerminalBlock(fragment, group, { incoming: Boolean(previousKeys && !previousKeys.has(renderKey)) });
+  }
   if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
+  applyTerminalMessageClamps(terminal);
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
+  terminal._flowLogRenderedKeys = nextKeys;
   terminal._flowLogPending = "";
   if (atLatest) scrollTerminalToLatest(terminal);
   renderShellOutputPane(id);
@@ -3995,6 +4423,10 @@ function formatDate(value) {
 
 function connectWs() {
   const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
+  ws.addEventListener("open", () => {
+    const flow = selectedFlow();
+    if (flow) void loadLogs(flow.id);
+  });
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "flows") {
@@ -4003,7 +4435,7 @@ function connectWs() {
       if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {
         renderTickets();
         const flow = selectedFlow();
-        if (flow) renderLogs(flow.id, { force: true });
+        if (flow) scheduleLogRender(flow.id, { force: true });
         return;
       }
       render();
@@ -4026,10 +4458,14 @@ function connectWs() {
       };
       appendLogEntry(log);
       if (isShellOnlyRenderLog(log)) {
-        renderShellOutputPane(log.flowId);
+        scheduleShellOutputRender(log.flowId);
         return;
       }
-      renderLogs(log.flowId);
+      const shouldScrollToSubmittedPrompt =
+        log.flowId === state.selectedFlowId &&
+        state.messageSubmitting &&
+        (log.source === "user" || log.source === "user:queued");
+      scheduleLogRender(log.flowId, shouldScrollToSubmittedPrompt ? { scrollToLatest: true } : {});
     }
     if (message.event === "logs-deleted") {
       removeLogEntries(message.payload.flowId, message.payload.ids || []);
@@ -4120,6 +4556,16 @@ els.settingsPane.addEventListener("keydown", (event) => {
   setSettingsCollapsed(false);
 });
 
+els.settingsPane.addEventListener(
+  "wheel",
+  (event) => {
+    if (state.settingsCollapsed || event.target.closest(".settings-content")) return;
+    els.settingsContent.scrollTop += event.deltaY;
+    event.preventDefault();
+  },
+  { passive: false },
+);
+
 els.settingsContent.addEventListener("click", (event) => {
   const toggle = event.target.closest(".settings-section-toggle");
   if (!toggle) return;
@@ -4166,6 +4612,8 @@ els.linearKeyForm.addEventListener("submit", async (event) => {
 });
 
 els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));
+els.createLinearTicket.addEventListener("click", () => void createPinnedLinearTicket());
+els.ticketGrid.addEventListener("dragover", handleTicketGridDragOver);
 
 els.flowPane.querySelector(".flow-resizer").addEventListener("pointerdown", startFlowSplitResize);
 els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) => {
@@ -4196,6 +4644,7 @@ els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
   event.preventDefault();
   event.stopPropagation();
   toggleTerminalMarkdownOutput(toggle);
+  if (event.detail > 0) toggle.blur();
 });
 
 els.flowPane.querySelector(".terminal").addEventListener(
@@ -4458,14 +4907,13 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
-    if (submittedFlowId) await loadLogs(submittedFlowId);
+    if (submittedFlowId) await loadLogs(submittedFlowId, { scrollToLatest: true });
     renderTickets();
     renderFlowPane();
     promptInput().focus();
   }
 });
 
-els.diffModal?.querySelector(".diff-modal-close")?.addEventListener("click", closeDiffViewer);
 els.diffModal?.addEventListener("click", (event) => {
   if (event.target === els.diffModal) closeDiffViewer();
 });

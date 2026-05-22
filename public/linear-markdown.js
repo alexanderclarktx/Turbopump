@@ -1,11 +1,10 @@
 export function renderLinearMarkdown(value, fallback = "", options = {}) {
-  const { images = true, links = true } = options;
+  const { images = true, links = true, compactBlankLines = false } = options;
   const text = String(value || fallback);
   if (!text) return "";
 
   const lines = text.split("\n");
   const blocks = [];
-  const orderedListStarts = new Map();
 
   for (let index = 0; index < lines.length; ) {
     const line = lines[index];
@@ -34,18 +33,24 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
 
     const list = matchListLine(line);
     if (list) {
-      const orderedKey = String(list.indent);
-      const startNumber = list.ordered ? (orderedListStarts.get(orderedKey) || list.number) : 1;
-      const parsed = renderList(lines, index, list.indent, list.ordered, { images, links }, startNumber);
+      const parsed = renderList(lines, index, list.indent, list.ordered, { images, links }, list.number);
       blocks.push(parsed.html);
-      if (list.ordered) orderedListStarts.set(orderedKey, startNumber + parsed.itemCount);
       index = parsed.index;
       continue;
     }
 
     if (!line.trim()) {
-      blocks.push("<br>");
-      index += 1;
+      let blankCount = 0;
+      while (index + blankCount < lines.length && !lines[index + blankCount].trim()) blankCount += 1;
+      const hasPreviousContent = blocks.length > 0;
+      const hasNextContent = index + blankCount < lines.length;
+      const compactBreak = '<br><span class="markdown-blank-line" aria-hidden="true"></span>';
+      blocks.push(
+        compactBlankLines && hasPreviousContent && hasNextContent
+          ? compactBreak.repeat(blankCount)
+          : "<br>".repeat(blankCount),
+      );
+      index += blankCount;
       continue;
     }
 
@@ -255,10 +260,6 @@ function renderList(lines, startIndex, indent, ordered, options, startNumber = 1
           index = nextContentIndex;
           continue;
         }
-        if (ordered && !nextContentList) {
-          index += 1;
-          continue;
-        }
         index += 1;
         break;
       }
@@ -328,19 +329,21 @@ export function renderInlineMarkdown(value, options = {}) {
   const { images = true, links = true } = options;
   const text = String(value || "");
   const markdownPattern =
-    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/|\/)[^)>\s]+))\s*\)|(https?:\/\/[^\s<>()]+)/g;
+    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/|\/)[^)>\s]+))\s*\)|(https?:\/\/[^\s<>()]+)/g;
   let cursor = 0;
   let html = "";
 
   for (const match of text.matchAll(markdownPattern)) {
-    const [markdown, code, bold, imageMarker, label, angleUrl, plainUrl, bareUrl] = match;
+    const [markdown, code, bold, emphasis, imageMarker, label, angleUrl, plainUrl, bareUrl] = match;
     const url = angleUrl || plainUrl || bareUrl;
     html += escapeHtml(text.slice(cursor, match.index));
 
     if (code !== undefined) {
       html += `<code>${escapeHtml(code)}</code>`;
     } else if (bold !== undefined) {
-      html += `<strong>${escapeHtml(bold)}</strong>`;
+      html += `<strong>${renderInlineMarkdown(bold, options)}</strong>`;
+    } else if (emphasis !== undefined) {
+      html += `<em>${renderInlineMarkdown(emphasis, options)}</em>`;
     } else if (imageMarker && images) {
       const imageSrc = linearImageSource(url);
       html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" data-image-preview data-image-preview-alt="${escapeAttribute(label || "Linear attachment")}"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;

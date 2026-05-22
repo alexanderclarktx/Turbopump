@@ -39,6 +39,11 @@ type Flow = {
   createdAt: string;
   updatedAt: string;
   shellOutputClearAfterLogId?: number;
+  agentRuntimeKind?: "agent" | "shell";
+  agentRuntimeStatus?: "running" | "interrupting" | "";
+  shellRuntimeStatus?: "running" | "interrupting" | "";
+  agentCompacting?: boolean;
+  agentQueuedMessage?: boolean;
 };
 
 type LogRow = {
@@ -62,13 +67,14 @@ type LinearIssue = {
   identifier: string;
   title: string;
   url: string;
+  archivedAt?: string | null;
   priority?: number;
   estimate?: number | null;
   description?: string | null;
   createdAt?: string;
   updatedAt?: string;
   state?: { id?: string; name: string; color?: string; type?: string };
-  team?: { key: string; name: string };
+  team?: { id?: string; key: string; name: string };
   project?: { name: string } | null;
   assignee?: { name: string } | null;
   creator?: { name: string } | null;
@@ -80,8 +86,17 @@ type LinearIssue = {
       createdAt: string;
       updatedAt?: string;
       user?: { name: string } | null;
+      parent?: { id: string } | null;
     }[];
   };
+};
+
+type LinearWorkflowState = {
+  id: string;
+  name: string;
+  color?: string;
+  type?: string;
+  team?: { id: string; key: string; name: string } | null;
 };
 
 const stages: Stage[] = ["planning", "working", "reviewing", "done"];
@@ -106,6 +121,8 @@ const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhi
 const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
 const reviewFindingInstructions =
   "Focus on bugs, behavioral regressions, missing tests, and risks. Report findings first with file and line references.";
+const serveProcessPidSettingKey = "serveProcessPid";
+const serveProcessFlowSettingKey = "serveProcessFlowId";
 const defaultAgentDeveloperInstructions = [
   "You are running inside Turbopump, a local coding-agent workflow system.",
   "",
@@ -189,6 +206,10 @@ db.exec(`
     clearAfterLogId integer not null default 0,
     updatedAt text not null
   );
+
+  create index if not exists logs_flow_id_id_idx on logs(flowId, id);
+  create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);
+  create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
 `);
 tryMigration("update flows set stage = 'planning' where stage = 'not_started'");
 tryMigration("alter table flows add column agentModel text not null default ''");
@@ -291,6 +312,26 @@ function getStoredSetting(key: string) {
 
 function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
+}
+
+function persistedServePid() {
+  const value = Number(getSetting(serveProcessPidSettingKey));
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function persistedServeFlowId() {
+  return getSetting(serveProcessFlowSettingKey);
+}
+
+function rememberServeProcess(runtime: RuntimeProcess) {
+  setSetting(serveProcessPidSettingKey, String(runtime.proc.pid));
+  setSetting(serveProcessFlowSettingKey, runtime.flowId);
+}
+
+function clearPersistedServeProcess(runtime?: RuntimeProcess) {
+  if (runtime && persistedServePid() !== runtime.proc.pid) return;
+  deleteSettingByKeyStmt.run(serveProcessPidSettingKey);
+  deleteSettingByKeyStmt.run(serveProcessFlowSettingKey);
 }
 
 function readEnvContents() {
@@ -438,26 +479,28 @@ function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number) 
 
 function runtimeAdjustedFlow(flow: Flow) {
   const shellRuntime = shellProcesses.get(flow.id);
-  if (shellRuntime) {
-    return {
-      ...flow,
-      agentStatus: shellRuntime.stopping ? "interrupting" : "running",
-      agentRuntimeKind: "shell",
-    };
-  }
-
   const agentRuntime = agentProcesses.get(flow.id);
-  if (agentRuntime?.activeTurnId || agentRuntime?.compacting) {
-    return {
-      ...flow,
-      agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running",
-      agentRuntimeKind: "agent",
-      agentCompacting: Boolean(agentRuntime.compacting),
-      agentQueuedMessage: Boolean(agentRuntime.queuedAgentMessages?.length),
-    };
-  }
+  const agentRuntimeActive = Boolean(agentRuntime?.activeTurnId || agentRuntime?.compacting);
+  const shellRuntimeStatus = shellRuntime ? (shellRuntime.stopping ? "interrupting" : "running") : "";
+  const agentRuntimeStatus = agentRuntimeActive
+    ? agentRuntime?.stopping || flow.agentStatus === "interrupting"
+      ? "interrupting"
+      : "running"
+    : "";
 
-  return flow;
+  if (!shellRuntimeStatus && !agentRuntimeStatus) return flow;
+
+  const agentStatus =
+    agentRuntimeStatus === "interrupting" || shellRuntimeStatus === "interrupting" ? "interrupting" : "running";
+  return {
+    ...flow,
+    agentStatus,
+    agentRuntimeKind: shellRuntimeStatus && !agentRuntimeStatus ? "shell" : "agent",
+    agentRuntimeStatus,
+    shellRuntimeStatus,
+    agentCompacting: Boolean(agentRuntime?.compacting),
+    agentQueuedMessage: Boolean(agentRuntime?.queuedAgentMessages?.length),
+  };
 }
 
 function clientFlow(flow: Flow) {
@@ -875,6 +918,10 @@ function parseLinearIssue(input: string) {
 
 function cacheLinearIssue(issue: LinearIssue | null | undefined) {
   if (!issue?.identifier) return;
+  if (isDeletedLinearIssue(issue)) {
+    linearIssueCache.delete(issue.identifier.toUpperCase());
+    return;
+  }
   linearIssueCache.set(issue.identifier.toUpperCase(), issue);
 }
 
@@ -1048,6 +1095,7 @@ function ensureRepoCheckout(repoUrl: string) {
 
 function pullWarmedRepo() {
   if (warmedRepoPulling) return;
+  if (!serverHasActiveWork()) return;
   if (!existsSync(repoCheckoutDir)) return;
   const repoUrl = getSetting("repoUrl");
   if (!repoUrl) return;
@@ -1103,14 +1151,19 @@ async function streamProcessOutput(
   if (remainder) insertLog(flowId, source, remainder);
 }
 
-function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
+function signalProcessGroup(pid: number, signal: RuntimeSignal) {
   let signaled = false;
   try {
-    process.kill(-runtime.proc.pid, signal);
+    process.kill(-pid, signal);
     signaled = true;
   } catch {
     // The process may not be a process-group leader, or it may already be gone.
   }
+  return signaled;
+}
+
+function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
+  let signaled = signalProcessGroup(runtime.proc.pid, signal);
   try {
     runtime.proc.kill(signal);
     signaled = true;
@@ -1118,6 +1171,17 @@ function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
     // The group signal above may already have handled it.
   }
   return signaled;
+}
+
+function cleanupPersistedServeProcess() {
+  const pid = persistedServePid();
+  if (!pid) return;
+  const flowId = persistedServeFlowId();
+  signalProcessGroup(pid, "SIGTERM");
+  if (flowId) insertLog(flowId, "serve", "\n[stale serve process stopped by Turbopump]\n");
+  db.query("update flows set serving = 0").run();
+  clearPersistedServeProcess();
+  setTimeout(() => signalProcessGroup(pid, "SIGKILL"), 1500);
 }
 
 function forgetRuntimeProcess(runtime: RuntimeProcess) {
@@ -1494,7 +1558,7 @@ function finishCodexCompaction(runtime: RuntimeProcess, params: Record<string, u
   runtime.compactionPromptLogId = undefined;
   const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", "context compacted");
   deleteQueuedAgentMessagePlaceholders(runtime);
-  if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId, "compact");
+  if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId + 1, "compact");
   updateFlow(runtime.flowId, { agentStatus: "idle" });
   void startNextQueuedAgentMessage(runtime);
 }
@@ -1659,9 +1723,12 @@ function spawnLoggedProcess(
       agentProcesses.delete(flow.id);
       updateFlow(flow.id, { agentStatus: code === 0 ? "idle" : "failed" });
     }
-    if (kind === "serve" && serveProcess?.proc === proc) {
-      serveProcess = null;
-      updateFlow(flow.id, { serving: 0 });
+    if (kind === "serve") {
+      clearPersistedServeProcess(runtime);
+      if (serveProcess?.proc === proc) {
+        serveProcess = null;
+        updateFlow(flow.id, { serving: 0 });
+      }
     }
   });
 
@@ -2047,7 +2114,6 @@ function interruptShellCommand(flowId: string) {
 }
 
 async function interruptAgent(flowId: string) {
-  if (interruptShellCommand(flowId)) return;
   const runtime = agentProcesses.get(flowId);
   if (!runtime) return;
   if (runtime.compacting && !runtime.activeTurnId) {
@@ -2101,67 +2167,87 @@ function startServe(flow: Flow) {
   const updated = getFlow(flow.id);
   if (!updated) throw new Error("Flow disappeared while starting serve.");
   serveProcess = spawnLoggedProcess(updated, "serve", serveCommand, "serve");
+  rememberServeProcess(serveProcess);
+}
+
+function serverHasActiveWork() {
+  return Boolean(clients.size || agentProcesses.size || shellProcesses.size || serveProcess);
 }
 
 async function fetchLinearIssue(identifier: string) {
   if (!linearAuthHeader()) return null;
-  const body = await linearGraphql<{ issue?: LinearIssue }>(
-    `
-      query Issue($id: String!) {
-        issue(id: $id) {
-          id
-          identifier
-          title
-          url
-          state { id name color type }
+  let body: { issue?: LinearIssue };
+  try {
+    body = await linearGraphql<{ issue?: LinearIssue }>(
+      `
+        query Issue($id: String!) {
+          issue(id: $id) {
+            id
+            identifier
+            title
+            url
+            archivedAt
+            state { id name color type }
+          }
         }
-      }
-    `,
-    { id: identifier },
-  );
+      `,
+      { id: identifier },
+    );
+  } catch (error) {
+    if (isLinearIssueNotFoundError(error)) return null;
+    throw error;
+  }
   const issue = body.issue ?? null;
   cacheLinearIssue(issue);
-  return issue;
+  return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
 
 async function fetchLinearIssueDetail(identifier: string) {
   if (!linearAuthHeader()) return null;
-  const body = await linearGraphql<{ issue?: LinearIssue }>(
-    `
-      query IssueDetail($id: String!) {
-        issue(id: $id) {
-          id
-          identifier
-          title
-          url
-          description
-          priority
-          estimate
-          createdAt
-          updatedAt
-          state { id name color type }
-          team { key name }
-          project { name }
-          assignee { name }
-          creator { name }
-          labels { nodes { name color } }
-          comments(first: 50) {
-            nodes {
-              id
-              body
-              createdAt
-              updatedAt
-              user { name }
+  let body: { issue?: LinearIssue };
+  try {
+    body = await linearGraphql<{ issue?: LinearIssue }>(
+      `
+        query IssueDetail($id: String!) {
+          issue(id: $id) {
+            id
+            identifier
+            title
+            url
+            archivedAt
+            description
+            priority
+            estimate
+            createdAt
+            updatedAt
+            state { id name color type }
+            team { key name }
+            project { name }
+            assignee { name }
+            creator { name }
+            labels { nodes { name color } }
+            comments(first: 50) {
+              nodes {
+                id
+                body
+                createdAt
+                updatedAt
+                user { name }
+                parent { id }
+              }
             }
           }
         }
-      }
-    `,
-    { id: identifier },
-  );
+      `,
+      { id: identifier },
+    );
+  } catch (error) {
+    if (isLinearIssueNotFoundError(error)) return null;
+    throw error;
+  }
   const issue = body.issue ?? null;
   cacheLinearIssue(issue);
-  return issue;
+  return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
 
 async function syncLinearStatus(flow: Flow) {
@@ -2225,10 +2311,108 @@ async function updateLinearIssueStatus(identifier: string, issueId: string, stat
   return { issue, flow: flow ? getFlow(flow.id) : null };
 }
 
+function linearWorkflowKey(name = "") {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+async function createBlankInEngLinearIssue() {
+  const data = await linearGraphql<{
+    viewer: {
+      id: string;
+      name: string;
+      assignedIssues: {
+        nodes: LinearIssue[];
+      };
+    };
+    workflowStates: {
+      nodes: LinearWorkflowState[];
+    };
+  }>(`
+    query NewIssueContext {
+      viewer {
+        id
+        name
+        assignedIssues(first: 100) {
+          nodes {
+            team { id key name }
+          }
+        }
+      }
+      workflowStates(first: 250) {
+        nodes {
+          id
+          name
+          color
+          type
+          team { id key name }
+        }
+      }
+    }
+  `);
+  const teamRanks = new Map<string, number>();
+  for (const issue of data.viewer.assignedIssues.nodes) {
+    const key = issue.team?.key;
+    if (key) teamRanks.set(key, (teamRanks.get(key) ?? 0) + 1);
+  }
+  const inEngStates = data.workflowStates.nodes.filter((state) => linearWorkflowKey(state.name) === "in-eng" && state.team?.id);
+  const state = inEngStates.sort((a, b) => (teamRanks.get(b.team?.key ?? "") ?? 0) - (teamRanks.get(a.team?.key ?? "") ?? 0))[0];
+  if (!state?.team?.id) throw new Error('No Linear workflow state named "In Eng" was found.');
+
+  const created = await linearGraphql<{
+    issueCreate?: {
+      success: boolean;
+      issue?: LinearIssue;
+    };
+  }>(
+    `
+      mutation CreateBlankInEngIssue($input: IssueCreateInput!) {
+        issueCreate(input: $input) {
+          success
+          issue {
+            id
+            identifier
+            title
+            url
+            priority
+            estimate
+            createdAt
+            updatedAt
+            state { id name color type }
+            team { id key name }
+            project { name }
+            assignee { name }
+            labels { nodes { name color } }
+          }
+        }
+      }
+    `,
+    {
+      input: {
+        teamId: state.team.id,
+        stateId: state.id,
+        assigneeId: data.viewer.id,
+        title: "Untitled",
+      },
+    },
+  );
+  const issue = created.issueCreate?.issue;
+  if (!created.issueCreate?.success || !issue) throw new Error("Linear did not create the issue.");
+  cacheLinearIssue(issue);
+  return { issue, viewer: { id: data.viewer.id, name: data.viewer.name } };
+}
+
 function isDoneLinearIssue(issue: LinearIssue) {
   const stateName = issue.state?.name.trim().toLowerCase();
   const stateType = issue.state?.type?.trim().toLowerCase();
   return stateName === "done" || stateType === "completed";
+}
+
+function isDeletedLinearIssue(issue: LinearIssue) {
+  return Boolean(issue.archivedAt);
+}
+
+function isLinearIssueNotFoundError(error: unknown) {
+  return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
 
 async function listAssignedLinearIssues(apiKey?: string) {
@@ -2251,6 +2435,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
             identifier
             title
             url
+            archivedAt
             priority
             estimate
             createdAt
@@ -2270,6 +2455,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
     viewer: { id: data.viewer.id, name: data.viewer.name },
     issues: data.viewer.assignedIssues.nodes.flatMap((issue) => {
       const flow = flowsByIssue.get(issue.identifier);
+      if (isDeletedLinearIssue(issue)) return [];
       if (isDoneLinearIssue(issue) && !flow) return [];
       return [
         {
@@ -2466,6 +2652,12 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/linear/attachment" && request.method === "GET") {
     return await fetchLinearAttachment(url.searchParams.get("url") ?? "");
+  }
+
+  if (url.pathname === "/api/linear/issues" && request.method === "POST") {
+    const result = await createBlankInEngLinearIssue();
+    setSetting("linearViewerName", result.viewer.name);
+    return json({ ok: true, ...result });
   }
 
   if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && request.method === "GET") {
@@ -2688,6 +2880,8 @@ function serveStatic(url: URL) {
     return new Response(file);
   });
 }
+
+cleanupPersistedServeProcess();
 
 Bun.serve({
   port,
