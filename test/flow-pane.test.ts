@@ -82,6 +82,21 @@ describe("Turbopump pane markup", () => {
     expect(narrowRules).not.toContain(".workspace {\n    min-height: 720px;\n  }");
   });
 
+  test("hides shell input and output on narrow screens", () => {
+    const narrowRules = css.slice(css.indexOf("@media (max-width: 980px)"), css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(narrowRules).toContain(
+      '  .message-form {\n    grid-template-columns: minmax(0, 1fr);\n    grid-template-areas:\n      "search"\n      "images"\n      "input"\n      "context";\n  }',
+    );
+    expect(narrowRules).toContain("  .prompt-input-pane {\n    padding-right: 14px;\n  }");
+    expect(narrowRules).toContain(
+      '  .terminal-panel.shell-output-visible {\n    grid-template-columns: minmax(0, 1fr);\n    grid-template-areas:\n      "terminal"\n      "form";\n    grid-template-rows: minmax(0, 1fr) auto;\n  }',
+    );
+    expect(narrowRules).toContain("  .terminal-panel.shell-output-visible .shell-output-resizer,\n  .shell-command-panel,\n  .shell-output-pane {\n    display: none;\n  }");
+    expect(narrowRules).not.toContain('      "context"\n      "shell";');
+    expect(narrowRules).not.toContain('      "shell"\n      "form";');
+    expect(narrowRules).not.toContain("minmax(140px, 32%)");
+  });
+
   test("keeps the Settings heading larger than section toggles", () => {
     expect(css).toContain(".settings-header h2 {\n  margin: 0;\n  color: var(--ink);\n  font-size: 22px;");
     expect(css).toContain(".settings-section-toggle {\n  display: flex;");

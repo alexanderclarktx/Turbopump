@@ -3545,33 +3545,25 @@ body.theme-dark .diff-modal-summary .diff-deletions {
       "search"
       "images"
       "input"
-      "context"
-      "shell";
+      "context";
+  }
+
+  .prompt-input-pane {
+    padding-right: 14px;
   }
 
   .terminal-panel.shell-output-visible {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
       "terminal"
-      "shell"
-      "form";
-    grid-template-rows: minmax(0, 1fr) minmax(140px, 32%) auto;
-  }
-
-  body.shell-pane-hidden .terminal-panel.shell-output-visible {
-    grid-template-areas:
-      "terminal"
       "form";
     grid-template-rows: minmax(0, 1fr) auto;
   }
 
-  .terminal-panel.shell-output-visible .shell-output-resizer {
-    display: none;
-  }
-
+  .terminal-panel.shell-output-visible .shell-output-resizer,
+  .shell-command-panel,
   .shell-output-pane {
-    border-top: 1px solid var(--line);
-    border-left: 0;
+    display: none;
   }
 }
 
