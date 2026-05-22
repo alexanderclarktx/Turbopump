@@ -121,6 +121,8 @@ const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhi
 const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
 const reviewFindingInstructions =
   "Focus on bugs, behavioral regressions, missing tests, and risks. Report findings first with file and line references.";
+const serveProcessPidSettingKey = "serveProcessPid";
+const serveProcessFlowSettingKey = "serveProcessFlowId";
 const defaultAgentDeveloperInstructions = [
   "You are running inside Turbopump, a local coding-agent workflow system.",
   "",
@@ -310,6 +312,26 @@ function getStoredSetting(key: string) {
 
 function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
+}
+
+function persistedServePid() {
+  const value = Number(getSetting(serveProcessPidSettingKey));
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function persistedServeFlowId() {
+  return getSetting(serveProcessFlowSettingKey);
+}
+
+function rememberServeProcess(runtime: RuntimeProcess) {
+  setSetting(serveProcessPidSettingKey, String(runtime.proc.pid));
+  setSetting(serveProcessFlowSettingKey, runtime.flowId);
+}
+
+function clearPersistedServeProcess(runtime?: RuntimeProcess) {
+  if (runtime && persistedServePid() !== runtime.proc.pid) return;
+  deleteSettingByKeyStmt.run(serveProcessPidSettingKey);
+  deleteSettingByKeyStmt.run(serveProcessFlowSettingKey);
 }
 
 function readEnvContents() {
@@ -1073,6 +1095,7 @@ function ensureRepoCheckout(repoUrl: string) {
 
 function pullWarmedRepo() {
   if (warmedRepoPulling) return;
+  if (!serverHasActiveWork()) return;
   if (!existsSync(repoCheckoutDir)) return;
   const repoUrl = getSetting("repoUrl");
   if (!repoUrl) return;
@@ -1128,14 +1151,19 @@ async function streamProcessOutput(
   if (remainder) insertLog(flowId, source, remainder);
 }
 
-function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
+function signalProcessGroup(pid: number, signal: RuntimeSignal) {
   let signaled = false;
   try {
-    process.kill(-runtime.proc.pid, signal);
+    process.kill(-pid, signal);
     signaled = true;
   } catch {
     // The process may not be a process-group leader, or it may already be gone.
   }
+  return signaled;
+}
+
+function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
+  let signaled = signalProcessGroup(runtime.proc.pid, signal);
   try {
     runtime.proc.kill(signal);
     signaled = true;
@@ -1143,6 +1171,17 @@ function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
     // The group signal above may already have handled it.
   }
   return signaled;
+}
+
+function cleanupPersistedServeProcess() {
+  const pid = persistedServePid();
+  if (!pid) return;
+  const flowId = persistedServeFlowId();
+  signalProcessGroup(pid, "SIGTERM");
+  if (flowId) insertLog(flowId, "serve", "\n[stale serve process stopped by Turbopump]\n");
+  db.query("update flows set serving = 0").run();
+  clearPersistedServeProcess();
+  setTimeout(() => signalProcessGroup(pid, "SIGKILL"), 1500);
 }
 
 function forgetRuntimeProcess(runtime: RuntimeProcess) {
@@ -1684,9 +1723,12 @@ function spawnLoggedProcess(
       agentProcesses.delete(flow.id);
       updateFlow(flow.id, { agentStatus: code === 0 ? "idle" : "failed" });
     }
-    if (kind === "serve" && serveProcess?.proc === proc) {
-      serveProcess = null;
-      updateFlow(flow.id, { serving: 0 });
+    if (kind === "serve") {
+      clearPersistedServeProcess(runtime);
+      if (serveProcess?.proc === proc) {
+        serveProcess = null;
+        updateFlow(flow.id, { serving: 0 });
+      }
     }
   });
 
@@ -2125,6 +2167,11 @@ function startServe(flow: Flow) {
   const updated = getFlow(flow.id);
   if (!updated) throw new Error("Flow disappeared while starting serve.");
   serveProcess = spawnLoggedProcess(updated, "serve", serveCommand, "serve");
+  rememberServeProcess(serveProcess);
+}
+
+function serverHasActiveWork() {
+  return Boolean(clients.size || agentProcesses.size || shellProcesses.size || serveProcess);
 }
 
 async function fetchLinearIssue(identifier: string) {
@@ -2833,6 +2880,8 @@ function serveStatic(url: URL) {
     return new Response(file);
   });
 }
+
+cleanupPersistedServeProcess();
 
 Bun.serve({
   port,

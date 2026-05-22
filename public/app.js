@@ -2238,7 +2238,7 @@ async function loadLinearTickets(options = {}) {
 
 function renderTickets() {
   const tickets = sortedLinearTickets(state.linearTickets);
-  const pinnedTickets = tickets.filter((ticket) => isLinearIssuePinned(ticket.identifier));
+  const pinnedTickets = orderedPinnedTickets(tickets);
   const groups = groupedTicketsByLinearStatus(tickets.filter((ticket) => !isLinearIssuePinned(ticket.identifier)));
   const signature = tickets
     .map((ticket) =>
@@ -2255,7 +2255,7 @@ function renderTickets() {
     )
     .join("\u001e")
     .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"))
-    .concat("\u001d", [...state.pinnedLinearIssues].sort().join("\u001f"));
+    .concat("\u001d", [...state.pinnedLinearIssues].join("\u001f"));
 
   if (els.ticketGrid.dataset.ticketSignature === signature) {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
@@ -2291,6 +2291,11 @@ function compareLinearTickets(a, b) {
 
 function sortedLinearTickets(tickets) {
   return [...tickets].sort(compareLinearTickets);
+}
+
+function orderedPinnedTickets(tickets) {
+  const ticketsByIdentifier = new Map(tickets.map((ticket) => [ticket.identifier, ticket]));
+  return [...state.pinnedLinearIssues].map((identifier) => ticketsByIdentifier.get(identifier)).filter(Boolean);
 }
 
 function groupedTicketsByLinearStatus(tickets) {
@@ -2399,6 +2404,24 @@ function persistPinnedLinearIssues() {
   localStorage.setItem(PINNED_LINEAR_ISSUES_KEY, JSON.stringify([...state.pinnedLinearIssues]));
 }
 
+function setPinnedLinearIssueOrder(identifiers) {
+  const knownIssueIds = new Set(state.linearTickets.map((ticket) => ticket.identifier));
+  const nextPinnedIssueIds = identifiers.filter((identifier) => knownIssueIds.has(identifier));
+  for (const identifier of state.pinnedLinearIssues) {
+    if (knownIssueIds.has(identifier) && !nextPinnedIssueIds.includes(identifier)) nextPinnedIssueIds.push(identifier);
+  }
+  state.pinnedLinearIssues = new Set(nextPinnedIssueIds);
+  persistPinnedLinearIssues();
+}
+
+function moveLinearIssueToPinnedPosition(identifier, index) {
+  const pinnedIssueIds = [...state.pinnedLinearIssues].filter((issueId) => issueId !== identifier);
+  const insertionIndex = Math.max(0, Math.min(index, pinnedIssueIds.length));
+  pinnedIssueIds.splice(insertionIndex, 0, identifier);
+  setPinnedLinearIssueOrder(pinnedIssueIds);
+  renderTickets();
+}
+
 function setLinearIssuePinned(identifier, pinned) {
   if (pinned) state.pinnedLinearIssues.add(identifier);
   else state.pinnedLinearIssues.delete(identifier);
@@ -2483,8 +2506,8 @@ function updateTicketDragAutoScroll(event) {
 function clearTicketDragState() {
   state.draggingLinearIssueId = "";
   stopTicketDragAutoScroll();
-  for (const element of els.ticketGrid.querySelectorAll(".ticket-status-group.drag-over, .ticket-card.dragging")) {
-    element.classList.remove("drag-over", "dragging");
+  for (const element of els.ticketGrid.querySelectorAll(".ticket-status-group.drag-over, .ticket-card.dragging, .ticket-card.drop-before, .ticket-card.drop-after")) {
+    element.classList.remove("drag-over", "dragging", "drop-before", "drop-after");
   }
 }
 
@@ -2524,7 +2547,32 @@ function handleTicketStatusDrop(event, group) {
 }
 
 function ticketCanMoveToPinned(issueId) {
-  return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId) && !isLinearIssuePinned(issueId));
+  return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId));
+}
+
+function clearPinnedTicketDropTarget(section) {
+  for (const card of section.querySelectorAll(".ticket-card.drop-before, .ticket-card.drop-after")) {
+    card.classList.remove("drop-before", "drop-after");
+  }
+}
+
+function pinnedTicketDropIndex(event) {
+  const cards = [...event.currentTarget.querySelectorAll(".ticket-card.pinned:not(.dragging)")];
+  for (const [index, card] of cards.entries()) {
+    const rect = card.getBoundingClientRect();
+    if (event.clientY < rect.top + rect.height / 2) return index;
+  }
+  return cards.length;
+}
+
+function updatePinnedTicketDropTarget(event) {
+  const section = event.currentTarget;
+  clearPinnedTicketDropTarget(section);
+  const cards = [...section.querySelectorAll(".ticket-card.pinned:not(.dragging)")];
+  if (!cards.length) return;
+  const index = pinnedTicketDropIndex(event);
+  const target = cards[Math.min(index, cards.length - 1)];
+  target.classList.add(index >= cards.length ? "drop-after" : "drop-before");
 }
 
 function handlePinnedTicketDragEnter(event) {
@@ -2539,6 +2587,7 @@ function handlePinnedTicketDragOver(event) {
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
   setTicketStatusGroupDragOver(event.currentTarget, true);
+  updatePinnedTicketDropTarget(event);
 }
 
 function handleTicketGridDragOver(event) {
@@ -2549,9 +2598,10 @@ function handleTicketGridDragOver(event) {
 function handlePinnedTicketDrop(event) {
   const issueId = state.draggingLinearIssueId || event.dataTransfer.getData("text/plain");
   if (!ticketCanMoveToPinned(issueId)) return;
+  const index = pinnedTicketDropIndex(event);
   event.preventDefault();
   clearTicketDragState();
-  setLinearIssuePinned(issueId, true);
+  moveLinearIssueToPinnedPosition(issueId, index);
 }
 
 function replaceLinearIssue(issue) {

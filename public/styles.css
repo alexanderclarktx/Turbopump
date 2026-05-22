@@ -1273,6 +1273,38 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   opacity: 0.55;
 }
 
+.ticket-card.drop-before,
+.ticket-card.drop-after {
+  overflow: visible;
+}
+
+.ticket-card.drop-before {
+  margin-top: 8px;
+}
+
+.ticket-card.drop-after {
+  margin-bottom: 8px;
+}
+
+.ticket-card.drop-before::after,
+.ticket-card.drop-after::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.ticket-card.drop-before::after {
+  top: -5px;
+}
+
+.ticket-card.drop-after::after {
+  bottom: -5px;
+}
+
 .ticket-card::before {
   content: "";
   position: absolute;

@@ -553,6 +553,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("let warmedRepoPulling = false;");
     expect(server).toContain("function pullWarmedRepo()");
     expect(server).toContain("if (warmedRepoPulling) return;");
+    expect(server).toContain("if (!serverHasActiveWork()) return;");
     expect(server).toContain('runGit(["pull", "--ff-only"], repoCheckoutDir);');
     expect(server).toContain("setInterval(pullWarmedRepo, warmedRepoPullIntervalMs);");
     expect(server).not.toContain("type TimingEntry = {");
@@ -702,7 +703,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";');
     expect(app).toContain("function initialPinnedLinearIssues()");
     expect(app).toContain("pinnedLinearIssues: initialPinnedLinearIssues(),");
-    expect(app).toContain("const pinnedTickets = tickets.filter((ticket) => isLinearIssuePinned(ticket.identifier));");
+    expect(app).toContain("const pinnedTickets = orderedPinnedTickets(tickets);");
     expect(app).toContain("const nodes = [renderPinnedTicketGroup(pinnedTickets)];");
     expect(app).toContain('section.className = "ticket-status-group pinned-ticket-group";');
     expect(app).toContain("section.addEventListener(\"drop\", handlePinnedTicketDrop);");
@@ -714,6 +715,20 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".pinned-ticket-group .ticket-status-group-items");
     expect(css).toContain(".ticket-card.pinned");
     expect(css).not.toContain(".ticket-pin {");
+  });
+
+  test("lets pinned Linear tickets be manually sorted", () => {
+    expect(app).toContain("function orderedPinnedTickets(tickets)");
+    expect(app).toContain(".concat(\"\\u001d\", [...state.pinnedLinearIssues].join(\"\\u001f\"));");
+    expect(app).toContain("function setPinnedLinearIssueOrder(identifiers)");
+    expect(app).toContain("function moveLinearIssueToPinnedPosition(identifier, index)");
+    expect(app).toContain("function pinnedTicketDropIndex(event)");
+    expect(app).toContain('event.currentTarget.querySelectorAll(".ticket-card.pinned:not(.dragging)")');
+    expect(app).toContain("function updatePinnedTicketDropTarget(event)");
+    expect(app).toContain("updatePinnedTicketDropTarget(event);");
+    expect(app).toContain("moveLinearIssueToPinnedPosition(issueId, index);");
+    expect(css).toContain(".ticket-card.drop-before");
+    expect(css).toContain(".ticket-card.drop-after");
   });
 
   test("marks tickets with flows using the favicon instead of a green card tint", () => {
@@ -1408,7 +1423,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");');
     expect(server).toContain("type RuntimeSignal = \"SIGINT\" | \"SIGTERM\" | \"SIGKILL\";");
     expect(server).toContain("function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal)");
-    expect(server).toContain("process.kill(-runtime.proc.pid, signal);");
+    expect(server).toContain("function signalProcessGroup(pid: number, signal: RuntimeSignal)");
+    expect(server).toContain("process.kill(-pid, signal);");
+    expect(server).toContain("let signaled = signalProcessGroup(runtime.proc.pid, signal);");
     expect(server).toContain("function scheduleShellInterruptEscalation(flowId: string, runtime: RuntimeProcess)");
     expect(server).toContain('insertLog(flowId, "shell:status", "shell interrupt escalated");');
     expect(server).toContain('insertLog(flowId, "shell:status", "shell interrupt forced cleanup");');
@@ -1436,6 +1453,13 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('runtime.stopping ? "interrupted" : "failed"');
     expect(server).toContain('agentStatus: code === 0 || runtime.stopping ? "idle" : "failed"');
     expect(server).not.toContain("agent stopped by Turbopump");
+    expect(server).toContain('const serveProcessPidSettingKey = "serveProcessPid";');
+    expect(server).toContain("function rememberServeProcess(runtime: RuntimeProcess)");
+    expect(server).toContain("function cleanupPersistedServeProcess()");
+    expect(server).toContain('insertLog(flowId, "serve", "\\n[stale serve process stopped by Turbopump]\\n");');
+    expect(server).toContain("cleanupPersistedServeProcess();");
+    expect(server).toContain("rememberServeProcess(serveProcess);");
+    expect(server).toContain("function serverHasActiveWork()");
   });
 
   test("cleans up spawned runtimes when server startup or first turn fails", () => {
