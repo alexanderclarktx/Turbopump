@@ -13,7 +13,6 @@ import {
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 
-type Stage = "planning" | "working" | "reviewing" | "done";
 type ThreadStartSource = "startup" | "clear";
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "fast" | "flex";
@@ -23,7 +22,6 @@ type Flow = {
   linearIssueId: string;
   linearIssueUrl: string;
   title: string;
-  stage: Stage;
   linearStatus: string;
   checkoutPath: string;
   branchName: string;
@@ -99,7 +97,6 @@ type LinearWorkflowState = {
   team?: { id: string; key: string; name: string } | null;
 };
 
-const stages: Stage[] = ["planning", "working", "reviewing", "done"];
 const rootDir = process.cwd();
 const agentHeartbeatSweepIntervalMs = 5000;
 const agentRuntimeStartGraceMs = 30000;
@@ -148,6 +145,7 @@ mkdirSync(worktreeDir, { recursive: true });
 if (!existsSync(dbPath) && existsSync(legacyDbPath)) copyFileSync(legacyDbPath, dbPath);
 
 const db = new Database(dbPath);
+db.exec("pragma busy_timeout = 5000");
 
 function tryMigration(sql: string) {
   try {
@@ -176,7 +174,6 @@ db.exec(`
     linearIssueId text not null,
     linearIssueUrl text not null,
     title text not null,
-    stage text not null,
     linearStatus text not null default '',
     checkoutPath text not null,
     branchName text not null,
@@ -211,7 +208,7 @@ db.exec(`
   create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);
   create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
 `);
-tryMigration("update flows set stage = 'planning' where stage = 'not_started'");
+tryMigration("alter table flows drop column stage");
 tryMigration("alter table flows add column agentModel text not null default ''");
 tryMigration("alter table flows add column agentReasoningEffort text not null default ''");
 tryMigration("alter table flows add column agentServiceTier text not null default ''");
@@ -222,6 +219,7 @@ tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWind
 
 const clients = new Set<ServerWebSocket>();
 const agentProcesses = new Map<string, RuntimeProcess>();
+const agentRuntimeRecoveries = new Map<string, Promise<RuntimeProcess | null>>();
 const shellProcesses = new Map<string, RuntimeProcess>();
 const linearIssueCache = new Map<string, LinearIssue>();
 const deletedFlowIds = new Set<string>();
@@ -558,7 +556,6 @@ function listWorktrees() {
         ticketId: flow?.linearIssueId ?? entry.name.match(/[a-z]+-\d+/i)?.[0]?.toUpperCase() ?? "",
         ticketName: flow?.title ?? "",
         linearStatus: flow?.linearStatus ?? "",
-        flowPhase: flow?.stage ?? "",
         lastPromptAt: flow ? latestPromptTimestamp(flow.id) : "",
       };
     })
@@ -650,6 +647,7 @@ function deleteFlowTraceData(flowId: string) {
   deleteLogsByFlowIdStmt.run(flowId);
   deleteShellOutputStateByFlowIdStmt.run(flowId);
   deleteSettingByKeyStmt.run(codexThreadSettingKey(flowId));
+  deleteSettingByKeyStmt.run(codexActiveTurnSettingKey(flowId));
   deleteFlowByIdStmt.run(flowId);
 }
 
@@ -693,16 +691,6 @@ async function saveFlowContextImages(flow: Flow, formData: FormData) {
   return images;
 }
 
-function assertStage(stage: string): asserts stage is Stage {
-  if (!stages.includes(stage as Stage)) {
-    throw new Error(`Unknown stage: ${stage}`);
-  }
-}
-
-function normalizeStage(stage: string) {
-  return stage.trim().toLowerCase().replaceAll("-", "_");
-}
-
 function normalizePrUrl(value: unknown) {
   if (value === undefined) return undefined;
   if (value === null) return "";
@@ -720,12 +708,6 @@ function normalizePrUrl(value: unknown) {
 
 function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow> {
   const fields: Partial<Flow> = {};
-  if ("stage" in body) {
-    if (typeof body.stage !== "string") throw new Error("stage must be a string.");
-    const stage = normalizeStage(body.stage);
-    assertStage(stage);
-    fields.stage = stage;
-  }
   if ("prUrl" in body) fields.prUrl = normalizePrUrl(body.prUrl);
   return fields;
 }
@@ -772,7 +754,39 @@ function flowStatusAgeMs(flow: Flow, nowMs = Date.now()) {
   return Number.isFinite(updatedAt) ? nowMs - updatedAt : Number.POSITIVE_INFINITY;
 }
 
-function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
+async function recoverAgentRuntime(flow: Flow) {
+  const existing = agentProcesses.get(flow.id);
+  if (existing) return existing;
+  if (flow.agentStatus !== "running" && flow.agentStatus !== "interrupting") return null;
+
+  const activeTurnId = persistedActiveTurnId(flow.id);
+  if (!activeTurnId) return null;
+
+  const existingRecovery = agentRuntimeRecoveries.get(flow.id);
+  if (existingRecovery) return existingRecovery;
+
+  const recovery = (async () => {
+    try {
+      const runtime = await startCodexAppServer(flow);
+      runtime.activeTurnId = runtime.activeTurnId || activeTurnId;
+      runtime.lastSeenAt = Date.now();
+      updateFlow(flow.id, { agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running" });
+      return runtime;
+    } catch {
+      updateFlow(flow.id, { agentStatus: "failed" });
+      return null;
+    }
+  })();
+
+  agentRuntimeRecoveries.set(flow.id, recovery);
+  try {
+    return await recovery;
+  } finally {
+    agentRuntimeRecoveries.delete(flow.id);
+  }
+}
+
+async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   const shellRuntime = shellProcesses.get(flow.id);
   if (shellRuntime) {
     const shellStatus = shellRuntime.stopping ? "interrupting" : "running";
@@ -788,6 +802,8 @@ function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   const runtime = agentProcesses.get(flow.id);
   const statusAge = flowStatusAgeMs(flow, nowMs);
   if (!runtime) {
+    const recovered = await recoverAgentRuntime(flow);
+    if (recovered) return getFlow(flow.id) ?? flow;
     if (statusAge < agentRuntimeStartGraceMs) return flow;
     const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
     createTurnTraceGroup(flow.id, errorLogId);
@@ -823,12 +839,12 @@ function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   return getFlow(flow.id) ?? flow;
 }
 
-function sweepAgentHeartbeats() {
+async function sweepAgentHeartbeats() {
   const nowMs = Date.now();
-  for (const flow of listFlows()) reconcileAgentHeartbeat(flow, nowMs);
+  for (const flow of listFlows()) await reconcileAgentHeartbeat(flow, nowMs);
 }
 
-setInterval(sweepAgentHeartbeats, agentHeartbeatSweepIntervalMs);
+setInterval(() => void sweepAgentHeartbeats(), agentHeartbeatSweepIntervalMs);
 
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -882,6 +898,33 @@ function ensureCodexProjectTrusted(projectPath: string) {
 
 function codexThreadSettingKey(flowId: string) {
   return `codexThread:${flowId}`;
+}
+
+function codexActiveTurnSettingKey(flowId: string) {
+  return `codexActiveTurn:${flowId}`;
+}
+
+function latestActiveTurnIdFromLogs(flowId: string) {
+  const rows = db
+    .query("select message from logs where flowId = ? and source = 'agent:status' and message like 'turn %' order by id desc limit 50")
+    .all(flowId) as Array<{ message?: string }>;
+
+  for (const row of rows) {
+    const message = String(row.message || "").trim();
+    const started = message.match(/^turn started\s+(\S+)/);
+    if (started?.[1]) return started[1];
+    if (/^turn \S+/.test(message)) return "";
+  }
+  return "";
+}
+
+function persistedActiveTurnId(flowId: string) {
+  return getSetting(codexActiveTurnSettingKey(flowId)) || latestActiveTurnIdFromLogs(flowId);
+}
+
+function setActiveTurnId(flowId: string, turnId = "") {
+  if (turnId) setSetting(codexActiveTurnSettingKey(flowId), turnId);
+  else deleteSettingByKeyStmt.run(codexActiveTurnSettingKey(flowId));
 }
 
 function gitCommandLabel(args: string[]) {
@@ -1246,6 +1289,10 @@ function textInput(text: string) {
   return [{ type: "text", text, text_elements: [] }];
 }
 
+function isNoActiveTurnInterruptError(error: unknown) {
+  return error instanceof Error && /no active turn to interrupt/i.test(error.message);
+}
+
 function codexThreadMetadata(payload: {
   model?: string | null;
   reasoningEffort?: string | null;
@@ -1266,7 +1313,6 @@ function agentTemplateContext(flow: Flow) {
     prUrl: flow.prUrl,
     checkoutPath: flow.checkoutPath,
     flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/meta`,
-    stageApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/stage`,
   };
 }
 
@@ -1572,6 +1618,7 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
   if (method === "turn/started") {
     const turn = params.turn as { id?: string } | undefined;
     runtime.activeTurnId = turn?.id;
+    setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
     insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId ?? ""}`);
     updateFlow(runtime.flowId, { agentStatus: "running" });
     return;
@@ -1580,6 +1627,7 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
   if (method === "turn/completed") {
     const turn = params.turn as { id?: string; status?: string; error?: { message?: string } | null } | undefined;
     if (!turn?.id || turn.id === runtime.activeTurnId) runtime.activeTurnId = undefined;
+    if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
     createCompletedTurnTraceGroup(runtime.flowId);
     if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
@@ -1817,6 +1865,9 @@ async function startCodexAppServer(flow: Flow) {
     const thread = threadPayload.thread;
     if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
     runtime.threadId = thread.id;
+    if (activeFlow.agentStatus === "running" || activeFlow.agentStatus === "interrupting") {
+      runtime.activeTurnId = persistedActiveTurnId(activeFlow.id) || runtime.activeTurnId;
+    }
     setSetting(codexThreadSettingKey(activeFlow.id), thread.id);
     updateFlow(activeFlow.id, { ...codexThreadMetadata(threadPayload), ...configuredAgentMetadata(activeFlow) });
     insertLog(activeFlow.id, "agent:status", `Codex thread ${thread.id} ready`);
@@ -1843,6 +1894,7 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
     turn?: { id?: string };
   };
   runtime.activeTurnId = response.turn?.id;
+  setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
 }
 
 function parseSlashCommand(message: string) {
@@ -1900,6 +1952,7 @@ async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
   runtime.threadId = thread.id;
   runtime.activeTurnId = undefined;
+  setActiveTurnId(flow.id);
   setSetting(codexThreadSettingKey(flow.id), thread.id);
   updateFlow(flow.id, { ...codexThreadMetadata(threadResponse), ...configuredAgentMetadata(flow) });
   insertLog(flow.id, "agent:status", "context cleared");
@@ -2114,28 +2167,39 @@ function interruptShellCommand(flowId: string) {
 }
 
 async function interruptAgent(flowId: string) {
-  const runtime = agentProcesses.get(flowId);
+  const flow = getFlow(flowId);
+  const runtime = agentProcesses.get(flowId) ?? (flow ? await recoverAgentRuntime(flow) : null);
   if (!runtime) return;
   if (runtime.compacting && !runtime.activeTurnId) {
     runtime.compacting = false;
     runtime.compactingStartedAt = undefined;
     runtime.compactionPromptLogId = undefined;
     runtime.queuedAgentMessages = [];
+    setActiveTurnId(flowId);
     insertLog(flowId, "agent:status", "compact interrupted");
     updateFlow(flowId, { agentStatus: "idle" });
     return;
   }
   if (!runtime.threadId || !runtime.activeTurnId) {
+    setActiveTurnId(flowId);
     updateFlow(flowId, { agentStatus: "idle" });
     return;
   }
   const turnId = runtime.activeTurnId;
   updateFlow(flowId, { agentStatus: "interrupting" });
   insertLog(flowId, "agent:status", `interrupt requested ${turnId}`);
-  await sendCodexRequest(runtime, "turn/interrupt", {
-    threadId: runtime.threadId,
-    turnId,
-  });
+  try {
+    await sendCodexRequest(runtime, "turn/interrupt", {
+      threadId: runtime.threadId,
+      turnId,
+    });
+  } catch (error) {
+    if (!isNoActiveTurnInterruptError(error)) throw error;
+    runtime.activeTurnId = undefined;
+    setActiveTurnId(flowId);
+    insertLog(flowId, "agent:status", "interrupt ignored: no active turn");
+    updateFlow(flowId, { agentStatus: "idle" });
+  }
 }
 
 function stopIdleAgentRuntimesForEnvUpdate() {
@@ -2461,7 +2525,6 @@ async function listAssignedLinearIssues(apiKey?: string) {
         {
           ...issue,
           flowId: flow?.id ?? "",
-          flowStage: flow?.stage ?? "",
         },
       ];
     }),
@@ -2560,7 +2623,6 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/bootstrap") {
     return json({
-      stages,
       repo: {
         repoUrl: getSetting("repoUrl"),
         repoName: getSetting("repoName"),
@@ -2695,15 +2757,14 @@ async function handleApi(request: Request, url: URL) {
     const createdAt = now();
     db.query(`
       insert into flows (
-        id, linearIssueId, linearIssueUrl, title, stage, linearStatus,
+        id, linearIssueId, linearIssueUrl, title, linearStatus,
         checkoutPath, branchName, baseSha, agentStatus, serving, createdAt, updatedAt
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       parsed.identifier,
       body.url?.trim() || linearIssue?.url || parsed.url,
       body.title?.trim() || linearIssue?.title || parsed.identifier,
-      "planning",
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
       target,
       branch,
@@ -2771,7 +2832,7 @@ async function handleApi(request: Request, url: URL) {
       return json(await getDiff(flow, { patch: url.searchParams.get("patch") === "1" }));
     }
 
-    if ((parts[3] === "meta" || parts[3] === "stage") && request.method === "POST") {
+    if (parts[3] === "meta" && request.method === "POST") {
       let fields: Partial<Flow>;
       try {
         fields = flowMetaUpdate(await readJson<Record<string, unknown>>(request));
@@ -2782,7 +2843,6 @@ async function handleApi(request: Request, url: URL) {
         return json({ error: "No supported flow metadata fields provided." }, { status: 400 });
       }
       updateFlow(id, fields);
-      if (fields.stage) insertLog(id, "flow", `Stage changed to ${fields.stage}\n`);
       if (fields.prUrl !== undefined) {
         insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
       }
@@ -2790,7 +2850,7 @@ async function handleApi(request: Request, url: URL) {
     }
 
     if (parts[3] === "agent" && parts[4] === "status" && request.method === "GET") {
-      const reconciled = reconcileAgentHeartbeat(flow);
+      const reconciled = await reconcileAgentHeartbeat(flow);
       return json({
         flow: clientFlow(reconciled),
         turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId),
@@ -2799,7 +2859,7 @@ async function handleApi(request: Request, url: URL) {
 
     if (parts[3] === "agent" && parts[4] === "interrupt" && request.method === "POST") {
       await interruptAgent(id);
-      return json({ ok: true });
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
     if (parts[3] === "agent" && request.method === "POST") {

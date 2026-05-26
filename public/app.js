@@ -154,7 +154,6 @@ function initialBooleanSetting(key) {
 }
 
 const state = {
-  stages: [],
   flows: [],
   checkouts: [],
   checkoutsLoaded: false,
@@ -731,7 +730,11 @@ function updateMessageInputMode() {
 
 function flowRuntimeActive(flow) {
   if (hasSplitRuntimeStatus(flow)) {
-    return runtimeStatusActive(flow.agentRuntimeStatus) || runtimeStatusActive(flow.shellRuntimeStatus);
+    return (
+      runtimeStatusActive(flow.agentRuntimeStatus) ||
+      runtimeStatusActive(flow.shellRuntimeStatus) ||
+      (!flow.agentRuntimeStatus && !flow.shellRuntimeStatus && runtimeStatusActive(flow.agentStatus))
+    );
   }
   return runtimeStatusActive(flow?.agentStatus);
 }
@@ -753,7 +756,15 @@ function flowRuntimeKind(flow) {
 
 function flowAgentRunning(flow) {
   if (!flow) return false;
-  if (hasSplitRuntimeStatus(flow)) return runtimeStatusActive(flow.agentRuntimeStatus);
+  if (hasSplitRuntimeStatus(flow)) {
+    return (
+      runtimeStatusActive(flow.agentRuntimeStatus) ||
+      (!flow.agentRuntimeStatus &&
+        !runtimeStatusActive(flow.shellRuntimeStatus) &&
+        runtimeStatusActive(flow.agentStatus) &&
+        flowRuntimeKind(flow) === "agent")
+    );
+  }
   return runtimeStatusActive(flow.agentStatus) && flowRuntimeKind(flow) === "agent";
 }
 
@@ -767,7 +778,15 @@ function flowAgentQueuedMessage(flow) {
 
 function flowShellRunning(flow) {
   if (!flow) return false;
-  if (hasSplitRuntimeStatus(flow)) return runtimeStatusActive(flow.shellRuntimeStatus);
+  if (hasSplitRuntimeStatus(flow)) {
+    return (
+      runtimeStatusActive(flow.shellRuntimeStatus) ||
+      (!flow.shellRuntimeStatus &&
+        !runtimeStatusActive(flow.agentRuntimeStatus) &&
+        runtimeStatusActive(flow.agentStatus) &&
+        flowRuntimeKind(flow) === "shell")
+    );
+  }
   return runtimeStatusActive(flow.agentStatus) && flowRuntimeKind(flow) === "shell";
 }
 
@@ -841,7 +860,8 @@ async function interruptSelectedFlow() {
   renderTickets();
   renderFlowPane();
   try {
-    await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
+    const data = await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
+    if (data.flow) upsertFlow(data.flow);
   } finally {
     state.interruptSubmitting = false;
     renderTickets();
@@ -1476,7 +1496,6 @@ async function bootstrap() {
   setShellOutputSplitSize(state.shellOutputSplitSize);
   requestAnimationFrame(() => document.body.classList.remove("app-booting"));
   const data = await api("/api/bootstrap");
-  state.stages = data.stages;
   setFlows(data.flows);
   els.repoUrl.value = data.repo.repoUrl || "";
   els.serveCommand.value = data.repo.serveCommand || "";
@@ -2159,9 +2178,8 @@ function syncLinearTicketsWithFlows() {
   state.linearTickets = state.linearTickets.map((ticket) => {
     const flow = flowsByIssue.get(ticket.identifier);
     const flowId = flow?.id || "";
-    const flowStage = flow?.stage || "";
-    if (ticket.flowId === flowId && ticket.flowStage === flowStage) return ticket;
-    return { ...ticket, flowId, flowStage };
+    if (ticket.flowId === flowId) return ticket;
+    return { ...ticket, flowId };
   });
 }
 
@@ -2250,7 +2268,6 @@ function renderTickets() {
         ticket.priority || "",
         ticket.project?.name || "",
         ticket.flowId || "",
-        ticket.flowStage || "",
       ].join("\u001f"),
     )
     .join("\u001e")
@@ -2449,7 +2466,6 @@ function upsertLinearIssue(issue) {
       ...ticket,
       ...issue,
       flowId: ticket.flowId || "",
-      flowStage: ticket.flowStage || "",
     };
   });
 }
@@ -3158,6 +3174,10 @@ function isStreamingSource(source) {
   ].includes(source);
 }
 
+function isLiveAgentTextSource(source) {
+  return ["agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
+}
+
 function parseTraceGroup(log) {
   if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
@@ -3301,11 +3321,22 @@ function flattenSingleChildTraceGroups(groups) {
   return result;
 }
 
+function markLiveTerminalGroup(groups, flow) {
+  if (!flowAgentRunning(flow)) return groups;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (isLiveAgentTextSource(group.source)) {
+      group.liveStreaming = true;
+      break;
+    }
+  }
+  return groups;
+}
+
 function isHiddenTerminalLog(log) {
   const message = String(log.message || "").trim();
   if (log.source === "agent:tool-result" && message === "completed exit 0") return true;
   if (log.source === "agent:tool-result" && message === "failed exit 7") return true;
-  if (log.source === "flow" && /^stage changed\b/i.test(message)) return true;
   return (
     log.source === "agent:status" &&
     (/^turn started\b/.test(message) ||
@@ -3366,7 +3397,7 @@ function terminalGroups(logs, flow) {
     }
     appendTerminalGroup(groups, log);
   }
-  return flattenSingleChildTraceGroups(groups);
+  return markLiveTerminalGroup(flattenSingleChildTraceGroups(groups), flow);
 }
 
 function agentPaneLogs(logs, flow) {
@@ -3561,12 +3592,13 @@ async function clearShellOutputPane() {
   }
 }
 
-function formatTerminalMessage(source, message) {
+function formatTerminalMessage(source, message, options = {}) {
   const text = String(message || "");
   if (source === "agent:tool") return text.trim();
   if (source === "agent:tool-result") return text.trim();
   if (source === "agent:status" || source === "flow" || source === "linear") return text.trim();
-  return text.replace(/^\n+/, "").replace(/\n+$/, "");
+  const withoutLeadingNewlines = text.replace(/^\n+/, "");
+  return options.preserveTrailingNewlines ? withoutLeadingNewlines : withoutLeadingNewlines.replace(/\n+$/, "");
 }
 
 function localDayStart(date) {
@@ -3603,6 +3635,31 @@ function renderTerminalMarkdownOutput(message, showToggle = false) {
     ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>`
     : "";
   return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true, compactBlankLines: true })}</div>`;
+}
+
+function renderTerminalStreamingTextOutput(message) {
+  const lines = String(message || "").split("\n");
+  const parts = [];
+
+  for (let index = 0; index < lines.length; ) {
+    const line = lines[index];
+    if (!line.trim()) {
+      let blankCount = 0;
+      while (index + blankCount < lines.length && !lines[index + blankCount].trim()) blankCount += 1;
+      const hasPreviousContent = parts.length > 0;
+      const hasNextContent = index + blankCount < lines.length;
+      const compactBreak = '<br><span class="markdown-blank-line" aria-hidden="true"></span>';
+      parts.push(hasPreviousContent && hasNextContent ? compactBreak.repeat(blankCount) : "<br>".repeat(blankCount));
+      index += blankCount;
+      continue;
+    }
+
+    parts.push(escapeHtml(line));
+    if (index + 1 < lines.length && lines[index + 1].trim()) parts.push("<br>");
+    index += 1;
+  }
+
+  return `<div class="terminal-streaming-markdown">${parts.join("")}</div>`;
 }
 
 function ansiClassForCode(code) {
@@ -3962,11 +4019,18 @@ function appendTerminalBlock(fragment, group, options = {}) {
 
   const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
   body.className = "terminal-entry-body";
-  const message = formatTerminalMessage(group.source, group.message);
+  const message = formatTerminalMessage(group.source, group.message, {
+    preserveTrailingNewlines: Boolean(group.liveStreaming),
+  });
   if (usesTerminalBlockMarkdown(group.source)) {
     body.classList.add("terminal-markdown-output");
-    body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
-    highlightCodeBlocks(body);
+    if (group.liveStreaming) {
+      body.classList.add("terminal-streaming-output");
+      body.innerHTML = renderTerminalStreamingTextOutput(message);
+    } else {
+      body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
+      highlightCodeBlocks(body);
+    }
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
     renderAnsiText(body, message);
   } else {
@@ -4396,7 +4460,7 @@ function renderLogs(id, options = {}) {
   terminal._flowLogSignature = signature;
   terminal._flowLogRenderedKeys = nextKeys;
   terminal._flowLogPending = "";
-  if (atLatest) scrollTerminalToLatest(terminal);
+  if (atLatest) scrollTerminalToLatestNow(terminal);
   renderShellOutputPane(id);
 }
 
@@ -4425,7 +4489,12 @@ function connectWs() {
   const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
   ws.addEventListener("open", () => {
     const flow = selectedFlow();
-    if (flow) void loadLogs(flow.id);
+    if (flow) {
+      void api(`/api/flows/${flow.id}`).then((data) => {
+        if (data.flow) upsertFlow(data.flow);
+      }).catch(() => {});
+      void loadLogs(flow.id);
+    }
   });
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);

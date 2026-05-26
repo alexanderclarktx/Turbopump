@@ -1851,6 +1851,20 @@ body.theme-dark .terminal-entry-body a {
   font-size: 14px;
 }
 
+.terminal-entry-body h1,
+.terminal-entry-body h2,
+.terminal-entry-body h3,
+.terminal-entry-body h4,
+.terminal-entry-body h5,
+.terminal-entry-body h6 {
+  margin: 0 0 2px;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  line-height: inherit;
+  white-space: normal;
+}
+
 .linear-markdown table,
 .terminal-entry-body table {
   display: block;
@@ -2108,6 +2122,11 @@ body.theme-dark .terminal-entry-body a {
   color: inherit;
   font: inherit;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terminal-streaming-markdown {
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 

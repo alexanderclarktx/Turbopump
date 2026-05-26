@@ -540,16 +540,15 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain(".message-form.input-disabled .message-input");
   });
 
-  test("uses planning as the first flow stage everywhere except migration", () => {
-    expect(server).toContain('type Stage = "planning" | "working" | "reviewing" | "done";');
-    expect(server).toContain('const stages: Stage[] = ["planning", "working", "reviewing", "done"];');
-    expect(server).toContain('tryMigration("update flows set stage = \'planning\' where stage = \'not_started\'");');
-    expect(server).not.toContain('stage: message && flow.stage === "planning" ? "working" : flow.stage');
-    expect(server).toContain('"planning",');
-    expect(server.replace("where stage = 'not_started'", "")).not.toContain("not_started");
-    expect(app).not.toContain("not_started");
-    expect(app).not.toContain("Not Started");
-    expect(app).not.toContain("not started");
+  test("does not expose flow stages", () => {
+    expect(server).not.toContain("type Stage");
+    expect(server).not.toContain("const stages");
+    expect(server).toContain('tryMigration("alter table flows drop column stage");');
+    expect(server).not.toContain("flow.stage");
+    expect(server).not.toContain('parts[3] === "stage"');
+    expect(server).not.toContain("stageApiUrl");
+    expect(app).not.toContain("flowStage");
+    expect(app).not.toContain("state.stages");
   });
 
   test("uses the Linear ticket id as the default flow branch name", () => {
@@ -821,6 +820,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('class="terminal-markdown-toggle"');
     expect(app).toContain('aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>');
     expect(app).toContain('return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown');
+    expect(app).toContain("function renderTerminalStreamingTextOutput(message)");
+    expect(app).toContain('class="terminal-streaming-markdown"');
+    expect(app).toContain('const compactBreak = \'<br><span class="markdown-blank-line" aria-hidden="true"></span>\';');
+    expect(app).toContain("preserveTrailingNewlines: Boolean(group.liveStreaming)");
     expect(app).toContain("renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source))");
     expect(app).toContain("function toggleTerminalMarkdownOutput(button)");
     expect(app).toContain('event.target.closest(".terminal-markdown-toggle")');
@@ -860,6 +863,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("background: transparent;");
     expect(css).toContain(".terminal-markdown-output {\n  position: relative;");
     expect(css).toContain(".terminal-markdown-content {\n  display: contents;");
+    expect(css).toContain(".terminal-entry-body h1,\n.terminal-entry-body h2,");
+    expect(css).toContain(".terminal-streaming-markdown {\n  white-space: normal;");
     expect(css).toContain("--terminal-message-max-lines: 50;");
     expect(css).toContain("--terminal-message-max-height: 77.5em;");
     expect(css).toContain("max-height: var(--terminal-message-max-height);");
@@ -957,7 +962,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flowUpdatedAtMs(flow)");
     expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
     expect(app).toContain("const flowsByIssue = new Map");
-    expect(app).toContain("return { ...ticket, flowId, flowStage };");
+    expect(app).toContain("return { ...ticket, flowId };");
     expect(app).toContain("setFlows(message.payload);");
     expect(app).toContain("upsertFlow(data.flow);");
   });
@@ -1154,13 +1159,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("branch.textContent = branchName;");
   });
 
-  test("lets agents update flow metadata including PR URL without changing stage", () => {
-    expect(server).toContain('if ((parts[3] === "meta" || parts[3] === "stage") && request.method === "POST")');
+  test("lets agents update flow metadata including PR URL", () => {
+    expect(server).toContain('if (parts[3] === "meta" && request.method === "POST")');
     expect(server).toContain("function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow>");
-    expect(server).toContain('if ("stage" in body) {');
     expect(server).toContain('if ("prUrl" in body) fields.prUrl = normalizePrUrl(body.prUrl);');
     expect(server).toContain('return json({ error: "No supported flow metadata fields provided." }, { status: 400 });');
-    expect(server).toContain('if (fields.stage) insertLog(id, "flow", `Stage changed to ${fields.stage}\\n`);');
     expect(server).toContain('fields.prUrl ? `PR set to ${fields.prUrl}\\n` : "PR cleared\\n"');
   });
 
@@ -1262,9 +1265,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flowAgentQueuedMessage(flow)");
     expect(app).toContain("return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);");
     expect(app).toContain("if (state.interruptSubmitting) return false;");
-    expect(app).toContain("runtimeStatusActive(flow?.agentStatus)");
+    expect(app).toContain("!flow.agentRuntimeStatus && !flow.shellRuntimeStatus && runtimeStatusActive(flow.agentStatus)");
+    expect(app).toContain("!flow.agentRuntimeStatus &&\n        !runtimeStatusActive(flow.shellRuntimeStatus)");
     expect(app).toContain("state.interruptSubmitting = true;");
-    expect(app).toContain('await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });');
+    expect(app).toContain('const data = await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });');
+    expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
     expect(app).toContain("async function interruptSelectedShellCommand()");
     expect(app).toContain('const data = await api(`/api/flows/${selected.id}/command/interrupt`, { method: "POST" });');
     expect(app).toContain("state.shellInterruptingFlowIds.add(selected.id);");
@@ -1291,7 +1296,12 @@ describe("Turbopump pane markup", () => {
       server.indexOf("function stopIdleAgentRuntimesForEnvUpdate"),
     );
     expect(serverInterruptAgent).not.toContain("interruptShellCommand(flowId)");
-    expect(serverInterruptAgent).toContain("const runtime = agentProcesses.get(flowId);");
+    expect(serverInterruptAgent).toContain("const runtime = agentProcesses.get(flowId) ?? (flow ? await recoverAgentRuntime(flow) : null);");
+    expect(server).toContain('db.exec("pragma busy_timeout = 5000");');
+    expect(server).toContain("function isNoActiveTurnInterruptError(error: unknown)");
+    expect(serverInterruptAgent).toContain("if (!isNoActiveTurnInterruptError(error)) throw error;");
+    expect(serverInterruptAgent).toContain('insertLog(flowId, "agent:status", "interrupt ignored: no active turn");');
+    expect(serverInterruptAgent).toContain('updateFlow(flowId, { agentStatus: "idle" });');
     expect(app).not.toContain('focusedInputPaneKind() === "shell" &&\n    flowShellRunning(selectedFlow())');
     expect(app).not.toContain('els.flowPane.querySelector(".agent-interrupt").addEventListener("click"');
     expect(app).toContain("function canSubmitPromptMessage()");
@@ -1332,7 +1342,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('await api(`/api/flows/${flow.id}/message`, {');
     expect(app).toContain("/agent/interrupt");
     expect(server).toContain("const agentHeartbeatSweepIntervalMs = 5000;");
-    expect(server).toContain("function reconcileAgentHeartbeat(flow: Flow");
+    expect(server).toContain("async function reconcileAgentHeartbeat(flow: Flow");
+    expect(server).toContain("const agentRuntimeRecoveries = new Map<string, Promise<RuntimeProcess | null>>();");
+    expect(server).toContain("function codexActiveTurnSettingKey(flowId: string)");
+    expect(server).toContain("function persistedActiveTurnId(flowId: string)");
+    expect(server).toContain("function setActiveTurnId(flowId: string, turnId = \"\")");
+    expect(server).toContain("async function recoverAgentRuntime(flow: Flow)");
+    expect(server).toContain("const runtime = await startCodexAppServer(flow);");
     expect(server).toContain("const shellRuntime = shellProcesses.get(flow.id);");
     expect(server).toContain('const shellRuntimeStatus = shellRuntime ? (shellRuntime.stopping ? "interrupting" : "running") : "";');
     expect(server).toContain("const agentRuntimeStatus = agentRuntimeActive");
@@ -1341,14 +1357,17 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("agentCompacting: Boolean(agentRuntime?.compacting)");
     expect(server).toContain("agentQueuedMessage: Boolean(agentRuntime?.queuedAgentMessages?.length)");
     expect(server).toContain('flow.agentStatus !== "running" && flow.agentStatus !== "interrupting"');
+    expect(server).toContain("const recovered = await recoverAgentRuntime(flow);");
     expect(server).toContain("const compactingStartedAt = runtime.compactingStartedAt ?? runtime.lastSeenAt ?? nowMs;");
     expect(server).toContain("context compaction timed out after");
     expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
     expect(server).not.toContain("if (runtime.compacting) return flow;");
     expect(server).toContain('insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
-    expect(server).toContain("setInterval(sweepAgentHeartbeats, agentHeartbeatSweepIntervalMs);");
+    expect(server).toContain("setInterval(() => void sweepAgentHeartbeats(), agentHeartbeatSweepIntervalMs);");
     expect(server).toContain('parts[3] === "agent" && parts[4] === "status" && request.method === "GET"');
+    expect(server).toContain("const reconciled = await reconcileAgentHeartbeat(flow);");
     expect(server).toContain("turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId)");
+    expect(server).toContain("return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });");
     expect(server).toContain("function runtimeAdjustedFlow(flow: Flow)");
     expect(server).toContain("function listClientFlows()");
     expect(app).not.toContain("agentActionIcon");
@@ -1552,7 +1571,6 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("/^interrupt requested\\b/");
     expect(app).toContain("/^[$]\\s*codex app-server --listen stdio:\\/\\/$/i");
     expect(app).toContain("/^Codex thread \\S+ ready$/i");
-    expect(app).toContain('log.source === "flow" && /^stage changed\\b/i.test(message)');
     expect(app).toContain('log.source === "agent:tool-result" && message === "completed exit 0"');
     expect(app).toContain('log.source === "agent:tool-result" && message === "failed exit 7"');
     expect(app).toContain("function isRoutineShellExitLog(log)");
@@ -1654,7 +1672,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("await loadLogs(id, { force: true, resetCursor: true, scrollToLatest: true });");
     expect(app).toContain("await loadLogs(flow.id, { force: true, resetCursor: true, scrollToLatest: true });");
     expect(app).toContain('ws.addEventListener("open", () => {');
-    expect(app).toContain("if (flow) void loadLogs(flow.id);");
+    expect(app).toContain('void api(`/api/flows/${flow.id}`).then((data) => {');
+    expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
+    expect(app).toContain("void loadLogs(flow.id);");
   });
 
   test("renders logs in chronological order in the Agent pane", () => {
@@ -1743,7 +1763,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flattenSingleChildTraceGroups(groups)");
     expect(app).toContain('if (group.source === "agent:trace-group") {');
     expect(app).toContain("if (children.length <= 1) {");
-    expect(app).toContain("return flattenSingleChildTraceGroups(groups);");
+    expect(app).toContain("function markLiveTerminalGroup(groups, flow)");
+    expect(app).toContain("return markLiveTerminalGroup(flattenSingleChildTraceGroups(groups), flow);");
     expect(app).toContain("openTraceGroups: new Map()");
     expect(app).toContain("traceKey: traceRange.key,");
     expect(app).toContain("flowId: log.flowId,");
