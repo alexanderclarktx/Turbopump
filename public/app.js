@@ -15,6 +15,7 @@ const ERROR_TOAST_DURATION_MS = 8000;
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
 const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
+const QUEUED_PROMPT_PREFIX_HTML = '<span class="queued-prompt-spinner" aria-hidden="true"></span>';
 const SLASH_COMMANDS = [
   { name: "/clear", description: "Start a fresh Codex thread for this flow" },
   { name: "/compact", description: "Compact the current Codex thread context" },
@@ -154,7 +155,6 @@ function initialBooleanSetting(key) {
 }
 
 const state = {
-  stages: [],
   flows: [],
   checkouts: [],
   checkoutsLoaded: false,
@@ -188,6 +188,8 @@ const state = {
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
   messageSubmitting: false,
+  queuedPrompt: null,
+  queuedPromptFlushTimer: 0,
   shellSubmitting: false,
   interruptSubmitting: false,
   shellInterruptingFlowIds: new Set(),
@@ -211,6 +213,7 @@ const state = {
   diffModalFlowId: "",
   diffModalDiff: null,
   diffModalLoadingFlowId: "",
+  diffModalSelectedPath: "",
   draggingLinearIssueId: "",
   ticketDragScrollStep: 0,
   suppressTicketClick: false,
@@ -248,6 +251,7 @@ let repoConfigSaveTimer = 0;
 let agentConfigSaveTimer = 0;
 let envSaveTimer = 0;
 let diffModalTransitionTimer = 0;
+let diffModalScrollFrame = 0;
 let imagePreviewTransitionTimer = 0;
 let checkoutLoadFrame = 0;
 let ticketDragScrollFrame = 0;
@@ -716,6 +720,7 @@ function focusedInputPaneKind() {
 function toggleFocusedInputPane() {
   const focused = focusedInputPaneKind();
   if (focused === "shell") return focusInputPane("prompt");
+  if (focused !== "prompt") return focusInputPane("prompt");
   return focusInputPane("shell") || focusInputPane("prompt");
 }
 
@@ -726,12 +731,31 @@ function setInputMode(mode) {
 function updateMessageInputMode() {
   const input = promptInput();
   if (!input) return;
+  const queued = promptQueuedForSelectedFlow();
+  const pane = els.flowPane.querySelector(".prompt-input-pane");
+  const prefix = els.flowPane.querySelector(".prompt-input-prefix");
+  pane?.classList.toggle("prompt-queued", queued);
+  if (prefix) {
+    if (queued && !prefix.querySelector(".queued-prompt-spinner")) {
+      prefix.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
+    } else if (!queued && prefix.textContent !== ">") {
+      prefix.textContent = ">";
+    }
+  }
+  if (queued) {
+    hideSlashMenu();
+    return;
+  }
   renderSlashMenu();
 }
 
 function flowRuntimeActive(flow) {
   if (hasSplitRuntimeStatus(flow)) {
-    return runtimeStatusActive(flow.agentRuntimeStatus) || runtimeStatusActive(flow.shellRuntimeStatus);
+    return (
+      runtimeStatusActive(flow.agentRuntimeStatus) ||
+      runtimeStatusActive(flow.shellRuntimeStatus) ||
+      (!flow.agentRuntimeStatus && !flow.shellRuntimeStatus && runtimeStatusActive(flow.agentStatus))
+    );
   }
   return runtimeStatusActive(flow?.agentStatus);
 }
@@ -753,7 +777,15 @@ function flowRuntimeKind(flow) {
 
 function flowAgentRunning(flow) {
   if (!flow) return false;
-  if (hasSplitRuntimeStatus(flow)) return runtimeStatusActive(flow.agentRuntimeStatus);
+  if (hasSplitRuntimeStatus(flow)) {
+    return (
+      runtimeStatusActive(flow.agentRuntimeStatus) ||
+      (!flow.agentRuntimeStatus &&
+        !runtimeStatusActive(flow.shellRuntimeStatus) &&
+        runtimeStatusActive(flow.agentStatus) &&
+        flowRuntimeKind(flow) === "agent")
+    );
+  }
   return runtimeStatusActive(flow.agentStatus) && flowRuntimeKind(flow) === "agent";
 }
 
@@ -765,9 +797,25 @@ function flowAgentQueuedMessage(flow) {
   return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);
 }
 
+function promptQueuedForFlow(flow) {
+  return Boolean(flow?.id && state.queuedPrompt?.flowId === flow.id);
+}
+
+function promptQueuedForSelectedFlow() {
+  return promptQueuedForFlow(selectedFlow());
+}
+
 function flowShellRunning(flow) {
   if (!flow) return false;
-  if (hasSplitRuntimeStatus(flow)) return runtimeStatusActive(flow.shellRuntimeStatus);
+  if (hasSplitRuntimeStatus(flow)) {
+    return (
+      runtimeStatusActive(flow.shellRuntimeStatus) ||
+      (!flow.shellRuntimeStatus &&
+        !runtimeStatusActive(flow.agentRuntimeStatus) &&
+        runtimeStatusActive(flow.agentStatus) &&
+        flowRuntimeKind(flow) === "shell")
+    );
+  }
   return runtimeStatusActive(flow.agentStatus) && flowRuntimeKind(flow) === "shell";
 }
 
@@ -795,7 +843,8 @@ function canSubmitPromptMessage() {
       (flow || ticket) &&
       !state.messageSubmitting &&
       !state.agentImageUploading &&
-      (!flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow))),
+      !flowAgentRunning(flow) &&
+      !promptQueuedForFlow(flow),
   );
 }
 
@@ -833,6 +882,63 @@ function flashBlockedInput(input) {
   window.setTimeout(() => input.classList.remove("input-submit-blocked"), 420);
 }
 
+function clearQueuedPrompt() {
+  state.queuedPrompt = null;
+  updateMessageInputMode();
+  saveActiveTicketInputState();
+}
+
+function queuePromptMessage(input) {
+  const flow = selectedFlow();
+  if (!flow?.id || state.queuedPrompt || !input) return false;
+  state.queuedPrompt = {
+    flowId: flow.id,
+    message: input.value,
+  };
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
+  updateMessageInputMode();
+  resizeMessageInput();
+  saveActiveTicketInputState();
+  renderTickets();
+  renderFlowPane();
+  return true;
+}
+
+function handleQueuedPromptKeydown(event) {
+  if (!promptQueuedForSelectedFlow()) return false;
+  if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
+  event.preventDefault();
+  if (event.key === "Backspace" || event.key === "Escape") {
+    clearQueuedPrompt();
+    return true;
+  }
+  flashBlockedInput(event.currentTarget);
+  return true;
+}
+
+function handleQueuedPromptBeforeInput(event) {
+  if (!promptQueuedForSelectedFlow()) return false;
+  event.preventDefault();
+  flashBlockedInput(event.currentTarget);
+  return true;
+}
+
+function scheduleQueuedPromptFlush() {
+  if (!state.queuedPrompt || state.queuedPromptFlushTimer) return;
+  state.queuedPromptFlushTimer = window.setTimeout(() => {
+    state.queuedPromptFlushTimer = 0;
+    void flushQueuedPrompt();
+  }, 0);
+}
+
+async function flushQueuedPrompt() {
+  const queued = state.queuedPrompt;
+  const flow = selectedFlow();
+  if (!queued || !flow?.id || flow.id !== queued.flowId || flowAgentRunning(flow) || state.messageSubmitting) return;
+  await submitPromptMessage();
+}
+
 async function interruptSelectedFlow() {
   if (state.interruptSubmitting) return false;
   const selected = selectedFlow();
@@ -841,7 +947,8 @@ async function interruptSelectedFlow() {
   renderTickets();
   renderFlowPane();
   try {
-    await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
+    const data = await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });
+    if (data.flow) upsertFlow(data.flow);
   } finally {
     state.interruptSubmitting = false;
     renderTickets();
@@ -888,6 +995,11 @@ function focusMessageInputForKey(event) {
   const start = input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? input.value.length;
   event.preventDefault();
+  if (promptQueuedForSelectedFlow()) {
+    input.focus();
+    flashBlockedInput(input);
+    return true;
+  }
   if (event.key === "$" && focusInputPane("shell")) return true;
   input.focus();
   input.setRangeText(event.key, start, end, "end");
@@ -986,7 +1098,7 @@ function resizeMessageInput() {
 function renderSlashMenu() {
   const input = promptInput();
   const menu = els.flowPane.querySelector(".slash-menu");
-  if (!input || document.activeElement === shellInput()) {
+  if (!input || document.activeElement === shellInput() || promptQueuedForSelectedFlow()) {
     hideSlashMenu();
     return;
   }
@@ -1145,16 +1257,15 @@ function maskEnvValueInput(input) {
   input.dataset.envMasked = "true";
 }
 
-function createEnvRow(key = "", value = "") {
-  const row = document.createElement("div");
-  row.className = "env-row";
+function createEnvValueRow(value = "", active = false) {
+  const valueField = document.createElement("div");
+  valueField.className = "env-value-field";
+  valueField.dataset.envActive = active ? "true" : "false";
 
-  const keyInput = document.createElement("input");
-  keyInput.className = "env-key";
-  keyInput.placeholder = "KEYNAME";
-  keyInput.autocomplete = "off";
-  keyInput.spellcheck = false;
-  keyInput.value = key;
+  const activeInput = document.createElement("input");
+  activeInput.className = "env-active-value";
+  activeInput.type = "radio";
+  activeInput.setAttribute("aria-label", "Active value");
 
   const valueInput = document.createElement("input");
   valueInput.className = "env-value";
@@ -1165,21 +1276,60 @@ function createEnvRow(key = "", value = "") {
   valueInput.dataset.envMasked = "true";
   valueInput.value = maskedEnvValue(value);
 
-  row.append(keyInput, valueInput);
+  valueField.append(activeInput, valueInput);
+  return valueField;
+}
+
+function createEnvRow(key = "", values = [{ value: "", active: false }]) {
+  const row = document.createElement("div");
+  row.className = "env-row";
+
+  const keyField = document.createElement("div");
+  keyField.className = "env-key-field";
+
+  const keyInput = document.createElement("input");
+  keyInput.className = "env-key";
+  keyInput.placeholder = "KEYNAME";
+  keyInput.autocomplete = "off";
+  keyInput.spellcheck = false;
+  keyInput.value = key;
+
+  const addValueButton = document.createElement("button");
+  addValueButton.className = "env-add-value";
+  addValueButton.type = "button";
+  addValueButton.setAttribute("aria-label", "Add value");
+  addValueButton.title = "Add value";
+  addValueButton.textContent = "+";
+
+  const valueList = document.createElement("div");
+  valueList.className = "env-values";
+  for (const value of values.length ? values : [{ value: "", active: false }]) {
+    valueList.append(createEnvValueRow(value.value, value.active));
+  }
+
+  keyField.append(keyInput, addValueButton);
+  row.append(keyField, valueList);
   return row;
 }
 
+function envValueRowValue(valueRow) {
+  const valueInput = valueRow.querySelector(".env-value");
+  return valueInput?.dataset.envValue ?? valueInput?.value ?? "";
+}
+
 function envRowValues(row) {
-  const valueInput = row.querySelector(".env-value");
   return {
     key: row.querySelector(".env-key")?.value.trim() || "",
-    value: valueInput?.dataset.envValue ?? valueInput?.value ?? "",
+    values: [...row.querySelectorAll(".env-value-field")].map((valueRow) => ({
+      value: envValueRowValue(valueRow),
+      active: valueRow.dataset.envActive === "true",
+    })),
   };
 }
 
 function envRowIsEmpty(row) {
   const values = envRowValues(row);
-  return !values.key && !values.value;
+  return !values.key && values.values.every((item) => !item.value);
 }
 
 function ensureTrailingEnvRow() {
@@ -1187,22 +1337,69 @@ function ensureTrailingEnvRow() {
   if (!rows.length || !envRowIsEmpty(rows.at(-1))) {
     els.envEditor.append(createEnvRow());
   }
+  updateEnvRowControls();
+}
+
+function updateEnvRowControls() {
+  const rows = [...els.envEditor.querySelectorAll(".env-row")];
+  for (const [rowIndex, row] of rows.entries()) {
+    const valueRows = [...row.querySelectorAll(".env-value-field")];
+    let activeValueRow = valueRows.find((valueRow) => valueRow.dataset.envActive === "true") || valueRows.at(-1);
+    const hasMultipleValues = valueRows.length > 1;
+    row.classList.toggle("env-has-active-choice", hasMultipleValues);
+    for (const valueRow of valueRows) {
+      const radio = valueRow.querySelector(".env-active-value");
+      valueRow.dataset.envActive = valueRow === activeValueRow ? "true" : "false";
+      if (!radio) continue;
+      radio.name = `env-active-${rowIndex}`;
+      radio.hidden = !hasMultipleValues;
+      radio.checked = valueRow === activeValueRow;
+    }
+  }
+}
+
+function envEditorGroupsFromRows(rows) {
+  const groups = [];
+  const groupByKey = new Map();
+  for (const row of rows) {
+    if (!groupByKey.has(row.key)) {
+      const group = { key: row.key, values: [] };
+      groupByKey.set(row.key, group);
+      groups.push(group);
+    }
+    groupByKey.get(row.key).values.push({ value: row.value, active: false });
+  }
+  for (const group of groups) {
+    const activeValue = group.values.at(-1);
+    if (activeValue) activeValue.active = true;
+  }
+  return groups;
 }
 
 function renderEnvEditor(contents) {
   els.envEditor.replaceChildren();
-  for (const row of parseEnvEditorRows(contents || "")) {
-    els.envEditor.append(createEnvRow(row.key, row.value));
+  for (const group of envEditorGroupsFromRows(parseEnvEditorRows(contents || ""))) {
+    els.envEditor.append(createEnvRow(group.key, group.values));
   }
   ensureTrailingEnvRow();
 }
 
 function envEditorContents() {
-  return [...els.envEditor.querySelectorAll(".env-row")]
-    .map(envRowValues)
-    .filter((row) => row.key)
-    .map((row) => `${row.key}=${row.value}`)
-    .join("\n");
+  const lines = [];
+  for (const row of els.envEditor.querySelectorAll(".env-row")) {
+    const rowValues = envRowValues(row);
+    if (!rowValues.key) continue;
+    const activeValues = rowValues.values.filter((value) => value.active);
+    const activeValue = activeValues.at(-1) || rowValues.values.at(-1);
+    const orderedValues = [
+      ...rowValues.values.filter((value) => value !== activeValue),
+      ...(activeValue ? [activeValue] : []),
+    ];
+    for (const value of orderedValues) {
+      lines.push(`${rowValues.key}=${value.value}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 async function saveEnv() {
@@ -1229,10 +1426,53 @@ function flushEnvSaveOnPageHide() {
   }).catch(reportAutoSaveError);
 }
 
+function activateEnvValueRow(valueRow) {
+  const row = valueRow?.closest(".env-row");
+  if (!row) return;
+  for (const candidate of row.querySelectorAll(".env-value-field")) {
+    candidate.dataset.envActive = candidate === valueRow ? "true" : "false";
+  }
+  updateEnvRowControls();
+  scheduleEnvSave();
+}
+
 function handleEnvEditorInput(event) {
+  if (event.target.closest(".env-active-value")) return;
   const valueInput = event.target.closest(".env-value");
   if (valueInput) valueInput.dataset.envValue = valueInput.value;
   ensureTrailingEnvRow();
+  scheduleEnvSave();
+}
+
+function handleEnvEditorChange(event) {
+  const activeInput = event.target.closest(".env-active-value");
+  if (!activeInput?.checked) return;
+  const valueRow = activeInput.closest(".env-value-field");
+  if (valueRow) activateEnvValueRow(valueRow);
+}
+
+function handleEnvEditorClick(event) {
+  const activeInput = event.target.closest(".env-active-value");
+  if (activeInput) {
+    const valueRow = activeInput.closest(".env-value-field");
+    if (valueRow) activateEnvValueRow(valueRow);
+    return;
+  }
+
+  const button = event.target.closest(".env-add-value");
+  if (!button) return;
+  const row = button.closest(".env-row");
+  if (!row) return;
+  const keyInput = row?.querySelector(".env-key");
+  const key = envRowValues(row).key;
+  if (!key) {
+    keyInput?.focus();
+    return;
+  }
+  const nextRow = createEnvValueRow("");
+  row.querySelector(".env-values")?.append(nextRow);
+  ensureTrailingEnvRow();
+  nextRow.querySelector(".env-value")?.focus();
   scheduleEnvSave();
 }
 
@@ -1248,20 +1488,10 @@ function handleEnvEditorPaste(event) {
   if (!pastedRows.length) return;
 
   event.preventDefault();
-  let insertAfter = row;
-  pastedRows.forEach((envRow, index) => {
-    const targetRow = index === 0 ? row : createEnvRow();
-    targetRow.querySelector(".env-key").value = envRow.key;
-    const valueInput = targetRow.querySelector(".env-value");
-    valueInput.dataset.envValue = envRow.value;
-    valueInput.value = maskedEnvValue(envRow.value);
-    if (index > 0) {
-      insertAfter.after(targetRow);
-      insertAfter = targetRow;
-    }
-  });
+  const pastedEnvRows = envEditorGroupsFromRows(pastedRows).map((group) => createEnvRow(group.key, group.values));
+  row.replaceWith(...pastedEnvRows);
   ensureTrailingEnvRow();
-  insertAfter.querySelector(".env-value")?.focus();
+  pastedEnvRows.at(-1)?.querySelector(".env-value")?.focus();
   scheduleEnvSave();
 }
 
@@ -1476,7 +1706,6 @@ async function bootstrap() {
   setShellOutputSplitSize(state.shellOutputSplitSize);
   requestAnimationFrame(() => document.body.classList.remove("app-booting"));
   const data = await api("/api/bootstrap");
-  state.stages = data.stages;
   setFlows(data.flows);
   els.repoUrl.value = data.repo.repoUrl || "";
   els.serveCommand.value = data.repo.serveCommand || "";
@@ -1515,6 +1744,7 @@ function setFlows(flows) {
   state.flows = nextFlows;
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
+  scheduleQueuedPromptFlush();
 }
 
 function clearFlowClientState(flowId) {
@@ -1527,6 +1757,7 @@ function clearFlowClientState(flowId) {
   state.shellOutputClearAfterLogId.delete(flowId);
   state.openTraceGroups.delete(flowId);
   state.shellInterruptingFlowIds.delete(flowId);
+  if (state.queuedPrompt?.flowId === flowId) clearQueuedPrompt();
   state.flowDiffs.delete(flowId);
   state.flowDiffLoadingIds.delete(flowId);
   if (state.diffModalFlowId === flowId) {
@@ -1895,6 +2126,7 @@ function openDiffViewer(flowId) {
   state.diffModalFlowId = flowId || "";
   state.diffModalDiff = flowId && state.flowDiffs.get(flowId) ? { ...state.flowDiffs.get(flowId) } : null;
   state.diffModalLoadingFlowId = flowId || "";
+  state.diffModalSelectedPath = "";
   renderDiffModal();
   if (flowId) void loadFlowDiff(flowId, { patch: true, modal: true });
 }
@@ -1903,6 +2135,7 @@ function closeDiffViewer() {
   state.diffModalFlowId = "";
   state.diffModalDiff = null;
   state.diffModalLoadingFlowId = "";
+  state.diffModalSelectedPath = "";
   renderDiffModal();
 }
 
@@ -1975,6 +2208,37 @@ function diffFilePathFromHeader(line) {
   return pathStart >= 0 ? line.slice(pathStart + 3).trim() : "";
 }
 
+function diffPatchFilePaths(text) {
+  const paths = [];
+  const seen = new Set();
+  for (const line of String(text || "").split("\n")) {
+    if (!line.startsWith("diff --git ")) continue;
+    const path = diffFilePathFromHeader(line);
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    paths.push(path);
+  }
+  return paths;
+}
+
+function orderedDiffFiles(diff) {
+  const files = Array.isArray(diff?.files) ? diff.files.filter((file) => file?.path) : [];
+  const patchPaths = diffPatchFilePaths(diff?.patch || "");
+  if (!patchPaths.length) return files;
+  const filesByPath = new Map(files.map((file) => [file.path, file]));
+  const usedPaths = new Set();
+  const ordered = [];
+  for (const path of patchPaths) {
+    const file = filesByPath.get(path) || { path, additions: null, deletions: null };
+    ordered.push(file);
+    usedPaths.add(file.path);
+  }
+  for (const file of files) {
+    if (!usedPaths.has(file.path)) ordered.push(file);
+  }
+  return ordered;
+}
+
 function diffHunkLineState(line) {
   const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
   if (!match) return null;
@@ -2019,7 +2283,7 @@ function appendDiffLine(fragment, line, lineState) {
   fragment.appendChild(row);
 }
 
-function renderDiffCode(code, text) {
+function renderDiffCode(code, text, selectedPath = "") {
   code.className = "language-diff diff-code";
   code.replaceChildren();
   if (!text) return;
@@ -2031,8 +2295,15 @@ function renderDiffCode(code, text) {
     if (line.startsWith("diff --git ")) {
       const filePath = diffFilePathFromHeader(line);
       if (filePath) {
+        const anchor = document.createElement("span");
+        anchor.className = "diff-file-anchor";
+        anchor.dataset.diffPath = filePath;
+        fragment.appendChild(anchor);
+
         const divider = document.createElement("span");
         divider.className = `diff-file-divider${fileDividerCount ? "" : " is-first"}`;
+        divider.dataset.diffPath = filePath;
+        divider.classList.toggle("is-selected", filePath === selectedPath);
         divider.textContent = filePath;
         fragment.appendChild(divider);
         fileDividerCount += 1;
@@ -2047,21 +2318,79 @@ function renderDiffCode(code, text) {
   code.appendChild(fragment);
 }
 
-function renderDiffSummary(summary, diff, loading) {
+function setSelectedDiffFile(path, options = {}) {
+  if (!path) return;
+  state.diffModalSelectedPath = path;
+  const modal = els.diffModal;
+  if (!modal) return;
+  let selectedRow = null;
+  for (const row of modal.querySelectorAll(".diff-summary-file")) {
+    const selected = row.dataset.diffPath === path;
+    row.classList.toggle("is-selected", selected);
+    row.setAttribute("aria-current", selected ? "true" : "false");
+    if (selected) selectedRow = row;
+  }
+  for (const divider of modal.querySelectorAll(".diff-file-divider")) {
+    divider.classList.toggle("is-selected", divider.dataset.diffPath === path);
+  }
+  if (options.revealSummary && selectedRow) selectedRow.scrollIntoView({ block: "nearest" });
+  if (!options.scroll) return;
+  scrollDiffFileIntoView(path);
+}
+
+function scrollDiffFileIntoView(path) {
+  const scroller = els.diffModal?.querySelector(".diff-modal-code");
+  if (!scroller) return;
+  const target = [...scroller.querySelectorAll(".diff-file-anchor")].find((anchor) => anchor.dataset.diffPath === path);
+  if (!target) return;
+  const paddingTop = Number.parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+  scroller.scrollTop = Math.max(0, target.offsetTop - paddingTop - 8);
+}
+
+function selectedDiffFileFromScroll() {
+  const scroller = els.diffModal?.querySelector(".diff-modal-code");
+  if (!scroller) return "";
+  const dividers = [...scroller.querySelectorAll(".diff-file-divider")];
+  if (!dividers.length) return "";
+  const scrollerTop = scroller.getBoundingClientRect().top;
+  let selectedPath = dividers[0].dataset.diffPath || "";
+  for (const divider of dividers) {
+    if (divider.getBoundingClientRect().top > scrollerTop + 24) break;
+    selectedPath = divider.dataset.diffPath || selectedPath;
+  }
+  return selectedPath;
+}
+
+function syncSelectedDiffFileFromScroll() {
+  diffModalScrollFrame = 0;
+  const path = selectedDiffFileFromScroll();
+  if (path && path !== state.diffModalSelectedPath) setSelectedDiffFile(path, { revealSummary: true });
+}
+
+function scheduleSelectedDiffFileSync() {
+  if (diffModalScrollFrame) return;
+  diffModalScrollFrame = requestAnimationFrame(syncSelectedDiffFileFromScroll);
+}
+
+function renderDiffSummary(summary, diff, loading, selectedPath = "") {
   summary.replaceChildren();
   if (loading || diff?.error) {
     summary.textContent = loading ? "Loading diff..." : diff.error;
     return;
   }
-  const files = Array.isArray(diff?.files) ? diff.files.filter((file) => file?.path) : [];
+  const files = orderedDiffFiles(diff);
   if (!files.length) {
     summary.textContent = diff?.stat?.trim() || diff?.names?.trim() || diff?.status?.trim() || "No diff.";
     return;
   }
   const fragment = document.createDocumentFragment();
   for (const file of files) {
-    const row = document.createElement("div");
+    const row = document.createElement("button");
     row.className = "diff-summary-file";
+    row.type = "button";
+    row.dataset.diffPath = file.path;
+    row.classList.toggle("is-selected", file.path === selectedPath);
+    row.setAttribute("aria-current", file.path === selectedPath ? "true" : "false");
 
     const path = document.createElement("span");
     path.className = "diff-summary-path";
@@ -2098,9 +2427,14 @@ function renderDiffModal() {
   const loading = state.diffModalLoadingFlowId === flowId && !diff?.patch;
   const summary = els.diffModal.querySelector(".diff-modal-summary");
   const code = els.diffModal.querySelector(".diff-modal-code code");
+  const files = orderedDiffFiles(diff);
+  const selectedPath = files.some((file) => file.path === state.diffModalSelectedPath)
+    ? state.diffModalSelectedPath
+    : files[0]?.path || "";
+  state.diffModalSelectedPath = selectedPath;
   els.diffModal.querySelector(".diff-modal")?.setAttribute("aria-label", `${flow?.linearIssueId || "Flow"} diff`);
-  renderDiffSummary(summary, diff, loading);
-  renderDiffCode(code, loading ? "" : diff?.patch?.trim() || diff?.names?.trim() || diff?.status?.trim() || "");
+  renderDiffSummary(summary, diff, loading, selectedPath);
+  renderDiffCode(code, loading ? "" : diff?.patch?.trim() || diff?.names?.trim() || diff?.status?.trim() || "", selectedPath);
 }
 
 function appendLogEntry(log) {
@@ -2159,9 +2493,8 @@ function syncLinearTicketsWithFlows() {
   state.linearTickets = state.linearTickets.map((ticket) => {
     const flow = flowsByIssue.get(ticket.identifier);
     const flowId = flow?.id || "";
-    const flowStage = flow?.stage || "";
-    if (ticket.flowId === flowId && ticket.flowStage === flowStage) return ticket;
-    return { ...ticket, flowId, flowStage };
+    if (ticket.flowId === flowId) return ticket;
+    return { ...ticket, flowId };
   });
 }
 
@@ -2250,7 +2583,6 @@ function renderTickets() {
         ticket.priority || "",
         ticket.project?.name || "",
         ticket.flowId || "",
-        ticket.flowStage || "",
       ].join("\u001f"),
     )
     .join("\u001e")
@@ -2449,7 +2781,6 @@ function upsertLinearIssue(issue) {
       ...ticket,
       ...issue,
       flowId: ticket.flowId || "",
-      flowStage: ticket.flowStage || "",
     };
   });
 }
@@ -2856,6 +3187,7 @@ function renderFlowPane() {
     terminal.textContent = "No agent session yet.";
   }
   void loadLinearDetail(issueId);
+  scheduleQueuedPromptFlush();
 }
 
 function renderAgentImageContext() {
@@ -3158,6 +3490,10 @@ function isStreamingSource(source) {
   ].includes(source);
 }
 
+function isLiveAgentTextSource(source) {
+  return ["agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
+}
+
 function parseTraceGroup(log) {
   if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
@@ -3301,11 +3637,45 @@ function flattenSingleChildTraceGroups(groups) {
   return result;
 }
 
+function mergeAdjacentStreamingGroups(groups) {
+  const result = [];
+  for (const group of groups) {
+    const previous = result[result.length - 1];
+    if (previous && previous.source === group.source && isStreamingSource(group.source)) {
+      previous.message += group.message;
+      previous.lastAt = group.lastAt;
+      previous.logIds.push(...(group.logIds || [group.id]));
+      continue;
+    }
+    result.push(group);
+  }
+  return result;
+}
+
+function latestTerminalContentGroup(groups) {
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (group.source === "agent:trace-group") {
+      const child = latestTerminalContentGroup(group.children || []);
+      if (child) return child;
+      continue;
+    }
+    return group;
+  }
+  return null;
+}
+
+function markLiveTerminalGroup(groups, flow) {
+  if (!flowAgentRunning(flow) || (state.messageSubmitting && flow?.id === state.selectedFlowId)) return groups;
+  const group = latestTerminalContentGroup(groups);
+  if (group && isLiveAgentTextSource(group.source)) group.liveStreaming = true;
+  return groups;
+}
+
 function isHiddenTerminalLog(log) {
   const message = String(log.message || "").trim();
   if (log.source === "agent:tool-result" && message === "completed exit 0") return true;
   if (log.source === "agent:tool-result" && message === "failed exit 7") return true;
-  if (log.source === "flow" && /^stage changed\b/i.test(message)) return true;
   return (
     log.source === "agent:status" &&
     (/^turn started\b/.test(message) ||
@@ -3366,7 +3736,7 @@ function terminalGroups(logs, flow) {
     }
     appendTerminalGroup(groups, log);
   }
-  return flattenSingleChildTraceGroups(groups);
+  return markLiveTerminalGroup(mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups)), flow);
 }
 
 function agentPaneLogs(logs, flow) {
@@ -3561,12 +3931,13 @@ async function clearShellOutputPane() {
   }
 }
 
-function formatTerminalMessage(source, message) {
+function formatTerminalMessage(source, message, options = {}) {
   const text = String(message || "");
   if (source === "agent:tool") return text.trim();
   if (source === "agent:tool-result") return text.trim();
   if (source === "agent:status" || source === "flow" || source === "linear") return text.trim();
-  return text.replace(/^\n+/, "").replace(/\n+$/, "");
+  const withoutLeadingNewlines = text.replace(/^\n+/, "");
+  return options.preserveTrailingNewlines ? withoutLeadingNewlines : withoutLeadingNewlines.replace(/\n+$/, "");
 }
 
 function localDayStart(date) {
@@ -3603,6 +3974,14 @@ function renderTerminalMarkdownOutput(message, showToggle = false) {
     ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>`
     : "";
   return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true, compactBlankLines: true })}</div>`;
+}
+
+function renderTerminalStreamingTextOutput(message) {
+  return `<div class="terminal-streaming-markdown">${renderLinearMarkdown(message, "", {
+    images: false,
+    links: true,
+    compactBlankLines: true,
+  })}</div>`;
 }
 
 function ansiClassForCode(code) {
@@ -3962,11 +4341,19 @@ function appendTerminalBlock(fragment, group, options = {}) {
 
   const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
   body.className = "terminal-entry-body";
-  const message = formatTerminalMessage(group.source, group.message);
+  const message = formatTerminalMessage(group.source, group.message, {
+    preserveTrailingNewlines: Boolean(group.liveStreaming),
+  });
   if (usesTerminalBlockMarkdown(group.source)) {
     body.classList.add("terminal-markdown-output");
-    body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
-    highlightCodeBlocks(body);
+    if (group.liveStreaming) {
+      body.classList.add("terminal-streaming-output");
+      body.innerHTML = renderTerminalStreamingTextOutput(message);
+      highlightCodeBlocks(body);
+    } else {
+      body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
+      highlightCodeBlocks(body);
+    }
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
     renderAnsiText(body, message);
   } else {
@@ -4396,7 +4783,7 @@ function renderLogs(id, options = {}) {
   terminal._flowLogSignature = signature;
   terminal._flowLogRenderedKeys = nextKeys;
   terminal._flowLogPending = "";
-  if (atLatest) scrollTerminalToLatest(terminal);
+  if (atLatest) scrollTerminalToLatestNow(terminal);
   renderShellOutputPane(id);
 }
 
@@ -4425,7 +4812,12 @@ function connectWs() {
   const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
   ws.addEventListener("open", () => {
     const flow = selectedFlow();
-    if (flow) void loadLogs(flow.id);
+    if (flow) {
+      void api(`/api/flows/${flow.id}`).then((data) => {
+        if (data.flow) upsertFlow(data.flow);
+      }).catch(() => {});
+      void loadLogs(flow.id);
+    }
   });
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
@@ -4588,6 +4980,8 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
   void saveAgentConfig().catch(reportAutoSaveError);
 });
 els.envEditor.addEventListener("input", handleEnvEditorInput);
+els.envEditor.addEventListener("change", handleEnvEditorChange);
+els.envEditor.addEventListener("click", handleEnvEditorClick);
 els.envEditor.addEventListener("focusin", handleEnvEditorFocusIn);
 els.envEditor.addEventListener("paste", handleEnvEditorPaste);
 els.envEditor.addEventListener("focusout", handleEnvEditorFocusOut);
@@ -4673,6 +5067,10 @@ promptInput().addEventListener("input", () => {
   saveActiveTicketInputState();
 });
 
+promptInput().addEventListener("beforeinput", (event) => {
+  handleQueuedPromptBeforeInput(event);
+});
+
 shellInput().addEventListener("input", () => {
   cancelHistorySearch();
   resetInputHistoryNavigation();
@@ -4726,6 +5124,7 @@ promptInput().addEventListener("keydown", (event) => {
   const menu = els.flowPane.querySelector(".slash-menu");
   const matches = slashCommandMatches(input.value);
 
+  if (handleQueuedPromptKeydown(event)) return;
   if (handleHistorySearchKeydown(event)) return;
 
   if (!menu.hidden && matches.length) {
@@ -4784,8 +5183,9 @@ shellInput().addEventListener("keydown", (event) => {
   if (handleHistorySearchKeydown(event)) return;
   if (handleInputPaneTabKeydown(event)) return;
   if (handleInputHistoryNavigationKeydown(event)) return;
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && !event.isComposing) {
     event.preventDefault();
+    if (event.shiftKey) return;
     void submitShellCommand(input.value);
   }
 });
@@ -4870,11 +5270,25 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   promptInput().focus();
 });
 
-els.flowPane.querySelector(".message-form").addEventListener("submit", async (event) => {
+els.flowPane.querySelector(".message-form").addEventListener("submit", (event) => {
   event.preventDefault();
+  void submitPromptMessage();
+});
+
+async function submitPromptMessage() {
   const input = promptInput();
   const message = input.value.trim();
   if (!message && !state.pendingAgentImages.length) return;
+  const flow = selectedFlow();
+  if (flowAgentRunning(flow)) {
+    if (!promptQueuedForFlow(flow) && queuePromptMessage(input)) return;
+    flashBlockedInput(input);
+    return;
+  }
+  if (promptQueuedForFlow(flow)) {
+    state.queuedPrompt = null;
+    updateMessageInputMode();
+  }
   if (!canSubmitPromptMessage()) {
     flashBlockedInput(input);
     return;
@@ -4912,11 +5326,17 @@ els.flowPane.querySelector(".message-form").addEventListener("submit", async (ev
     renderFlowPane();
     promptInput().focus();
   }
-});
+}
 
 els.diffModal?.addEventListener("click", (event) => {
+  const fileButton = event.target.closest?.(".diff-summary-file");
+  if (fileButton) {
+    setSelectedDiffFile(fileButton.dataset.diffPath || "", { scroll: true });
+    return;
+  }
   if (event.target === els.diffModal) closeDiffViewer();
 });
+els.diffModal?.querySelector(".diff-modal-code")?.addEventListener("scroll", scheduleSelectedDiffFileSync, { passive: true });
 els.imagePreviewModal?.addEventListener("click", (event) => {
   if (event.target === els.imagePreviewModal) closeImagePreview();
 });

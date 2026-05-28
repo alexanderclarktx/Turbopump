@@ -205,29 +205,56 @@
         </article>
       </section>
     </main>
-    <button
-      id="themeToggle"
-      class="icon-button theme-toggle"
-      type="button"
-      aria-pressed="false"
-      aria-label="Switch to dark mode"
-      title="Switch to dark mode"
-    >
-      <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="4" />
-        <path d="M12 2v2" />
-        <path d="M12 20v2" />
-        <path d="m4.93 4.93 1.41 1.41" />
-        <path d="m17.66 17.66 1.41 1.41" />
-        <path d="M2 12h2" />
-        <path d="M20 12h2" />
-        <path d="m6.34 17.66-1.41 1.41" />
-        <path d="m19.07 4.93-1.41 1.41" />
-      </svg>
-      <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M20.1 14.3A8 8 0 0 1 9.7 3.9 8.5 8.5 0 1 0 20.1 14.3Z" />
-      </svg>
-    </button>
+    <div class="corner-controls">
+      <div class="hotkeys-info">
+        <button class="icon-button hotkeys-info-trigger" type="button" aria-label="Show app hotkeys" aria-describedby="hotkeysPane">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 10v7" />
+            <path d="M12 7h.01" />
+          </svg>
+        </button>
+        <div id="hotkeysPane" class="hotkeys-pane" role="tooltip">
+          <strong>Hotkeys</strong>
+          <dl>
+            <div><dt><kbd>Cmd + ,</kbd></dt><dd>Toggle settings</dd></div>
+            <div><dt><kbd>Ctrl + `</kbd></dt><dd>Toggle tickets</dd></div>
+            <div><dt><kbd>Cmd + \</kbd></dt><dd>Toggle shell</dd></div>
+            <div><dt><kbd>Tab</kbd></dt><dd>Switch prompt and shell</dd></div>
+            <div><dt><kbd>Ctrl + R</kbd></dt><dd>Search input history</dd></div>
+            <div><dt><kbd>Ctrl + Z</kbd></dt><dd>Previous history match</dd></div>
+            <div><dt><kbd>Up / Down</kbd></dt><dd>Navigate input history</dd></div>
+            <div><dt><kbd>$</kbd></dt><dd>Focus shell from anywhere</dd></div>
+            <div><dt><kbd>Cmd + K</kbd></dt><dd>Clear focused shell</dd></div>
+            <div><dt><kbd>Ctrl + C</kbd></dt><dd>Interrupt running shell</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Interrupt agent or close panels</dd></div>
+          </dl>
+        </div>
+      </div>
+      <button
+        id="themeToggle"
+        class="icon-button theme-toggle"
+        type="button"
+        aria-pressed="false"
+        aria-label="Switch to dark mode"
+        title="Switch to dark mode"
+      >
+        <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2" />
+          <path d="M12 20v2" />
+          <path d="m4.93 4.93 1.41 1.41" />
+          <path d="m17.66 17.66 1.41 1.41" />
+          <path d="M2 12h2" />
+          <path d="M20 12h2" />
+          <path d="m6.34 17.66-1.41 1.41" />
+          <path d="m19.07 4.93-1.41 1.41" />
+        </svg>
+        <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M20.1 14.3A8 8 0 0 1 9.7 3.9 8.5 8.5 0 1 0 20.1 14.3Z" />
+        </svg>
+      </button>
+    </div>
     <div class="diff-modal-backdrop" id="diffModal" hidden>
       <section class="diff-modal" role="dialog" aria-modal="true" aria-label="Diff viewer">
         <div class="diff-modal-summary"></div>

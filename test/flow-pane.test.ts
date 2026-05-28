@@ -82,6 +82,21 @@ describe("Turbopump pane markup", () => {
     expect(narrowRules).not.toContain(".workspace {\n    min-height: 720px;\n  }");
   });
 
+  test("hides shell input and output on narrow screens", () => {
+    const narrowRules = css.slice(css.indexOf("@media (max-width: 980px)"), css.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(narrowRules).toContain(
+      '  .message-form {\n    grid-template-columns: minmax(0, 1fr);\n    grid-template-areas:\n      "search"\n      "images"\n      "input"\n      "context";\n  }',
+    );
+    expect(narrowRules).toContain("  .prompt-input-pane {\n    padding-right: 14px;\n  }");
+    expect(narrowRules).toContain(
+      '  .terminal-panel.shell-output-visible {\n    grid-template-columns: minmax(0, 1fr);\n    grid-template-areas:\n      "terminal"\n      "form";\n    grid-template-rows: minmax(0, 1fr) auto;\n  }',
+    );
+    expect(narrowRules).toContain("  .terminal-panel.shell-output-visible .shell-output-resizer,\n  .shell-command-panel,\n  .shell-output-pane {\n    display: none;\n  }");
+    expect(narrowRules).not.toContain('      "context"\n      "shell";');
+    expect(narrowRules).not.toContain('      "shell"\n      "form";');
+    expect(narrowRules).not.toContain("minmax(140px, 32%)");
+  });
+
   test("keeps the Settings heading larger than section toggles", () => {
     expect(css).toContain(".settings-header h2 {\n  margin: 0;\n  color: var(--ink);\n  font-size: 22px;");
     expect(css).toContain(".settings-section-toggle {\n  display: flex;");
@@ -113,10 +128,22 @@ describe("Turbopump pane markup", () => {
   });
 
   test("keeps the theme toggle visible outside settings expansion", () => {
+    expect(html).toContain('class="hotkeys-info"');
+    expect(html).toContain('aria-label="Show app hotkeys"');
+    expect(html).toContain('<strong>Hotkeys</strong>');
+    expect(html).toContain("<kbd>Cmd + ,</kbd>");
+    expect(html).toContain("<kbd>Ctrl + `</kbd>");
+    expect(html).toContain("<kbd>Cmd + \\</kbd>");
+    expect(html).toContain("<kbd>Ctrl + R</kbd>");
+    expect(html).toContain("<kbd>Esc</kbd>");
+    expect(html).not.toContain("<kbd>Enter</kbd>");
+    expect(html).not.toContain("<kbd>Shift + Enter</kbd>");
     expect(html).toContain('id="themeToggle"');
     expect(html).toContain('class="icon-button theme-toggle"');
+    expect(html).toContain('class="corner-controls"');
     expect(html).toContain('aria-label="Switch to dark mode"');
     expect(html.indexOf('id="settingsPane"')).toBeLessThan(html.indexOf('id="themeToggle"'));
+    expect(html.indexOf('class="hotkeys-info"')).toBeLessThan(html.indexOf('id="themeToggle"'));
     expect(html.indexOf("</main>")).toBeLessThan(html.indexOf('id="themeToggle"'));
     expect(app).toContain('const THEME_KEY = "flow.theme";');
     expect(app).toContain("theme: initialTheme()");
@@ -124,13 +151,31 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('els.themeToggle.addEventListener("click", (event) => {');
     expect(app).toContain("event.stopPropagation();");
     expect(app).toContain('if (event.target !== els.settingsPane) return;');
-    expect(css).toContain(".theme-toggle {\n  position: fixed;");
-    expect(css).toContain("left: 0;\n  bottom: 0px;");
+    expect(css).toContain(".corner-controls {\n  position: fixed;");
+    expect(css).toContain("grid-template-columns: 26px;");
+    expect(css).toContain(".hotkeys-info {\n  position: relative;");
+    expect(css).toContain("display: grid;\n  place-items: center;");
+    expect(css).toContain("width: 26px;\n  height: 32px;");
+    expect(css).toContain("height: 32px;\n  min-height: 32px;");
+    expect(css).toContain(".hotkeys-info:hover .hotkeys-pane {\n  opacity: 1;");
+    expect(css).not.toContain(".hotkeys-info:focus-within .hotkeys-pane");
+    expect(css).toContain("left: 0;\n  bottom: 0;");
+    expect(css).toContain("width: max-content;");
     expect(css).toContain("width: 26px;\n  min-width: 26px;");
+    expect(css).toContain(".corner-controls .icon-button {\n  width: 26px;");
+    expect(css).toContain(".hotkeys-info-trigger circle {\n  stroke-width: 1.5;");
+    expect(css).toContain("text-align: center;");
+    expect(css).toContain("grid-template-columns: max-content max-content;");
+    expect(css).toContain("font-size: 11px;\n  white-space: nowrap;");
+    expect(css).toContain(".hotkeys-pane dt {\n  min-width: 92px;");
+    expect(css).toContain("box-sizing: border-box;");
+    expect(css).toContain("text-align: center;\n  white-space: nowrap;");
     expect(css).toContain("border: 0;");
     expect(css).toContain("background: transparent;");
     expect(css).toContain("  .theme-toggle {\n    display: none;\n  }");
+    expect(css).toContain("  .hotkeys-info {\n    display: none;\n  }");
     expect(css).toContain("body.settings-collapsed .theme-toggle");
+    expect(css).toContain("body.settings-collapsed .hotkeys-info");
     expect(css).toContain("body.theme-dark");
     expect(css).toContain("body.theme-dark .theme-icon-sun");
   });
@@ -176,16 +221,37 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".env-row + .env-row {\n  padding-top: 12px;");
     expect(css).not.toContain('grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);');
     expect(app).toContain("function parseEnvEditorRows(contents)");
+    expect(app).toContain("function updateEnvRowControls()");
+    expect(app).toContain("function envEditorGroupsFromRows(rows)");
+    expect(app).toContain("function createEnvValueRow(value = \"\", active = false)");
     expect(app).toContain('keyInput.placeholder = "KEYNAME";');
+    expect(app).toContain('addValueButton.className = "env-add-value";');
+    expect(app).toContain('addValueButton.textContent = "+";');
+    expect(app).toContain('valueList.className = "env-values";');
+    expect(app).toContain('for (const value of values.length ? values : [{ value: "", active: false }]) {');
+    expect(app).toContain('activeInput.className = "env-active-value";');
+    expect(app).toContain('activeInput.type = "radio";');
     expect(app).toContain('valueInput.placeholder = "VALUE";');
     expect(app).toContain("function maskedEnvValue(value)");
     expect(app).toContain('valueInput.dataset.envValue = value;');
     expect(app).toContain("valueInput.value = maskedEnvValue(value);");
     expect(app).toContain("function revealEnvValueInput(input)");
     expect(app).toContain("function maskEnvValueInput(input)");
+    expect(app).toContain('radio.hidden = !hasMultipleValues;');
+    expect(app).toContain("radio.checked = valueRow === activeValueRow;");
+    expect(app).toContain("const orderedValues = [");
     expect(app).toContain('els.envEditor.addEventListener("focusin", handleEnvEditorFocusIn);');
+    expect(app).toContain('els.envEditor.addEventListener("change", handleEnvEditorChange);');
+    expect(app).toContain('els.envEditor.addEventListener("click", handleEnvEditorClick);');
     expect(app).toContain("function envEditorContents()");
     expect(app).toContain("function handleEnvEditorPaste(event)");
+    expect(app).toContain("function activateEnvValueRow(valueRow)");
+    expect(app).toContain("function handleEnvEditorChange(event)");
+    expect(app).toContain("function handleEnvEditorClick(event)");
+    expect(app).toContain('if (event.target.closest(".env-active-value")) return;');
+    expect(app).toContain("if (valueRow) activateEnvValueRow(valueRow);");
+    expect(app).toContain('row.querySelector(".env-values")?.append(nextRow);');
+    expect(app).toContain("row.replaceWith(...pastedEnvRows);");
     expect(app).toContain("if (!row || !envRowIsEmpty(row)) return;");
     expect(app).toContain('event.clipboardData?.getData("text")');
     expect(app).toContain("renderEnvEditor(env.contents || \"\");");
@@ -201,6 +267,7 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain("const legacyEnvPath");
     expect(server).not.toContain("writeFileSync(envPath, body.contents ?? \"\", \"utf8\");");
     expect(server).toContain("...parseEnv(readEnvContents()),");
+    expect(server).toContain("env[key] = value;");
     expect(server).toContain("env: runtimeEnv(flow),");
     expect(server).toContain("function shellRuntimeEnv(flow: Flow)");
     expect(server).toContain("delete env.NO_COLOR;");
@@ -213,6 +280,19 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("stopIdleAgentRuntimesForEnvUpdate();");
     expect(app).toContain('window.addEventListener("pagehide", flushEnvSaveOnPageHide);');
     expect(app).toContain("keepalive: true");
+    expect(css).toContain(".env-key-field,\n.env-values,\n.env-value-field {\n  display: grid;");
+    expect(css).toContain(".env-values {\n  gap: 6px;");
+    expect(css).toContain(".env-key-field {\n  position: relative;");
+    expect(css).toContain("padding-right: 28px;");
+    expect(css).toContain("position: absolute;\n  top: 50%;\n  right: 6px;");
+    expect(css).toContain("width: 18px;\n  min-width: 18px;\n  height: 18px;\n  min-height: 18px;");
+    expect(css).toContain("padding: 0;");
+    expect(css).toContain("transform: translateY(-50%);");
+    expect(css).toContain(".env-row.env-has-active-choice .env-value-field");
+    expect(css).toContain(".env-active-value");
+    expect(css).toContain("accent-color: #d97706;");
+    expect(css).toContain(".env-add-value");
+    expect(css).toContain(".env-row:hover .env-add-value,\n.env-row:focus-within .env-add-value");
   });
 
   test("makes settings sections collapsible", () => {
@@ -511,6 +591,15 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function canSubmitPromptMessage()");
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).toContain("function flashBlockedInput(input)");
+    expect(app).toContain("queuedPrompt: null");
+    expect(app).toContain("function queuePromptMessage(input)");
+    expect(app).toContain("function handleQueuedPromptKeydown(event)");
+    expect(app).toContain('if (event.key === "Backspace" || event.key === "Escape") {\n    clearQueuedPrompt();\n    return true;\n  }');
+    expect(app).toContain("function handleQueuedPromptBeforeInput(event)");
+    expect(app).toContain("function flushQueuedPrompt()");
+    expect(app).toContain("await submitPromptMessage();");
+    expect(app).toContain('const QUEUED_PROMPT_PREFIX_HTML = \'<span class="queued-prompt-spinner" aria-hidden="true"></span>\';');
+    expect(app).toContain('if (queued && !prefix.querySelector(".queued-prompt-spinner")) {');
     expect(app).toContain("messageInput.disabled = false;");
     expect(app).toContain("commandInput.disabled = false;");
     expect(app).toContain('messageForm.setAttribute("aria-disabled", "false");');
@@ -521,20 +610,25 @@ describe("Turbopump pane markup", () => {
       ".agent-panel.disabled .terminal,\n.agent-panel.disabled .shell-output-resizer,\n.agent-panel.disabled .shell-output-pane,\n.agent-panel.disabled .message-form {\n  display: none;",
     );
     expect(css).toContain(".message-input.input-submit-blocked");
+    expect(css).toContain(".prompt-input-pane.prompt-queued .prompt-input-prefix");
+    expect(css).toContain(".queued-prompt-spinner");
+    expect(css).toContain("box-sizing: border-box;");
+    expect(css).toContain("border-right-color: transparent;");
+    expect(css).toContain("animation: queued-prompt-spinner 1600ms linear infinite;");
+    expect(css).toContain("@keyframes queued-prompt-spinner");
     expect(css).toContain("@keyframes input-submit-blocked");
     expect(css).not.toContain(".message-form.input-disabled .message-input");
   });
 
-  test("uses planning as the first flow stage everywhere except migration", () => {
-    expect(server).toContain('type Stage = "planning" | "working" | "reviewing" | "done";');
-    expect(server).toContain('const stages: Stage[] = ["planning", "working", "reviewing", "done"];');
-    expect(server).toContain('tryMigration("update flows set stage = \'planning\' where stage = \'not_started\'");');
-    expect(server).not.toContain('stage: message && flow.stage === "planning" ? "working" : flow.stage');
-    expect(server).toContain('"planning",');
-    expect(server.replace("where stage = 'not_started'", "")).not.toContain("not_started");
-    expect(app).not.toContain("not_started");
-    expect(app).not.toContain("Not Started");
-    expect(app).not.toContain("not started");
+  test("does not expose flow stages", () => {
+    expect(server).not.toContain("type Stage");
+    expect(server).not.toContain("const stages");
+    expect(server).toContain('tryMigration("alter table flows drop column stage");');
+    expect(server).not.toContain("flow.stage");
+    expect(server).not.toContain('parts[3] === "stage"');
+    expect(server).not.toContain("stageApiUrl");
+    expect(app).not.toContain("flowStage");
+    expect(app).not.toContain("state.stages");
   });
 
   test("uses the Linear ticket id as the default flow branch name", () => {
@@ -806,6 +900,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('class="terminal-markdown-toggle"');
     expect(app).toContain('aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>');
     expect(app).toContain('return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown');
+    expect(app).toContain("function renderTerminalStreamingTextOutput(message)");
+    expect(app).toContain('class="terminal-streaming-markdown"');
+    expect(app).toContain('return `<div class="terminal-streaming-markdown">${renderLinearMarkdown(message, "", {');
+    expect(app).toContain("compactBlankLines: true");
+    expect(app).toContain("body.innerHTML = renderTerminalStreamingTextOutput(message);\n      highlightCodeBlocks(body);");
+    expect(app).not.toContain("parts.push(renderTextWithSentenceBreaks(line));");
+    expect(app).toContain("preserveTrailingNewlines: Boolean(group.liveStreaming)");
     expect(app).toContain("renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source))");
     expect(app).toContain("function toggleTerminalMarkdownOutput(button)");
     expect(app).toContain('event.target.closest(".terminal-markdown-toggle")');
@@ -845,6 +946,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("background: transparent;");
     expect(css).toContain(".terminal-markdown-output {\n  position: relative;");
     expect(css).toContain(".terminal-markdown-content {\n  display: contents;");
+    expect(css).toContain(".terminal-entry-body h1,\n.terminal-entry-body h2,");
+    expect(css).toContain(".terminal-streaming-markdown {\n  white-space: normal;");
     expect(css).toContain("--terminal-message-max-lines: 50;");
     expect(css).toContain("--terminal-message-max-height: 77.5em;");
     expect(css).toContain("max-height: var(--terminal-message-max-height);");
@@ -942,7 +1045,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flowUpdatedAtMs(flow)");
     expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
     expect(app).toContain("const flowsByIssue = new Map");
-    expect(app).toContain("return { ...ticket, flowId, flowStage };");
+    expect(app).toContain("return { ...ticket, flowId };");
     expect(app).toContain("setFlows(message.payload);");
     expect(app).toContain("upsertFlow(data.flow);");
   });
@@ -995,19 +1098,34 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function diffCountLabel(value, prefix)");
     expect(app).toContain("function showDiffModal()");
     expect(app).toContain("function hideDiffModal()");
-    expect(app).toContain("function renderDiffCode(code, text)");
+    expect(app).toContain("function renderDiffCode(code, text, selectedPath = \"\")");
     expect(app).toContain("function diffLineClass(line)");
     expect(app).toContain("function shouldHideDiffLine(line)");
     expect(app).toContain("function diffFilePathFromHeader(line)");
+    expect(app).toContain("function diffPatchFilePaths(text)");
+    expect(app).toContain("function orderedDiffFiles(diff)");
     expect(app).toContain("function diffHunkLineState(line)");
     expect(app).toContain("function appendDiffLine(fragment, line, lineState)");
-    expect(app).toContain("function renderDiffSummary(summary, diff, loading)");
+    expect(app).toContain("function setSelectedDiffFile(path, options = {})");
+    expect(app).toContain("function scrollDiffFileIntoView(path)");
+    expect(app).toContain("function selectedDiffFileFromScroll()");
+    expect(app).toContain("function syncSelectedDiffFileFromScroll()");
+    expect(app).toContain("function scheduleSelectedDiffFileSync()");
+    expect(app).toContain("function renderDiffSummary(summary, diff, loading, selectedPath = \"\")");
+    expect(app).toContain("const files = orderedDiffFiles(diff);");
     expect(app).toContain('row.className = "diff-summary-file";');
+    expect(app).toContain('row.type = "button";');
+    expect(app).toContain("row.dataset.diffPath = file.path;");
+    expect(app).toContain('row.classList.toggle("is-selected", file.path === selectedPath);');
     expect(app).toContain('path.className = "diff-summary-path";');
     expect(app).toContain('counts.className = "diff-summary-counts";');
     expect(app).toContain("row.append(counts, path);");
     expect(app).toContain('const lines = String(text).split("\\n");');
+    expect(app).toContain('anchor.className = "diff-file-anchor";');
+    expect(app).toContain("anchor.dataset.diffPath = filePath;");
     expect(app).toContain('divider.className = `diff-file-divider${fileDividerCount ? "" : " is-first"}`;');
+    expect(app).toContain("divider.dataset.diffPath = filePath;");
+    expect(app).toContain('divider.classList.toggle("is-selected", filePath === selectedPath);');
     expect(app).toContain('row.className = "diff-code-line";');
     expect(app).toContain('oldNumber.className = "diff-line-number";');
     expect(app).toContain('newNumber.className = "diff-line-number";');
@@ -1016,6 +1134,16 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("lineState.newLine += 1;");
     expect(app).toContain('els.diffModal.querySelector(".diff-modal")?.setAttribute("aria-label", `${flow?.linearIssueId || "Flow"} diff`);');
     expect(app).toContain("function renderDiffModal()");
+    expect(app).toContain("diffModalSelectedPath: \"\"");
+    expect(app).toContain("let diffModalScrollFrame = 0;");
+    expect(app).toContain("state.diffModalSelectedPath = \"\";");
+    expect(app).toContain('if (options.revealSummary && selectedRow) selectedRow.scrollIntoView({ block: "nearest" });');
+    expect(app).toContain('const target = [...scroller.querySelectorAll(".diff-file-anchor")].find((anchor) => anchor.dataset.diffPath === path);');
+    expect(app).toContain("scroller.scrollTop = Math.max(0, target.offsetTop - paddingTop - 8);");
+    expect(app).toContain('els.diffModal?.querySelector(".diff-modal-code")?.addEventListener("scroll", scheduleSelectedDiffFileSync, { passive: true });');
+    expect(app).toContain("const selectedPath = files.some((file) => file.path === state.diffModalSelectedPath)");
+    expect(app).toContain("const fileButton = event.target.closest?.(\".diff-summary-file\");");
+    expect(app).toContain('setSelectedDiffFile(fileButton.dataset.diffPath || "", { scroll: true });');
     expect(app).toContain('return "--";');
     expect(app).toContain("return `${Math.round((available / total) * 100)}%`;");
     expect(app).not.toContain("ctx ");
@@ -1061,12 +1189,17 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".agent-context-diff .diff-deletions");
     expect(css).toContain(".diff-modal-backdrop");
     expect(css).toContain(".diff-modal-backdrop.is-open");
+    expect(css).toContain("display: flex;\n  flex-direction: column;");
+    expect(css).toContain("gap: 1px;");
+    expect(css).toContain("line-height: 1.2;");
     expect(css).toContain(".diff-summary-file");
+    expect(css).toContain(".diff-summary-file.is-selected .diff-summary-path");
     expect(css).toContain(".diff-summary-path");
     expect(css).toContain(".diff-summary-counts");
     expect(css).toContain(".diff-modal-summary .diff-additions");
     expect(css).toContain(".diff-modal-summary .diff-deletions");
     expect(css).toContain(".diff-modal-code");
+    expect(css).toContain(".diff-modal-code {\n  position: relative;");
     expect(css).toContain(".diff-modal-code code");
     expect(html).not.toContain("diff-modal-close");
     expect(app).not.toContain("diff-modal-close");
@@ -1074,8 +1207,12 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".diff-modal-code .diff-code-line");
     expect(css).toContain(".diff-modal-code .diff-line-number");
     expect(css).toContain(".diff-modal-code .diff-line-text");
+    expect(css).toContain(".diff-modal-code .diff-file-anchor");
     expect(css).toContain(".diff-modal-code .diff-file-divider");
-    expect(css).toContain("position: sticky;\n  top: -14px;");
+    expect(css).toContain(".diff-modal-code .diff-file-divider.is-selected");
+    expect(css).toContain("position: sticky;\n  top: 0;");
+    expect(css).toContain("z-index: 2;");
+    expect(css).toContain("0 -18px 0 18px var(--terminal),\n    0 8px 0 8px var(--terminal);");
     expect(css).toContain(".diff-modal-code .diff-file-divider.is-first");
     expect(css).toContain(".diff-modal-code .diff-line-inserted");
     expect(css).toContain(".diff-modal-code .diff-line-deleted");
@@ -1096,7 +1233,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('"origin/main"');
     expect(server).toContain('run(["merge-base", "HEAD", candidate])');
     expect(server).toContain('run(["diff", "--name-only", "-z", baseRef]');
-    expect(server).toContain('run(["diff", "--numstat", baseRef]');
+    expect(server).toContain('run(["diff", "--find-renames", "--numstat", baseRef]');
     expect(server).toContain("const files: DiffFile[] = [];");
     expect(server).toContain("files.push({");
     expect(server).toContain("additions += addedCount;");
@@ -1123,7 +1260,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("agentReasoningEffort: payload.reasoningEffort ?? \"\"");
     expect(server).toContain("agentServiceTier: payload.serviceTier ?? \"\"");
     expect(server).toContain("updateFlow(activeFlow.id, { ...codexThreadMetadata(threadPayload), ...configuredAgentMetadata(activeFlow) });");
-    expect(server).toContain("updateFlow(flow.id, { ...codexThreadMetadata(threadResponse), ...configuredAgentMetadata(flow) });");
+    expect(server).toContain("agentContextTokensUsed: 0");
     expect(server).toContain('if (method === "model/rerouted")');
     expect(server).toContain('if (method === "thread/tokenUsage/updated")');
     expect(server).toContain("updateFlow(runtime.flowId, { agentModel: toModel });");
@@ -1139,13 +1276,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("branch.textContent = branchName;");
   });
 
-  test("lets agents update flow metadata including PR URL without changing stage", () => {
-    expect(server).toContain('if ((parts[3] === "meta" || parts[3] === "stage") && request.method === "POST")');
+  test("lets agents update flow metadata including PR URL", () => {
+    expect(server).toContain('if (parts[3] === "meta" && request.method === "POST")');
     expect(server).toContain("function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow>");
-    expect(server).toContain('if ("stage" in body) {');
     expect(server).toContain('if ("prUrl" in body) fields.prUrl = normalizePrUrl(body.prUrl);');
     expect(server).toContain('return json({ error: "No supported flow metadata fields provided." }, { status: 400 });');
-    expect(server).toContain('if (fields.stage) insertLog(id, "flow", `Stage changed to ${fields.stage}\\n`);');
     expect(server).toContain('fields.prUrl ? `PR set to ${fields.prUrl}\\n` : "PR cleared\\n"');
   });
 
@@ -1247,9 +1382,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flowAgentQueuedMessage(flow)");
     expect(app).toContain("return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);");
     expect(app).toContain("if (state.interruptSubmitting) return false;");
-    expect(app).toContain("runtimeStatusActive(flow?.agentStatus)");
+    expect(app).toContain("!flow.agentRuntimeStatus && !flow.shellRuntimeStatus && runtimeStatusActive(flow.agentStatus)");
+    expect(app).toContain("!flow.agentRuntimeStatus &&\n        !runtimeStatusActive(flow.shellRuntimeStatus)");
     expect(app).toContain("state.interruptSubmitting = true;");
-    expect(app).toContain('await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });');
+    expect(app).toContain('const data = await api(`/api/flows/${selected.id}/agent/interrupt`, { method: "POST" });');
+    expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
     expect(app).toContain("async function interruptSelectedShellCommand()");
     expect(app).toContain('const data = await api(`/api/flows/${selected.id}/command/interrupt`, { method: "POST" });');
     expect(app).toContain("state.shellInterruptingFlowIds.add(selected.id);");
@@ -1276,11 +1413,16 @@ describe("Turbopump pane markup", () => {
       server.indexOf("function stopIdleAgentRuntimesForEnvUpdate"),
     );
     expect(serverInterruptAgent).not.toContain("interruptShellCommand(flowId)");
-    expect(serverInterruptAgent).toContain("const runtime = agentProcesses.get(flowId);");
+    expect(serverInterruptAgent).toContain("const runtime = agentProcesses.get(flowId) ?? (flow ? await recoverAgentRuntime(flow) : null);");
+    expect(server).toContain('db.exec("pragma busy_timeout = 5000");');
+    expect(server).toContain("function isNoActiveTurnInterruptError(error: unknown)");
+    expect(serverInterruptAgent).toContain("if (!isNoActiveTurnInterruptError(error)) throw error;");
+    expect(serverInterruptAgent).toContain('insertLog(flowId, "agent:status", "interrupt ignored: no active turn");');
+    expect(serverInterruptAgent).toContain('updateFlow(flowId, { agentStatus: "idle" });');
     expect(app).not.toContain('focusedInputPaneKind() === "shell" &&\n    flowShellRunning(selectedFlow())');
     expect(app).not.toContain('els.flowPane.querySelector(".agent-interrupt").addEventListener("click"');
     expect(app).toContain("function canSubmitPromptMessage()");
-    expect(app).toContain("(!flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow)))");
+    expect(app).toContain("!flowAgentRunning(flow) &&\n      !promptQueuedForFlow(flow)");
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).toContain("function flashBlockedInput(input)");
     expect(app).toContain("async function uploadAgentImages(files)");
@@ -1317,7 +1459,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('await api(`/api/flows/${flow.id}/message`, {');
     expect(app).toContain("/agent/interrupt");
     expect(server).toContain("const agentHeartbeatSweepIntervalMs = 5000;");
-    expect(server).toContain("function reconcileAgentHeartbeat(flow: Flow");
+    expect(server).toContain("async function reconcileAgentHeartbeat(flow: Flow");
+    expect(server).toContain("const agentRuntimeRecoveries = new Map<string, Promise<RuntimeProcess | null>>();");
+    expect(server).toContain("function codexActiveTurnSettingKey(flowId: string)");
+    expect(server).toContain("function persistedActiveTurnId(flowId: string)");
+    expect(server).toContain("function setActiveTurnId(flowId: string, turnId = \"\")");
+    expect(server).toContain("async function recoverAgentRuntime(flow: Flow)");
+    expect(server).toContain("const runtime = await startCodexAppServer(flow);");
     expect(server).toContain("const shellRuntime = shellProcesses.get(flow.id);");
     expect(server).toContain('const shellRuntimeStatus = shellRuntime ? (shellRuntime.stopping ? "interrupting" : "running") : "";');
     expect(server).toContain("const agentRuntimeStatus = agentRuntimeActive");
@@ -1326,14 +1474,17 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("agentCompacting: Boolean(agentRuntime?.compacting)");
     expect(server).toContain("agentQueuedMessage: Boolean(agentRuntime?.queuedAgentMessages?.length)");
     expect(server).toContain('flow.agentStatus !== "running" && flow.agentStatus !== "interrupting"');
+    expect(server).toContain("const recovered = await recoverAgentRuntime(flow);");
     expect(server).toContain("const compactingStartedAt = runtime.compactingStartedAt ?? runtime.lastSeenAt ?? nowMs;");
     expect(server).toContain("context compaction timed out after");
     expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
     expect(server).not.toContain("if (runtime.compacting) return flow;");
     expect(server).toContain('insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
-    expect(server).toContain("setInterval(sweepAgentHeartbeats, agentHeartbeatSweepIntervalMs);");
+    expect(server).toContain("setInterval(() => void sweepAgentHeartbeats(), agentHeartbeatSweepIntervalMs);");
     expect(server).toContain('parts[3] === "agent" && parts[4] === "status" && request.method === "GET"');
+    expect(server).toContain("const reconciled = await reconcileAgentHeartbeat(flow);");
     expect(server).toContain("turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId)");
+    expect(server).toContain("return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });");
     expect(server).toContain("function runtimeAdjustedFlow(flow: Flow)");
     expect(server).toContain("function listClientFlows()");
     expect(app).not.toContain("agentActionIcon");
@@ -1380,7 +1531,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".input-pane-prefix");
     expect(css).toContain("pointer-events: none;\n  color: var(--muted);");
     expect(css).toContain("transition: color var(--motion-fast);");
-    expect(css).toContain(".prompt-input-prefix {\n  left: 24px;\n  top: 12px;\n}");
+    expect(css).toContain(".prompt-input-prefix {\n  left: 24px;\n  top: 18px;");
+    expect(css).toContain("place-items: center;");
+    expect(css).toContain("transform: translateY(-50%);");
     expect(css).toContain(".prompt-input-pane:focus-within .prompt-input-prefix {\n  color: #d97706;\n}");
     expect(css).toContain(".shell-input-prefix {\n  top: 50%;\n  transform: translateY(-50%);");
     expect(css).toContain(".shell-input-pane:focus-within .shell-input-prefix {\n  color: #22c55e;\n}");
@@ -1537,7 +1690,6 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("/^interrupt requested\\b/");
     expect(app).toContain("/^[$]\\s*codex app-server --listen stdio:\\/\\/$/i");
     expect(app).toContain("/^Codex thread \\S+ ready$/i");
-    expect(app).toContain('log.source === "flow" && /^stage changed\\b/i.test(message)');
     expect(app).toContain('log.source === "agent:tool-result" && message === "completed exit 0"');
     expect(app).toContain('log.source === "agent:tool-result" && message === "failed exit 7"');
     expect(app).toContain("function isRoutineShellExitLog(log)");
@@ -1639,7 +1791,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("await loadLogs(id, { force: true, resetCursor: true, scrollToLatest: true });");
     expect(app).toContain("await loadLogs(flow.id, { force: true, resetCursor: true, scrollToLatest: true });");
     expect(app).toContain('ws.addEventListener("open", () => {');
-    expect(app).toContain("if (flow) void loadLogs(flow.id);");
+    expect(app).toContain('void api(`/api/flows/${flow.id}`).then((data) => {');
+    expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
+    expect(app).toContain("void loadLogs(flow.id);");
   });
 
   test("renders logs in chronological order in the Agent pane", () => {
@@ -1667,6 +1821,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function terminalGroupsSignature(groups)");
     expect(app).toContain("function terminalGroupSignaturePart(group)");
     expect(app).toContain("function terminalGroupRenderKey(group)");
+    expect(app).toContain("function latestTerminalContentGroup(groups)");
+    expect(app).toContain("if (!flowAgentRunning(flow) || (state.messageSubmitting && flow?.id === state.selectedFlowId)) return groups;");
+    expect(app).toContain("const group = latestTerminalContentGroup(groups);");
+    expect(app).not.toContain("for (let index = groups.length - 1; index >= 0; index -= 1) {\n    const group = groups[index];\n    if (isLiveAgentTextSource(group.source))");
     expect(app).toContain('if (options.incoming) block.classList.add("terminal-entry-incoming");');
     expect(app).toContain("const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;");
     expect(app).toContain("const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));");
@@ -1692,6 +1850,8 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number)");
     expect(server).toContain("function createTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string)");
+    expect(server).toContain("function isShellOwnedLogSource(source: string)");
+    expect(server).toContain("if (isShellOwnedLogSource(source)) continue;");
     expect(server).toContain("const prompt = latestUserLogBeforeStmt.get(flowId, beforeId)");
     expect(server).toContain("const beforeId = logs[finalMessageStartIndex].id;");
     expect(server).toContain("createCompletedTurnTraceGroup(runtime.flowId);");
@@ -1728,7 +1888,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flattenSingleChildTraceGroups(groups)");
     expect(app).toContain('if (group.source === "agent:trace-group") {');
     expect(app).toContain("if (children.length <= 1) {");
-    expect(app).toContain("return flattenSingleChildTraceGroups(groups);");
+    expect(app).toContain("function mergeAdjacentStreamingGroups(groups)");
+    expect(app).toContain("previous.message += group.message;");
+    expect(app).toContain("function markLiveTerminalGroup(groups, flow)");
+    expect(app).toContain("return markLiveTerminalGroup(mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups)), flow);");
     expect(app).toContain("openTraceGroups: new Map()");
     expect(app).toContain("traceKey: traceRange.key,");
     expect(app).toContain("flowId: log.flowId,");
@@ -1907,6 +2070,11 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain("function processStatusMessage");
     expect(server).not.toContain('insertLog(flow.id, "agent:message", processStatusMessage(flow));');
     expect(app).toContain("function canSubmitPromptMessage()");
+    expect(app).toContain("if (flowAgentRunning(flow)) {\n    if (!promptQueuedForFlow(flow) && queuePromptMessage(input)) return;");
+    expect(app).toContain("!flowAgentRunning(flow) &&\n      !promptQueuedForFlow(flow)");
+    expect(app).toContain("scheduleQueuedPromptFlush();");
+    expect(app).toContain('promptInput().addEventListener("beforeinput"');
+    expect(app).toContain("if (handleQueuedPromptKeydown(event)) return;");
     expect(app).toContain('if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };');
     expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
@@ -1938,6 +2106,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("event.stopImmediatePropagation();");
     expect(app).toContain('if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");');
     expect(app).toContain('document.addEventListener("keydown", handleCommandK, true);');
+  });
+
+  test("keeps Shift+Enter in the shell input from submitting the agent form", () => {
+    expect(app).toContain('if (event.key === "Enter" && !event.isComposing) {\n    event.preventDefault();\n    if (event.shiftKey) return;\n    void submitShellCommand(input.value);\n  }');
   });
 
   test("toggles the shell pane with Cmd+Backslash", () => {
@@ -2099,6 +2271,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return false;');
     expect(app).toContain("if (!canSwitchInputPane()) return false;");
     expect(app).toContain("event.preventDefault();\n  if (event.repeat) return true;");
+    expect(app).toContain('if (focused !== "prompt") return focusInputPane("prompt");');
     expect(app).toContain('if (focusedInputPaneKind() === "prompt" && state.shellPaneHidden) {');
     expect(app).toContain("revealShellPaneForInputFocus();");
     expect(app).toContain("toggleFocusedInputPane();");
