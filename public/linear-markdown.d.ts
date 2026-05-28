@@ -4,6 +4,7 @@ export function renderLinearMarkdown(
   options?: {
     images?: boolean;
     links?: boolean;
+    compactBlankLines?: boolean;
   },
 ): string;
 
@@ -14,5 +15,7 @@ export function renderInlineMarkdown(
     links?: boolean;
   },
 ): string;
+
+export function renderTextWithSentenceBreaks(value: unknown): string;
 
 export function linearImageSource(url: unknown): string;

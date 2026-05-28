@@ -336,7 +336,7 @@ export function renderInlineMarkdown(value, options = {}) {
   for (const match of text.matchAll(markdownPattern)) {
     const [markdown, code, bold, emphasis, imageMarker, label, angleUrl, plainUrl, bareUrl] = match;
     const url = angleUrl || plainUrl || bareUrl;
-    html += escapeHtml(text.slice(cursor, match.index));
+    html += renderTextWithSentenceBreaks(text.slice(cursor, match.index));
 
     if (code !== undefined) {
       html += `<code>${escapeHtml(code)}</code>`;
@@ -350,14 +350,18 @@ export function renderInlineMarkdown(value, options = {}) {
     } else if (links) {
       html += `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(label || url)}</a>`;
     } else {
-      html += escapeHtml(markdown);
+      html += renderTextWithSentenceBreaks(markdown);
     }
 
     cursor = match.index + markdown.length;
   }
 
-  html += escapeHtml(text.slice(cursor));
+  html += renderTextWithSentenceBreaks(text.slice(cursor));
   return html;
+}
+
+export function renderTextWithSentenceBreaks(value) {
+  return escapeHtml(value).replace(/([a-z0-9)\]])\.(?=[A-Z])/g, "$1.<br>");
 }
 
 export function linearImageSource(url) {

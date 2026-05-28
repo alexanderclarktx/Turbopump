@@ -1521,6 +1521,10 @@ function isAgentMessageSource(source: string) {
   return source === "agent:message" || source === "agent";
 }
 
+function isShellOwnedLogSource(source: string) {
+  return source.startsWith("shell:") && source !== "shell:command";
+}
+
 function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
   if (beforeId <= afterId) return;
 
@@ -1566,8 +1570,11 @@ function createCompletedTurnTraceGroup(flowId: string) {
 
   const finalSource = logs[finalMessageIndex].source;
   let finalMessageStartIndex = finalMessageIndex;
-  while (finalMessageStartIndex > 0 && logs[finalMessageStartIndex - 1].source === finalSource) {
-    finalMessageStartIndex -= 1;
+  for (let index = finalMessageIndex - 1; index >= 0; index -= 1) {
+    const source = logs[index].source;
+    if (isShellOwnedLogSource(source)) continue;
+    if (source !== finalSource) break;
+    finalMessageStartIndex = index;
   }
   if (finalMessageStartIndex <= 0) return;
 
@@ -1954,7 +1961,11 @@ async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   runtime.activeTurnId = undefined;
   setActiveTurnId(flow.id);
   setSetting(codexThreadSettingKey(flow.id), thread.id);
-  updateFlow(flow.id, { ...codexThreadMetadata(threadResponse), ...configuredAgentMetadata(flow) });
+  updateFlow(flow.id, {
+    ...codexThreadMetadata(threadResponse),
+    ...configuredAgentMetadata(flow),
+    agentContextTokensUsed: 0,
+  });
   insertLog(flow.id, "agent:status", "context cleared");
   updateFlow(flow.id, { agentStatus: "idle" });
 }
@@ -2574,7 +2585,7 @@ async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   }
 
   const namesResult = await run(["diff", "--name-only", "-z", baseRef], { trim: false });
-  const numstatResult = await run(["diff", "--numstat", baseRef], { trim: false });
+  const numstatResult = await run(["diff", "--find-renames", "--numstat", baseRef], { trim: false });
   const names = namesResult.ok ? namesResult.text : "";
   let additions = 0;
   let deletions = 0;

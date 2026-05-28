@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { linearImageSource, renderInlineMarkdown, renderLinearMarkdown } from "../public/linear-markdown.js";
+import {
+  linearImageSource,
+  renderInlineMarkdown,
+  renderLinearMarkdown,
+  renderTextWithSentenceBreaks,
+} from "../public/linear-markdown.js";
 
 describe("renderLinearMarkdown", () => {
   test("renders standard Markdown links", () => {
@@ -59,6 +64,16 @@ describe("renderLinearMarkdown", () => {
 
     expect(html).toContain("Pick <code>apple</code> today.");
     expect(html).not.toContain("`apple`");
+  });
+
+  test("breaks immediately adjacent sentences after periods", () => {
+    expect(renderLinearMarkdown("Set the color.The first selection state")).toBe(
+      "Set the color.<br>The first selection state",
+    );
+    expect(renderInlineMarkdown("Set the `color.The` value")).toBe("Set the <code>color.The</code> value");
+    expect(renderTextWithSentenceBreaks("Set the color.The first selection state")).toBe(
+      "Set the color.<br>The first selection state",
+    );
   });
 
   test("renders bold text", () => {
