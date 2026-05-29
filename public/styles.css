@@ -3166,8 +3166,8 @@ body.shell-pane-hidden .shell-command-panel {
   transform: translateY(-50%);
 }
 
-.prompt-input-pane:focus-within .prompt-input-prefix {
-  color: #d97706;
+.prompt-input-pane:not(.prompt-queued):focus-within .prompt-input-prefix {
+  color: #6d28d9;
 }
 
 .prompt-input-pane.prompt-queued .prompt-input-prefix {
@@ -3274,6 +3274,22 @@ body.theme-dark .terminal-entry-working-shell .agent-working {
 .message-input:focus {
   border-color: #d97706;
   box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.24);
+}
+
+.prompt-input-pane:not(.prompt-queued) .message-input:focus {
+  border-color: #6d28d9;
+  box-shadow: 0 0 0 1px rgba(109, 40, 217, 0.24);
+  caret-color: #6d28d9;
+}
+
+body.theme-dark .prompt-input-pane:not(.prompt-queued):focus-within .prompt-input-prefix {
+  color: #c084fc;
+}
+
+body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
+  border-color: #c084fc;
+  box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.28);
+  caret-color: #c084fc;
 }
 
 .shell-input {

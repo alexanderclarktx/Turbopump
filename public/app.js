@@ -874,6 +874,15 @@ function handleInputPaneTabKeydown(event) {
   return true;
 }
 
+function focusShellInputPaneForShortcut() {
+  if (!canSwitchInputPane()) return false;
+  if (state.shellPaneHidden) {
+    revealShellPaneForInputFocus();
+    return true;
+  }
+  return focusInputPane("shell");
+}
+
 function flashBlockedInput(input) {
   if (!input) return;
   input.classList.remove("input-submit-blocked");
@@ -907,6 +916,12 @@ function queuePromptMessage(input) {
 
 function handleQueuedPromptKeydown(event) {
   if (!promptQueuedForSelectedFlow()) return false;
+  if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;
+  if (event.key === "$" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing) {
+    event.preventDefault();
+    if (!event.repeat && focusShellInputPaneForShortcut()) return true;
+    if (event.repeat) return true;
+  }
   if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
   event.preventDefault();
   if (event.key === "Backspace" || event.key === "Escape") {
@@ -995,12 +1010,12 @@ function focusMessageInputForKey(event) {
   const start = input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? input.value.length;
   event.preventDefault();
+  if (event.key === "$" && focusShellInputPaneForShortcut()) return true;
   if (promptQueuedForSelectedFlow()) {
     input.focus();
     flashBlockedInput(input);
     return true;
   }
-  if (event.key === "$" && focusInputPane("shell")) return true;
   input.focus();
   input.setRangeText(event.key, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));

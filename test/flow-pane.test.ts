@@ -594,6 +594,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("queuedPrompt: null");
     expect(app).toContain("function queuePromptMessage(input)");
     expect(app).toContain("function handleQueuedPromptKeydown(event)");
+    expect(app).toContain('if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;');
+    expect(app).toContain('if (event.key === "$" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing)');
     expect(app).toContain('if (event.key === "Backspace" || event.key === "Escape") {\n    clearQueuedPrompt();\n    return true;\n  }');
     expect(app).toContain("function handleQueuedPromptBeforeInput(event)");
     expect(app).toContain("function flushQueuedPrompt()");
@@ -1534,12 +1536,18 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".prompt-input-prefix {\n  left: 24px;\n  top: 18px;");
     expect(css).toContain("place-items: center;");
     expect(css).toContain("transform: translateY(-50%);");
-    expect(css).toContain(".prompt-input-pane:focus-within .prompt-input-prefix {\n  color: #d97706;\n}");
+    expect(css).toContain(".prompt-input-pane:not(.prompt-queued):focus-within .prompt-input-prefix {\n  color: #6d28d9;\n}");
+    expect(css).toContain(".prompt-input-pane.prompt-queued .prompt-input-prefix {\n  color: #d97706;\n}");
     expect(css).toContain(".shell-input-prefix {\n  top: 50%;\n  transform: translateY(-50%);");
     expect(css).toContain(".shell-input-pane:focus-within .shell-input-prefix {\n  color: #22c55e;\n}");
     expect(css).toContain(".message-input {\n  min-width: 0;\n  min-height: 36px;");
     expect(css).toContain("padding: 10px 10px 6px 30px;");
     expect(css).toContain(".message-input:focus {\n  border-color: #d97706;");
+    expect(css).toContain(".prompt-input-pane:not(.prompt-queued) .message-input:focus {\n  border-color: #6d28d9;");
+    expect(css).toContain("caret-color: #6d28d9;");
+    expect(css).toContain("body.theme-dark .prompt-input-pane:not(.prompt-queued):focus-within .prompt-input-prefix {\n  color: #c084fc;\n}");
+    expect(css).toContain("body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {\n  border-color: #c084fc;");
+    expect(css).toContain("caret-color: #c084fc;");
     expect(css).toContain(".shell-input {\n  width: 100%;\n  min-width: 0;\n  min-height: 36px;\n  padding-left: 30px;\n  border-color: var(--line);");
     expect(css).toContain(".shell-input:focus {\n  border-color: #22c55e;");
     expect(css).toContain("max-height: min(220px, 30vh);");
@@ -2093,7 +2101,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (isEditableKeyTarget(event.target)) return false;");
     expect(app).toContain("return Boolean(input && document.activeElement !== input);");
     expect(app).toContain("function focusMessageInputForKey(event)");
-    expect(app).toContain('if (event.key === "$" && focusInputPane("shell")) return true;');
+    expect(app).toContain("function focusShellInputPaneForShortcut()");
+    expect(app).toContain("if (state.shellPaneHidden) {\n    revealShellPaneForInputFocus();\n    return true;\n  }\n  return focusInputPane(\"shell\");");
+    expect(app).toContain('if (event.key === "$" && focusShellInputPaneForShortcut()) return true;');
+    const focusMessageInput = app.slice(app.indexOf("function focusMessageInputForKey(event)"));
+    expect(focusMessageInput.indexOf('if (event.key === "$" && focusShellInputPaneForShortcut()) return true;')).toBeLessThan(
+      focusMessageInput.indexOf("if (promptQueuedForSelectedFlow())"),
+    );
     expect(app).toContain("input.setRangeText(event.key, start, end, \"end\");");
     expect(app).toContain('input.dispatchEvent(new Event("input", { bubbles: true }));');
     expect(app).toContain("if (focusMessageInputForKey(event)) return;");
