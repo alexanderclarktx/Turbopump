@@ -203,6 +203,31 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain("#disconnectLinear");
   });
 
+  test("marks completed agent turns as browser and Linear card notifications", () => {
+    expect(app).toContain('const NOTIFIED_LINEAR_ISSUES_KEY = "flow.notifiedLinearIssueIds";');
+    expect(app).toContain("function initialNotifiedLinearIssues()");
+    expect(app).toContain("notifiedLinearIssueIds: initialNotifiedLinearIssues()");
+    expect(app).toContain("function persistLinearIssueNotifications()");
+    expect(app).toContain("function updateBrowserTabNotification()");
+    expect(app).toContain("function notifyAgentTurnEnded(flowId)");
+    expect(app).toContain("function canAcknowledgeSelectedNotification()");
+    expect(app).toContain("function acknowledgeSelectedLinearIssueNotification()");
+    expect(app).toContain("function isAgentTurnEndedLog(log)");
+    expect(app).toContain('<circle cx="50" cy="54" r="9" fill="#ffff00" />');
+    expect(app).toContain("void updateBrowserTabNotification();");
+    expect(app).toContain('document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);');
+    expect(app).toContain('window.addEventListener("focus", acknowledgeSelectedLinearIssueNotification);');
+    expect(app).toContain("if (isAgentTurnEndedLog(log)) notifyAgentTurnEnded(log.flowId);");
+    expect(app).toContain('card.classList.toggle("agent-turn-notified"');
+    expect(app).toContain("clearLinearIssueNotification(ticket.identifier, { render: false });");
+    expect(css).toContain("@property --ticket-notification-angle");
+    expect(css).toContain(".ticket-card.agent-turn-notified:not(.active)");
+    expect(css).toContain("#ef4444 78deg");
+    expect(css).toContain("#ffff00 148deg");
+    expect(css).toContain("animation: ticket-notification-border 3.2s linear infinite;");
+    expect(css).toContain("@keyframes ticket-notification-border");
+  });
+
   test("hides the Development settings section", () => {
     expect(html).toContain('<section class="settings-section development-settings" hidden>');
     expect(html).toContain("<span>Development</span>");
@@ -752,7 +777,8 @@ describe("Turbopump pane markup", () => {
 
   test("lets ticket selection animate without rebuilding unchanged cards", () => {
     expect(app).toContain("dataset.ticketSignature");
-    expect(app).toContain('card.classList.toggle("active", card.dataset.issue === state.selectedLinearIssueId)');
+    expect(app).toContain("const active = card.dataset.issue === state.selectedLinearIssueId;");
+    expect(app).toContain('card.classList.toggle("active", active);');
     expect(css).toContain(".ticket-card::before");
     expect(css).toContain(".ticket-card:hover");
     expect(css).toContain("transform var(--motion-fast)");
@@ -1915,10 +1941,12 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('event${traceRange.count === 1 ? "" : "s"}');
     expect(app).not.toContain('message: `${traceRange.count || 0} trace event');
     expect(app).toContain('details.className = "terminal-trace-group";');
-    expect(app).toContain('child.style.setProperty("--trace-open-delay", `${traceFoldDelay(index)}ms`);');
-    expect(app).toContain('child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);');
-    expect(app).toContain("function traceFoldDelay(index)");
-    expect(app).toContain("Math.log1p(Math.max(0, index) * 1.6) * 30");
+    expect(app).toContain("function setTerminalTraceBodyHeight(details)");
+    expect(app).toContain('body.style.setProperty("--trace-body-height", `${height}px`);');
+    expect(app).toContain("void details.offsetHeight;");
+    expect(app).not.toContain("function traceFoldDelay(index)");
+    expect(app).not.toContain("--trace-open-delay");
+    expect(app).not.toContain("--trace-close-delay");
     expect(app).toContain('event.preventDefault();');
     expect(app).toContain("toggleTerminalTraceGroup(details);");
     expect(app).toContain("function toggleTerminalTraceGroup(details)");
@@ -1934,11 +1962,12 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("user-select: none;");
     expect(css).toContain(".terminal-trace-group:not([open]) > .terminal-trace-summary .terminal-entry-time");
     expect(css).toContain(".terminal-trace-body");
-    expect(css).toContain(".terminal-trace-closing > .terminal-trace-body {\n  padding-top: 0;\n  padding-bottom: 0;\n  overflow: hidden;\n}");
-    expect(css).toContain(".terminal-trace-opening > .terminal-trace-body > *");
-    expect(css).toContain("animation-delay: var(--trace-open-delay, 0ms);");
-    expect(css).toContain(".terminal-trace-closing > .terminal-trace-body > *");
-    expect(css).toContain("animation-delay: var(--trace-close-delay, 0ms);");
+    expect(css).toContain(".terminal-trace-animating > .terminal-trace-body {\n  overflow: hidden;\n  will-change: height, opacity, transform;\n}");
+    expect(css).toContain(".terminal-trace-opening > .terminal-trace-body {\n  animation: terminal-trace-fold-in 170ms cubic-bezier(0.2, 0, 0, 1) both;\n}");
+    expect(css).toContain(".terminal-trace-closing > .terminal-trace-body {\n  animation: terminal-trace-fold-out 130ms cubic-bezier(0.4, 0, 1, 1) both;\n}");
+    expect(css).toContain("height: var(--trace-body-height, 0px);");
+    expect(css).not.toContain("animation-delay: var(--trace-open-delay, 0ms);");
+    expect(css).not.toContain("animation-delay: var(--trace-close-delay, 0ms);");
   });
 
   test("repaints agent logs after navigating through a ticket without a flow", () => {

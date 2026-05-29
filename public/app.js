@@ -3,6 +3,7 @@ import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js
 const COLLAPSED_LINEAR_STATUSES_KEY = "flow.collapsedLinearStatuses";
 const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
+const NOTIFIED_LINEAR_ISSUES_KEY = "flow.notifiedLinearIssueIds";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
 const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
 const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
@@ -12,6 +13,7 @@ const SHELL_HISTORY_KEY = "flow.shellHistory";
 const MAX_INPUT_HISTORY_ITEMS = 200;
 const DEFAULT_TOAST_DURATION_MS = 3200;
 const ERROR_TOAST_DURATION_MS = 8000;
+const DEFAULT_FAVICON_HREF = "/favicon.svg";
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
 const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
@@ -97,6 +99,15 @@ function initialPinnedLinearIssues() {
   }
 }
 
+function initialNotifiedLinearIssues() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTIFIED_LINEAR_ISSUES_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 function initialCollapsedSettingsSections() {
   const raw = localStorage.getItem(COLLAPSED_SETTINGS_SECTIONS_KEY);
   if (raw === null) return new Set(["checkouts"]);
@@ -164,6 +175,9 @@ const state = {
   linearViewer: null,
   linearViewerName: "",
   linearSignedIn: false,
+  notifiedLinearIssueIds: initialNotifiedLinearIssues(),
+  notificationFaviconHref: "",
+  notificationFaviconLoading: false,
   selectedLinearIssueId: localStorage.getItem("flow.selectedLinearIssueId") || "",
   selectedFlowId: localStorage.getItem("flow.selectedFlowId") || "",
   linearDetails: new Map(),
@@ -258,6 +272,7 @@ let ticketDragScrollFrame = 0;
 let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
 let lastSavedEnv = "";
+let faviconSourceSvg = "";
 const TICKET_DRAG_SCROLL_EDGE_PX = 72;
 const TICKET_DRAG_SCROLL_MAX_STEP_PX = 18;
 
@@ -1620,6 +1635,89 @@ function setTheme(theme) {
   localStorage.setItem(THEME_KEY, theme);
 }
 
+function faviconLink() {
+  let link = document.querySelector("link[rel='icon']");
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    link.type = "image/svg+xml";
+    document.head.append(link);
+  }
+  return link;
+}
+
+function notifiedFaviconSvg(source) {
+  const dot = `
+  <g aria-hidden="true">
+    <circle cx="50" cy="54" r="9" fill="#ffff00" />
+  </g>`;
+  return source.includes("</svg>") ? source.replace("</svg>", `${dot}\n</svg>`) : source;
+}
+
+async function notificationFaviconHref() {
+  if (state.notificationFaviconHref) return state.notificationFaviconHref;
+  if (!faviconSourceSvg) faviconSourceSvg = await fetch(DEFAULT_FAVICON_HREF).then((response) => response.text());
+  state.notificationFaviconHref = `data:image/svg+xml,${encodeURIComponent(notifiedFaviconSvg(faviconSourceSvg))}`;
+  return state.notificationFaviconHref;
+}
+
+async function updateBrowserTabNotification() {
+  const link = faviconLink();
+  if (!state.notifiedLinearIssueIds.size) {
+    link.href = DEFAULT_FAVICON_HREF;
+    return;
+  }
+  if (state.notificationFaviconLoading) return;
+  state.notificationFaviconLoading = true;
+  try {
+    link.href = await notificationFaviconHref();
+  } catch {
+    link.href =
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='50' cy='54' r='9' fill='%23ffff00'/%3E%3C/svg%3E";
+  } finally {
+    state.notificationFaviconLoading = false;
+  }
+  if (!state.notifiedLinearIssueIds.size) link.href = DEFAULT_FAVICON_HREF;
+}
+
+function persistLinearIssueNotifications() {
+  localStorage.setItem(NOTIFIED_LINEAR_ISSUES_KEY, JSON.stringify([...state.notifiedLinearIssueIds]));
+}
+
+function flowForId(flowId) {
+  return state.flows.find((flow) => flow.id === flowId) || null;
+}
+
+function linearIssueIdForFlowId(flowId) {
+  return flowForId(flowId)?.linearIssueId || "";
+}
+
+function clearLinearIssueNotification(identifier, options = {}) {
+  if (!identifier || !state.notifiedLinearIssueIds.delete(identifier)) return false;
+  persistLinearIssueNotifications();
+  void updateBrowserTabNotification();
+  if (options.render !== false) renderTickets();
+  return true;
+}
+
+function canAcknowledgeSelectedNotification() {
+  return document.visibilityState === "visible" && (typeof document.hasFocus !== "function" || document.hasFocus());
+}
+
+function acknowledgeSelectedLinearIssueNotification() {
+  if (!canAcknowledgeSelectedNotification()) return;
+  clearLinearIssueNotification(state.selectedLinearIssueId);
+}
+
+function notifyAgentTurnEnded(flowId) {
+  const issueId = linearIssueIdForFlowId(flowId);
+  if (!issueId || (issueId === state.selectedLinearIssueId && canAcknowledgeSelectedNotification())) return;
+  state.notifiedLinearIssueIds.add(issueId);
+  persistLinearIssueNotifications();
+  void updateBrowserTabNotification();
+  renderTickets();
+}
+
 function setDefaultSettingsState(linear) {
   setSettingsCollapsed(Boolean(linear.signedIn));
 }
@@ -1713,6 +1811,7 @@ function setShellOutputSplitSize(value) {
 
 async function bootstrap() {
   applyTheme(state.theme);
+  void updateBrowserTabNotification();
   renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
   setTicketDrawerHidden(state.ticketDrawerHidden);
@@ -1763,6 +1862,7 @@ function setFlows(flows) {
 }
 
 function clearFlowClientState(flowId) {
+  clearLinearIssueNotification(linearIssueIdForFlowId(flowId), { render: false });
   state.logs.delete(flowId);
   state.logIds.delete(flowId);
   state.lastLogId.delete(flowId);
@@ -2526,6 +2626,7 @@ function removeLinearIssueFromTurbopump(identifier) {
   state.linearTickets = state.linearTickets.filter((ticket) => ticket.identifier !== issueId);
   state.linearDetails.delete(issueId);
   state.ticketInputStates.delete(issueId);
+  clearLinearIssueNotification(issueId, { render: false });
   const removedPin = state.pinnedLinearIssues.delete(issueId);
   if (removedPin) persistPinnedLinearIssues();
   clearSelectedLinearIssue(issueId);
@@ -3041,8 +3142,10 @@ function ticketAgentWorking(ticket) {
 
 function updateTicketCardState(card) {
   const ticket = state.linearTickets.find((item) => item.identifier === card.dataset.issue);
-  card.classList.toggle("active", card.dataset.issue === state.selectedLinearIssueId);
+  const active = card.dataset.issue === state.selectedLinearIssueId;
+  card.classList.toggle("active", active);
   card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+  card.classList.toggle("agent-turn-notified", !active && state.notifiedLinearIssueIds.has(card.dataset.issue));
   card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
 }
 
@@ -3117,6 +3220,7 @@ async function selectFlow(id) {
   if (!flow) return;
   state.selectedFlowId = id;
   state.selectedLinearIssueId = flow.linearIssueId;
+  clearLinearIssueNotification(flow.linearIssueId, { render: false });
   localStorage.setItem("flow.selectedFlowId", id);
   localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
   resumeTerminalFollow();
@@ -3129,6 +3233,7 @@ async function selectFlow(id) {
 async function openTicketInFlowPane(ticket) {
   const flow = flowForTicket(ticket);
   state.selectedLinearIssueId = ticket.identifier;
+  clearLinearIssueNotification(ticket.identifier, { render: false });
   localStorage.setItem("flow.selectedLinearIssueId", ticket.identifier);
   if (flow) {
     state.selectedFlowId = flow.id;
@@ -3536,6 +3641,13 @@ function isRuntimeDisappearedLog(log) {
 
 function isTurnCompletedLog(log) {
   return log.source === "agent:status" && /^turn completed\b/.test(String(log.message || "").trim());
+}
+
+function isAgentTurnEndedLog(log) {
+  return (
+    log.source === "agent:status" &&
+    /^turn (completed|failed|canceled|cancelled|interrupted|stopped)\b/.test(String(log.message || "").trim())
+  );
 }
 
 function isShellExitLog(log) {
@@ -4499,17 +4611,18 @@ function materializeTerminalTraceGroup(details) {
   body.className = "terminal-trace-body";
   for (const child of details._traceChildren || []) appendTerminalBlock(body, child);
 
-  const children = Array.from(body.children);
-  const lastIndex = Math.max(0, children.length - 1);
-  children.forEach((child, index) => {
-    child.style.setProperty("--trace-open-delay", `${traceFoldDelay(index)}ms`);
-    child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);
-  });
-
   details._traceBody = body;
   details.appendChild(body);
   applyTerminalMessageClamps(body);
   return body;
+}
+
+function setTerminalTraceBodyHeight(details) {
+  const body = details._traceBody;
+  if (!body) return 0;
+  const height = Math.ceil(body.scrollHeight);
+  body.style.setProperty("--trace-body-height", `${height}px`);
+  return height;
 }
 
 function toggleTerminalTraceGroup(details) {
@@ -4522,26 +4635,24 @@ function toggleTerminalTraceGroup(details) {
   if (shouldOpen) materializeTerminalTraceGroup(details);
   setTerminalTraceGroupOpen(details, shouldOpen);
   details.open = true;
+  setTerminalTraceBodyHeight(details);
+  void details.offsetHeight;
   details.classList.add("terminal-trace-animating", shouldOpen ? "terminal-trace-opening" : "terminal-trace-closing");
 
-  const itemCount = details.querySelectorAll(":scope > .terminal-trace-body > *").length;
-  const longestDelay = traceFoldDelay(Math.max(0, itemCount - 1));
-  const duration = shouldOpen ? Math.max(110, 125 + longestDelay) : Math.max(55, 63 + longestDelay / 2);
+  const duration = shouldOpen ? 170 : 130;
   if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, duration + 40);
   details._traceToggleTimer = window.setTimeout(() => {
     if (!shouldOpen) {
       details.open = false;
       details._traceBody?.remove();
       details._traceBody = null;
+    } else {
+      details._traceBody?.style.removeProperty("--trace-body-height");
     }
     details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
     if (shouldFollowLatest) scrollTerminalToLatestNow(terminal);
     details._traceToggleTimer = 0;
   }, duration);
-}
-
-function traceFoldDelay(index) {
-  return Math.round(Math.log1p(Math.max(0, index) * 1.6) * 30);
 }
 
 function terminalDistanceFromBottom(terminal) {
@@ -4864,6 +4975,7 @@ function connectWs() {
         createdAt: message.payload.createdAt,
       };
       appendLogEntry(log);
+      if (isAgentTurnEndedLog(log)) notifyAgentTurnEnded(log.flowId);
       if (isShellOnlyRenderLog(log)) {
         scheduleShellOutputRender(log.flowId);
         return;
@@ -5368,6 +5480,8 @@ window.addEventListener("resize", () => {
 
 document.addEventListener("keydown", handleCommandK, true);
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
+document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
+window.addEventListener("focus", acknowledgeSelectedLinearIssueNotification);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden) {
