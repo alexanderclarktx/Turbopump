@@ -1637,11 +1637,11 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
     createCompletedTurnTraceGroup(runtime.flowId);
     if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
-    insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
     if (runtime.compacting && turn?.status !== "failed") {
       finishCodexCompaction(runtime, params);
       return;
     }
+    insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
     if (runtime.compacting) {
       runtime.compacting = false;
       runtime.compactingStartedAt = undefined;

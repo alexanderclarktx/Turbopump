@@ -656,8 +656,8 @@ body.theme-dark .ticket-status-separator {
   color: var(--muted);
 }
 
-body.theme-dark .ticket-title {
-  color: var(--terminal-ink);
+body.theme-dark .ticket-card .ticket-title {
+  color: var(--ink);
 }
 
 body.theme-dark .ticket-card.active {
@@ -1304,6 +1304,7 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   margin: 0;
   color: var(--ink);
   font-size: 15px;
+  font-weight: 700;
 }
 
 .ticket-drawer p {
@@ -1462,15 +1463,18 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 .ticket-card {
   --ticket-card-bg: #fff;
   --ticket-card-hover-bg: #f3f5f8;
+  --ticket-card-title-y: 8px;
   position: relative;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 5px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  column-gap: 10px;
+  row-gap: 5px;
+  align-items: start;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
-  padding: 9px 10px 7px;
+  padding: var(--ticket-card-title-y) 10px 7px;
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
@@ -1562,18 +1566,16 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .ticket-card.agent-turn-notified:not(.active) {
+  border-width: 2px;
   border-color: transparent;
   background:
     linear-gradient(var(--ticket-card-bg), var(--ticket-card-bg)) padding-box,
     conic-gradient(
         from var(--ticket-notification-angle),
-        transparent 0deg,
-        transparent 42deg,
-        #ef4444 78deg,
-        #f97316 112deg,
-        #ffff00 148deg,
-        transparent 196deg,
-        transparent 360deg
+        #ef4444 0deg,
+        #ffff00 120deg,
+        #8b5cf6 240deg,
+        #ef4444 360deg
       )
       border-box;
   animation: ticket-notification-border 3.2s linear infinite;
@@ -1584,13 +1586,10 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
     linear-gradient(var(--ticket-card-hover-bg), var(--ticket-card-hover-bg)) padding-box,
     conic-gradient(
         from var(--ticket-notification-angle),
-        transparent 0deg,
-        transparent 42deg,
-        #ef4444 78deg,
-        #f97316 112deg,
-        #ffff00 148deg,
-        transparent 196deg,
-        transparent 360deg
+        #ef4444 0deg,
+        #ffff00 120deg,
+        #8b5cf6 240deg,
+        #ef4444 360deg
       )
       border-box;
 }
@@ -1618,9 +1617,9 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 .ticket-flow-corner {
   position: absolute;
   right: 8px;
-  bottom: 7px;
+  top: var(--ticket-card-title-y);
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 5px;
   max-width: calc(100% - 18px);
   pointer-events: none;
@@ -1628,11 +1627,12 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 
 .ticket-id {
   position: absolute;
-  top: 8px;
   right: 10px;
+  bottom: 7px;
   color: var(--accent);
   font-size: 11px;
   font-weight: 700;
+  line-height: 1.1;
   max-width: 82px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1641,19 +1641,26 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   pointer-events: none;
 }
 
-.ticket-title {
+.ticket-card .ticket-title {
+  grid-column: 1 / -1;
+  grid-row: 1;
   margin: 0;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.25;
   font-weight: 650;
   display: block;
-  padding-right: 76px;
   overflow: visible;
   overflow-wrap: anywhere;
 }
 
+.ticket-card.in-flow .ticket-title {
+  padding-right: 32px;
+}
+
 .ticket-meta {
+  grid-column: 1 / -1;
+  grid-row: 3;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1667,10 +1674,7 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 
 .ticket-card > .ticket-meta {
   align-self: stretch;
-}
-
-.ticket-card.in-flow > .ticket-meta {
-  padding-right: 28px;
+  padding-right: 88px;
 }
 
 .ticket-card > .ticket-meta span {
@@ -1781,6 +1785,10 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   grid-template-rows: var(--top-pane-size, 50%) 8px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+}
+
+.flow-content.ticket-switch-fade-in {
+  animation: ticket-switch-fade-in 100ms ease-out both;
 }
 
 .flow-pane.empty .flow-empty {
@@ -2926,40 +2934,82 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
   color: #64748b;
 }
 
+.terminal-trace-summary {
+  order: 2;
+}
+
 .terminal-trace-group[open] > .terminal-trace-summary .terminal-entry-marker {
   transform: rotate(90deg);
 }
 
 .terminal-trace-body {
-  display: grid;
+  order: 1;
+  position: relative;
+  min-width: 0;
+  padding: 2px 0 8px 23px;
+  transform-origin: bottom;
+}
+
+.terminal-trace-body-content {
+  display: flex;
+  flex-direction: column-reverse;
   gap: 8px;
   min-width: 0;
-  padding: 8px 0 2px 23px;
-  transform-origin: top;
+}
+
+.terminal-trace-collapse-line {
+  position: absolute;
+  inset: 2px auto 8px 7px;
+  width: 9px;
+  min-width: 9px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.terminal-trace-collapse-line::before {
+  content: "";
+  position: absolute;
+  inset: 0 4px;
+  border-radius: inherit;
+  background: #cbd5e1;
+  transition:
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.terminal-trace-collapse-line:hover::before,
+.terminal-trace-collapse-line:focus-visible::before {
+  background: #64748b;
+  transform: scaleX(1.8);
+}
+
+.terminal-trace-collapse-line:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .terminal-trace-animating > .terminal-trace-body {
-  overflow: hidden;
-  will-change: height, opacity, transform;
+  will-change: opacity, transform;
 }
 
 .terminal-trace-opening > .terminal-trace-body {
-  animation: terminal-trace-fold-in 170ms cubic-bezier(0.2, 0, 0, 1) both;
+  animation: terminal-trace-fold-in 90ms cubic-bezier(0.2, 0, 0, 1) both;
 }
 
 .terminal-trace-closing > .terminal-trace-body {
-  animation: terminal-trace-fold-out 130ms cubic-bezier(0.4, 0, 1, 1) both;
+  animation: terminal-trace-fold-out 80ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 @keyframes terminal-trace-fold-in {
   from {
-    height: 0;
     opacity: 0;
-    transform: translateY(-3px);
+    transform: translateY(4px);
   }
 
   to {
-    height: var(--trace-body-height, 0px);
     opacity: 1;
     transform: translateY(0);
   }
@@ -2967,19 +3017,27 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
 
 @keyframes terminal-trace-fold-out {
   from {
-    height: var(--trace-body-height, 0px);
     opacity: 1;
     transform: translateY(0);
   }
 
   to {
-    height: 0;
     opacity: 0;
-    transform: translateY(-3px);
+    transform: translateY(4px);
   }
 }
 
 @keyframes terminal-entry-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ticket-switch-fade-in {
   from {
     opacity: 0;
   }
@@ -3935,6 +3993,11 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   .terminal-trace-opening > .terminal-trace-body,
   .terminal-trace-closing > .terminal-trace-body,
   .terminal > .terminal-entry-incoming {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+
+  .flow-content.ticket-switch-fade-in {
     animation-duration: 1ms;
     animation-delay: 0ms;
   }

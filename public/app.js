@@ -17,6 +17,10 @@ const DEFAULT_FAVICON_HREF = "/favicon.svg";
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
 const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
+const TERMINAL_TRACE_INITIAL_RENDER_COUNT = 18;
+const TERMINAL_TRACE_RENDER_BATCH_SIZE = 48;
+const TERMINAL_TRACE_OPEN_DURATION_MS = 90;
+const TERMINAL_TRACE_CLOSE_DURATION_MS = 80;
 const QUEUED_PROMPT_PREFIX_HTML = '<span class="queued-prompt-spinner" aria-hidden="true"></span>';
 const SLASH_COMMANDS = [
   { name: "/clear", description: "Start a fresh Codex thread for this flow" },
@@ -187,6 +191,11 @@ const state = {
   logBackfilledFlowIds: new Set(),
   pendingLogRenders: new Map(),
   logRenderFrame: 0,
+  logPrefetchingFlowIds: new Set(),
+  logPrefetchFailedFlowIds: new Set(),
+  logPrefetchTimer: 0,
+  selectionRenderFrame: 0,
+  ticketSwitchFadeTimer: 0,
   pendingShellOutputRenders: new Set(),
   shellOutputRenderFrame: 0,
   shellOutputClearAfterLogId: new Map(),
@@ -224,6 +233,7 @@ const state = {
   terminalFollowPaused: false,
   flowDiffs: new Map(),
   flowDiffLoadingIds: new Set(),
+  pendingFlowDiffRefreshes: new Map(),
   diffModalFlowId: "",
   diffModalDiff: null,
   diffModalLoadingFlowId: "",
@@ -1718,6 +1728,12 @@ function notifyAgentTurnEnded(flowId) {
   renderTickets();
 }
 
+function refreshFlowDiffAfterAgentTurn(flowId) {
+  if (!flowId) return;
+  const modalOpen = state.diffModalFlowId === flowId;
+  void loadFlowDiff(flowId, { force: true, modal: modalOpen, patch: modalOpen });
+}
+
 function setDefaultSettingsState(linear) {
   setSettingsCollapsed(Boolean(linear.signedIn));
 }
@@ -1859,6 +1875,7 @@ function setFlows(flows) {
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
   scheduleQueuedPromptFlush();
+  scheduleTicketLogPrefetch();
 }
 
 function clearFlowClientState(flowId) {
@@ -1868,6 +1885,8 @@ function clearFlowClientState(flowId) {
   state.lastLogId.delete(flowId);
   state.logBackfilledFlowIds.delete(flowId);
   state.pendingLogRenders.delete(flowId);
+  state.logPrefetchingFlowIds.delete(flowId);
+  state.logPrefetchFailedFlowIds.delete(flowId);
   state.pendingShellOutputRenders.delete(flowId);
   state.shellOutputClearAfterLogId.delete(flowId);
   state.openTraceGroups.delete(flowId);
@@ -1875,6 +1894,9 @@ function clearFlowClientState(flowId) {
   if (state.queuedPrompt?.flowId === flowId) clearQueuedPrompt();
   state.flowDiffs.delete(flowId);
   state.flowDiffLoadingIds.delete(flowId);
+  for (const key of state.pendingFlowDiffRefreshes.keys()) {
+    if (key.startsWith(`${flowId}:`)) state.pendingFlowDiffRefreshes.delete(key);
+  }
   if (state.diffModalFlowId === flowId) {
     state.diffModalFlowId = "";
     state.diffModalDiff = null;
@@ -2149,6 +2171,18 @@ function diffLoadingKey(flowId, options = {}) {
   return `${flowId}:${options.patch ? "patch" : "summary"}`;
 }
 
+function rememberPendingFlowDiffRefresh(flowId, options = {}) {
+  const loadingKey = diffLoadingKey(flowId, options);
+  const pending = state.pendingFlowDiffRefreshes.get(loadingKey) || {};
+  state.pendingFlowDiffRefreshes.set(loadingKey, {
+    ...pending,
+    ...options,
+    force: true,
+    patch: Boolean(pending.patch || options.patch),
+    modal: Boolean(pending.modal || options.modal),
+  });
+}
+
 async function loadFlowDiff(flowId, options = {}) {
   if (!flowId) return null;
   const existing = state.flowDiffs.get(flowId);
@@ -2161,7 +2195,10 @@ async function loadFlowDiff(flowId, options = {}) {
     return existing;
   }
   const loadingKey = diffLoadingKey(flowId, options);
-  if (state.flowDiffLoadingIds.has(loadingKey)) return state.flowDiffs.get(flowId) || null;
+  if (state.flowDiffLoadingIds.has(loadingKey)) {
+    if (options.force) rememberPendingFlowDiffRefresh(flowId, options);
+    return state.flowDiffs.get(flowId) || null;
+  }
   state.flowDiffLoadingIds.add(loadingKey);
   if (options.modal && state.diffModalFlowId === flowId) {
     state.diffModalLoadingFlowId = flowId;
@@ -2171,7 +2208,7 @@ async function loadFlowDiff(flowId, options = {}) {
   try {
     const diff = normalizeDiff(await api(`/api/flows/${encodeURIComponent(flowId)}/diff${options.patch ? "?patch=1" : ""}`));
     const latest = state.flowDiffs.get(flowId);
-    if (!options.patch && latest?.patch) diff.patch = latest.patch;
+    if (!options.patch && !options.force && latest?.patch) diff.patch = latest.patch;
     state.flowDiffs.set(flowId, diff);
     if (options.modal && state.diffModalFlowId === flowId) {
       state.diffModalDiff = { ...diff };
@@ -2191,6 +2228,11 @@ async function loadFlowDiff(flowId, options = {}) {
   } finally {
     state.flowDiffLoadingIds.delete(loadingKey);
     renderAgentContext(selectedFlow());
+    const pending = state.pendingFlowDiffRefreshes.get(loadingKey);
+    if (pending) {
+      state.pendingFlowDiffRefreshes.delete(loadingKey);
+      void loadFlowDiff(flowId, pending);
+    }
   }
 }
 
@@ -2243,7 +2285,7 @@ function openDiffViewer(flowId) {
   state.diffModalLoadingFlowId = flowId || "";
   state.diffModalSelectedPath = "";
   renderDiffModal();
-  if (flowId) void loadFlowDiff(flowId, { patch: true, modal: true });
+  if (flowId) void loadFlowDiff(flowId, { patch: true, modal: true, force: true });
 }
 
 function closeDiffViewer() {
@@ -2602,6 +2644,34 @@ function flowUpdatedAtMs(flow) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+function linearIssueUpdatedAtMs(issue) {
+  const timestamp = Date.parse(issue?.updatedAt || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function mergeLinearIssue(existing, incoming) {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  const existingUpdatedAt = linearIssueUpdatedAtMs(existing);
+  const incomingUpdatedAt = linearIssueUpdatedAtMs(incoming);
+  const merged = { ...existing, ...incoming };
+  if (existingUpdatedAt && incomingUpdatedAt && existingUpdatedAt > incomingUpdatedAt) {
+    return {
+      ...merged,
+      title: existing.title,
+      url: existing.url,
+      priority: existing.priority,
+      estimate: existing.estimate,
+      updatedAt: existing.updatedAt,
+      state: existing.state,
+      team: existing.team,
+      project: existing.project,
+      labels: existing.labels,
+    };
+  }
+  return merged;
+}
+
 function syncLinearTicketsWithFlows() {
   if (!state.linearTickets.length) return;
   const flowsByIssue = new Map(state.flows.map((flow) => [flow.linearIssueId, flow]));
@@ -2666,6 +2736,7 @@ async function loadLinearTickets(options = {}) {
     reconcileRemovedLinearTickets(previousTickets, nextTickets);
     state.linearTickets = nextTickets;
     state.linearTicketsLoaded = true;
+    state.logPrefetchFailedFlowIds.clear();
     if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
     els.ticketState.textContent = formatLastUpdated();
@@ -2674,6 +2745,7 @@ async function loadLinearTickets(options = {}) {
     if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
     renderTickets();
     renderFlowPane();
+    scheduleTicketLogPrefetch();
   } catch (error) {
     state.linearTickets = [];
     state.linearTicketsLoaded = true;
@@ -2886,7 +2958,7 @@ function focusLinearTicketCard(identifier) {
 }
 
 function upsertLinearIssue(issue) {
-  const existing = state.linearTickets.some((ticket) => ticket.identifier === issue.identifier);
+  const existing = state.linearTickets.find((ticket) => ticket.identifier === issue.identifier);
   if (!existing) {
     state.linearTickets = [issue, ...state.linearTickets];
     return;
@@ -2894,9 +2966,8 @@ function upsertLinearIssue(issue) {
   state.linearTickets = state.linearTickets.map((ticket) => {
     if (ticket.identifier !== issue.identifier) return ticket;
     return {
-      ...ticket,
-      ...issue,
-      flowId: ticket.flowId || "",
+      ...mergeLinearIssue(ticket, issue),
+      flowId: issue.flowId || ticket.flowId || "",
     };
   });
 }
@@ -3055,8 +3126,12 @@ function replaceLinearIssue(issue) {
   upsertLinearIssue(issue);
 
   const cached = state.linearDetails.get(issue.identifier);
-  if (cached?.issue) {
-    state.linearDetails.set(issue.identifier, { ...cached, issue: { ...cached.issue, ...issue } });
+  if (cached) {
+    state.linearDetails.set(issue.identifier, {
+      ...cached,
+      loading: false,
+      issue: mergeLinearIssue(cached.issue, issue),
+    });
   }
 }
 
@@ -3149,6 +3224,58 @@ function updateTicketCardState(card) {
   card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
 }
 
+function updateTicketCardsForIdentifiers(...identifiers) {
+  const issueIds = new Set(identifiers.filter(Boolean));
+  if (!issueIds.size) return;
+  for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
+    if (issueIds.has(card.dataset.issue)) updateTicketCardState(card);
+  }
+}
+
+function loadSelectedFlowLogs(issueId, flowId, options = {}) {
+  return loadLogs(flowId, options).catch((error) => {
+    if (issueId === state.selectedLinearIssueId && flowId === state.selectedFlowId) {
+      toast(error.message || "Could not load agent session.", { kind: "error" });
+    }
+  });
+}
+
+function scheduleSelectedFlowPaneRender(issueId, flowId = "") {
+  if (state.selectionRenderFrame) cancelAnimationFrame(state.selectionRenderFrame);
+  state.selectionRenderFrame = requestAnimationFrame(() => {
+    state.selectionRenderFrame = requestAnimationFrame(() => {
+      state.selectionRenderFrame = 0;
+      if (issueId !== state.selectedLinearIssueId || flowId !== state.selectedFlowId) return;
+      const hasCachedLogs = flowId && ((state.logs.get(flowId) || []).length || state.logBackfilledFlowIds.has(flowId));
+      if (flowId && !hasCachedLogs) {
+        void loadSelectedFlowLogs(issueId, flowId, { scrollToLatest: true, suppressIncoming: true }).then(() => {
+          if (issueId === state.selectedLinearIssueId && flowId === state.selectedFlowId) renderFlowPane();
+        });
+        void loadFlowDiff(flowId, { force: true });
+        return;
+      }
+      renderFlowPane();
+      if (flowId) {
+        void loadSelectedFlowLogs(issueId, flowId, { scrollToLatest: true, suppressIncoming: true });
+        void loadFlowDiff(flowId, { force: true });
+      }
+    });
+  });
+}
+
+function animateTicketSwitch() {
+  const content = els.flowPane.querySelector(".flow-content");
+  if (!content) return;
+  if (state.ticketSwitchFadeTimer) window.clearTimeout(state.ticketSwitchFadeTimer);
+  content.classList.remove("ticket-switch-fade-in");
+  void content.offsetWidth;
+  content.classList.add("ticket-switch-fade-in");
+  state.ticketSwitchFadeTimer = window.setTimeout(() => {
+    content.classList.remove("ticket-switch-fade-in");
+    state.ticketSwitchFadeTimer = 0;
+  }, 120);
+}
+
 function renderTicketCard(ticket) {
   const card = document.createElement("article");
   card.className = "ticket-card";
@@ -3187,7 +3314,7 @@ function renderTicketCard(ticket) {
   });
   card.addEventListener("click", () => {
     if (state.suppressTicketClick) return;
-    openTicketInFlowPane(ticket);
+    void openTicketInFlowPane(ticket);
   });
   card.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -3218,20 +3345,22 @@ function flowForTicket(ticket) {
 async function selectFlow(id) {
   const flow = state.flows.find((item) => item.id === id);
   if (!flow) return;
+  const previousIssueId = state.selectedLinearIssueId;
   state.selectedFlowId = id;
   state.selectedLinearIssueId = flow.linearIssueId;
   clearLinearIssueNotification(flow.linearIssueId, { render: false });
   localStorage.setItem("flow.selectedFlowId", id);
   localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
   resumeTerminalFollow();
-  render();
-  await loadLogs(id, { force: true, resetCursor: true, scrollToLatest: true });
-  void loadFlowDiff(id, { force: true });
-  void loadLinearDetail(flow.linearIssueId);
+  updateTicketCardsForIdentifiers(previousIssueId, flow.linearIssueId);
+  renderFlowPane({ light: true });
+  if (previousIssueId !== flow.linearIssueId) animateTicketSwitch();
+  scheduleSelectedFlowPaneRender(flow.linearIssueId, id);
 }
 
 async function openTicketInFlowPane(ticket) {
   const flow = flowForTicket(ticket);
+  const previousIssueId = state.selectedLinearIssueId;
   state.selectedLinearIssueId = ticket.identifier;
   clearLinearIssueNotification(ticket.identifier, { render: false });
   localStorage.setItem("flow.selectedLinearIssueId", ticket.identifier);
@@ -3243,15 +3372,13 @@ async function openTicketInFlowPane(ticket) {
     localStorage.removeItem("flow.selectedFlowId");
   }
   resumeTerminalFollow();
-  render();
-  if (flow) {
-    await loadLogs(flow.id, { force: true, resetCursor: true, scrollToLatest: true });
-    void loadFlowDiff(flow.id, { force: true });
-  }
-  void loadLinearDetail(ticket.identifier);
+  updateTicketCardsForIdentifiers(previousIssueId, ticket.identifier);
+  renderFlowPane({ light: true });
+  if (previousIssueId !== ticket.identifier) animateTicketSwitch();
+  scheduleSelectedFlowPaneRender(ticket.identifier, flow?.id || "");
 }
 
-function renderFlowPane() {
+function renderFlowPane(options = {}) {
   const selectedFlowById = state.flows.find((item) => item.id === state.selectedFlowId) || null;
   if (!selectedFlowById && state.selectedFlowId) {
     state.selectedFlowId = "";
@@ -3293,9 +3420,15 @@ function renderFlowPane() {
   updateMessageInputMode();
   resizeMessageInput();
 
-  renderLinearDetail({ issueId, title, issueUrl, ticket, flow });
+  renderLinearDetail({ issueId, title, issueUrl, ticket, flow }, { light: options.light });
   applyFlowSplitSize();
-  if (flow) {
+  if (flow && options.light) {
+    const terminal = els.flowPane.querySelector(".terminal");
+    terminal._flowLogFlowId = "";
+    terminal._flowLogSignature = "";
+    terminal._flowLogRenderedKeys = null;
+    terminal.textContent = "Loading agent session.";
+  } else if (flow) {
     renderLogs(flow.id);
   } else {
     stopAgentWorkingPoll();
@@ -3306,7 +3439,7 @@ function renderFlowPane() {
     terminal._flowLogRenderedKeys = null;
     terminal.textContent = "No agent session yet.";
   }
-  void loadLinearDetail(issueId);
+  if (!options.light) void loadLinearDetail(issueId);
   scheduleQueuedPromptFlush();
 }
 
@@ -3411,16 +3544,17 @@ function renderLinearComment(comment, nested = false) {
   `;
 }
 
-function renderLinearDetail(context) {
+function renderLinearDetail(context, options = {}) {
   const container = els.flowPane.querySelector(".linear-detail");
-  const cached = state.linearDetails.get(context.issueId);
-  const issue = cached?.issue || context.ticket || {
+  const cached = options.light ? null : state.linearDetails.get(context.issueId);
+  const issue = (options.light ? context.ticket || cached?.issue : cached?.issue || context.ticket) || {
     identifier: context.issueId,
     title: context.title,
     url: context.issueUrl,
   };
+  const loading = options.light || cached?.loading;
   const labels = issue.labels?.nodes || [];
-  const comments = issue.comments?.nodes || [];
+  const comments = options.light ? [] : issue.comments?.nodes || [];
   const commentTree = linearCommentTree(comments);
   const meta = [
     issue.project?.name,
@@ -3446,19 +3580,21 @@ function renderLinearDetail(context) {
         ${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}
         ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}
       </div>
-      <div class="linear-description linear-markdown">${renderLinearMarkdown(issue.description, "No description.")}</div>
+      <div class="linear-description linear-markdown">${
+        options.light ? escapeHtml(issue.description || "Loading issue details.") : renderLinearMarkdown(issue.description, "No description.")
+      }</div>
     </section>
     <section class="linear-comments">
       <header>
         <h3>Comments</h3>
-        <span>${cached?.loading ? "Loading" : `${comments.length} loaded`}</span>
+        <span>${loading ? "Loading" : `${comments.length} loaded`}</span>
       </header>
       ${
         cached?.error
           ? `<p class="linear-error">${escapeHtml(cached.error)}</p>`
           : comments.length
             ? commentTree.map((comment) => renderLinearComment(comment)).join("")
-            : `<p class="linear-empty-copy">${cached?.loading ? "Loading comments." : "No comments."}</p>`
+            : `<p class="linear-empty-copy">${loading ? "Loading comments." : "No comments."}</p>`
       }
     </section>
   `;
@@ -3468,10 +3604,16 @@ async function loadLinearDetail(identifier) {
   const cached = state.linearDetails.get(identifier);
   if (cached?.issue || cached?.loading) return;
   state.linearDetails.set(identifier, { loading: true });
-  renderFlowPane();
+  if (identifier === state.selectedLinearIssueId) renderFlowPane();
   try {
     const data = await api(`/api/linear/issues/${encodeURIComponent(identifier)}`);
-    state.linearDetails.set(identifier, { loading: false, issue: data.issue });
+    const current = state.linearDetails.get(identifier);
+    state.linearDetails.set(identifier, { ...current, loading: false, issue: mergeLinearIssue(current?.issue, data.issue) });
+    if (data.issue?.identifier) {
+      upsertLinearIssue(data.issue);
+      syncLinearTicketsWithFlows();
+      renderTickets();
+    }
   } catch (error) {
     if (error.status === 404) {
       removeLinearIssueFromTurbopump(identifier);
@@ -3484,7 +3626,7 @@ async function loadLinearDetail(identifier) {
     }
     state.linearDetails.set(identifier, { loading: false, error: error.message });
   }
-  renderFlowPane();
+  if (identifier === state.selectedLinearIssueId) renderFlowPane();
 }
 
 async function createFlowFromTicket(ticket, options = {}) {
@@ -3548,7 +3690,61 @@ async function loadLogs(id, options = {}) {
     renderShellOutputPane(id);
     return;
   }
-  renderLogs(id, options);
+  renderLogs(id, { ...options, suppressIncoming: Boolean(options.suppressIncoming || shouldBackfill) });
+}
+
+function scheduleTicketLogPrefetch() {
+  if (state.logPrefetchTimer || !state.linearTicketsLoaded) return;
+  state.logPrefetchTimer = window.setTimeout(() => {
+    state.logPrefetchTimer = 0;
+    void prefetchTicketLogs();
+  }, 180);
+}
+
+async function prefetchTicketLogs() {
+  const flowIds = [];
+  for (const ticket of sortedLinearTickets(state.linearTickets)) {
+    const flow = flowForTicket(ticket);
+    if (
+      !flow?.id ||
+      flow.id === state.selectedFlowId ||
+      state.logBackfilledFlowIds.has(flow.id) ||
+      state.logPrefetchingFlowIds.has(flow.id) ||
+      state.logPrefetchFailedFlowIds.has(flow.id)
+    ) {
+      continue;
+    }
+    flowIds.push(flow.id);
+    if (flowIds.length >= 4) break;
+  }
+  if (!flowIds.length) return;
+
+  for (const flowId of flowIds) {
+    if (state.logBackfilledFlowIds.has(flowId)) continue;
+    state.logPrefetchingFlowIds.add(flowId);
+    try {
+      await loadLogs(flowId, { suppressIncoming: true });
+    } catch {
+      state.logPrefetchFailedFlowIds.add(flowId);
+      // Background prefetch should never interrupt foreground ticket work.
+    } finally {
+      state.logPrefetchingFlowIds.delete(flowId);
+    }
+  }
+
+  if (
+    sortedLinearTickets(state.linearTickets).some((ticket) => {
+      const flow = flowForTicket(ticket);
+      return (
+        flow?.id &&
+        flow.id !== state.selectedFlowId &&
+        !state.logBackfilledFlowIds.has(flow.id) &&
+        !state.logPrefetchFailedFlowIds.has(flow.id)
+      );
+    })
+  ) {
+    scheduleTicketLogPrefetch();
+  }
 }
 
 function logMeta(source) {
@@ -4580,8 +4776,8 @@ function appendTerminalTraceGroup(fragment, group, options = {}) {
   summary.replaceChildren(marker, label, time);
   details.replaceChildren(summary);
   if (isTerminalTraceGroupOpen(group)) {
-    materializeTerminalTraceGroup(details);
     details.open = true;
+    materializeTerminalTraceGroup(details);
   }
   fragment.appendChild(details);
 }
@@ -4605,24 +4801,84 @@ function setTerminalTraceGroupOpen(details, open) {
 }
 
 function materializeTerminalTraceGroup(details) {
-  if (details._traceBody) return details._traceBody;
+  if (details._traceBody) {
+    if ((details._traceRenderIndex || 0) > 0) scheduleTerminalTraceRender(details);
+    return details._traceBody;
+  }
 
   const body = document.createElement("div");
   body.className = "terminal-trace-body";
-  for (const child of details._traceChildren || []) appendTerminalBlock(body, child);
+  const collapseButton = document.createElement("button");
+  collapseButton.type = "button";
+  collapseButton.className = "terminal-trace-collapse-line";
+  collapseButton.setAttribute("aria-label", "Collapse trace");
+  collapseButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleTerminalTraceGroup(details);
+  });
+  const content = document.createElement("div");
+  content.className = "terminal-trace-body-content";
 
   details._traceBody = body;
+  details._traceBodyContent = content;
+  body.replaceChildren(collapseButton, content);
   details.appendChild(body);
-  applyTerminalMessageClamps(body);
+  details._traceRenderIndex = (details._traceChildren || []).length;
+  if (details.open) {
+    renderTerminalTraceChunk(details, { maxItems: TERMINAL_TRACE_INITIAL_RENDER_COUNT, scheduleNext: false });
+    scheduleTerminalTraceRender(details, { delay: TERMINAL_TRACE_OPEN_DURATION_MS });
+  } else {
+    scheduleTerminalTraceRender(details);
+  }
   return body;
 }
 
-function setTerminalTraceBodyHeight(details) {
+function cancelTerminalTraceRender(details) {
+  if (details._traceRenderFrame) cancelAnimationFrame(details._traceRenderFrame);
+  if (details._traceRenderTimer) window.clearTimeout(details._traceRenderTimer);
+  details._traceRenderFrame = 0;
+  details._traceRenderTimer = 0;
+}
+
+function scheduleTerminalTraceRender(details, options = {}) {
+  cancelTerminalTraceRender(details);
+  const children = details._traceChildren || [];
+  if (!Number.isFinite(details._traceRenderIndex)) details._traceRenderIndex = children.length;
+  if (details._traceRenderIndex <= 0) return;
+  const run = () => {
+    details._traceRenderTimer = 0;
+    details._traceRenderFrame = requestAnimationFrame(() => renderTerminalTraceChunk(details));
+  };
+  if (options.delay) {
+    details._traceRenderTimer = window.setTimeout(run, options.delay);
+  } else {
+    run();
+  }
+}
+
+function renderTerminalTraceChunk(details, options = {}) {
+  details._traceRenderFrame = 0;
   const body = details._traceBody;
-  if (!body) return 0;
-  const height = Math.ceil(body.scrollHeight);
-  body.style.setProperty("--trace-body-height", `${height}px`);
-  return height;
+  const content = details._traceBodyContent;
+  if (!body || !content || !details.open) return;
+
+  const children = details._traceChildren || [];
+  const fragment = document.createDocumentFragment();
+  const appended = [];
+  const endIndex = Number.isFinite(details._traceRenderIndex) ? details._traceRenderIndex : children.length;
+  const maxItems = Math.max(1, options.maxItems || TERMINAL_TRACE_RENDER_BATCH_SIZE);
+  const startIndex = Math.max(0, endIndex - maxItems);
+
+  for (let index = endIndex - 1; index >= startIndex; index -= 1) {
+    appendTerminalBlock(fragment, children[index]);
+    if (fragment.lastElementChild) appended.push(fragment.lastElementChild);
+  }
+
+  details._traceRenderIndex = startIndex;
+  content.appendChild(fragment);
+  for (const entry of appended) applyTerminalMessageClamps(entry);
+  if (startIndex > 0 && options.scheduleNext !== false) scheduleTerminalTraceRender(details);
 }
 
 function toggleTerminalTraceGroup(details) {
@@ -4632,22 +4888,26 @@ function toggleTerminalTraceGroup(details) {
   const shouldFollowLatest = terminal && !state.terminalFollowPaused && terminalAtLatest(terminal);
   if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
   details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
-  if (shouldOpen) materializeTerminalTraceGroup(details);
+  if (shouldOpen) {
+    details.open = true;
+    materializeTerminalTraceGroup(details);
+  } else {
+    cancelTerminalTraceRender(details);
+  }
   setTerminalTraceGroupOpen(details, shouldOpen);
   details.open = true;
-  setTerminalTraceBodyHeight(details);
   void details.offsetHeight;
   details.classList.add("terminal-trace-animating", shouldOpen ? "terminal-trace-opening" : "terminal-trace-closing");
 
-  const duration = shouldOpen ? 170 : 130;
+  const duration = shouldOpen ? TERMINAL_TRACE_OPEN_DURATION_MS : TERMINAL_TRACE_CLOSE_DURATION_MS;
   if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, duration + 40);
   details._traceToggleTimer = window.setTimeout(() => {
     if (!shouldOpen) {
       details.open = false;
       details._traceBody?.remove();
       details._traceBody = null;
-    } else {
-      details._traceBody?.style.removeProperty("--trace-body-height");
+      details._traceBodyContent = null;
+      details._traceRenderIndex = null;
     }
     details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
     if (shouldFollowLatest) scrollTerminalToLatestNow(terminal);
@@ -4895,12 +5155,13 @@ function renderLogs(id, options = {}) {
   }
 
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
+  const animateIncoming = !options.suppressIncoming;
   const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
   const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
   const fragment = document.createDocumentFragment();
   for (const group of groups) {
     const renderKey = terminalGroupRenderKey(group);
-    appendTerminalBlock(fragment, group, { incoming: Boolean(previousKeys && !previousKeys.has(renderKey)) });
+    appendTerminalBlock(fragment, group, { incoming: Boolean(animateIncoming && previousKeys && !previousKeys.has(renderKey)) });
   }
   if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
@@ -4975,7 +5236,10 @@ function connectWs() {
         createdAt: message.payload.createdAt,
       };
       appendLogEntry(log);
-      if (isAgentTurnEndedLog(log)) notifyAgentTurnEnded(log.flowId);
+      if (isAgentTurnEndedLog(log)) {
+        refreshFlowDiffAfterAgentTurn(log.flowId);
+        notifyAgentTurnEnded(log.flowId);
+      }
       if (isShellOnlyRenderLog(log)) {
         scheduleShellOutputRender(log.flowId);
         return;
