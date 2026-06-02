@@ -1293,6 +1293,10 @@ function isNoActiveTurnInterruptError(error: unknown) {
   return error instanceof Error && /no active turn to interrupt/i.test(error.message);
 }
 
+function isNoActiveTurnSteerError(error: unknown) {
+  return error instanceof Error && /no active turn to steer/i.test(error.message);
+}
+
 function codexThreadMetadata(payload: {
   model?: string | null;
   reasoningEffort?: string | null;
@@ -1521,8 +1525,12 @@ function isAgentMessageSource(source: string) {
   return source === "agent:message" || source === "agent";
 }
 
-function isShellOwnedLogSource(source: string) {
-  return source.startsWith("shell:") && source !== "shell:command";
+function isAgentResponseSource(source: string) {
+  return isAgentMessageSource(source) || source === "agent:thinking" || source === "agent:reasoning";
+}
+
+function isUserLogSource(source: string) {
+  return source === "user" || source === "user:queued";
 }
 
 function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
@@ -1544,8 +1552,35 @@ function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: 
   );
 }
 
+function createAgentTraceGroupBeforeFinalResponse(flowId: string, afterId: number, beforeId: number) {
+  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter((log) => log.id < beforeId);
+  let finalResponseIndex = -1;
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    if (isAgentResponseSource(logs[index].source)) {
+      finalResponseIndex = index;
+      break;
+    }
+  }
+  if (finalResponseIndex <= 0) return;
+
+  let finalResponseStartIndex = finalResponseIndex;
+  for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
+    if (!isAgentResponseSource(logs[index].source)) break;
+    finalResponseStartIndex = index;
+  }
+  if (finalResponseStartIndex <= 0) return;
+
+  let segmentAfterId = afterId;
+  for (const log of logs.slice(0, finalResponseStartIndex)) {
+    if (!isUserLogSource(log.source)) continue;
+    createTraceGroupBetweenLogs(flowId, segmentAfterId, log.id);
+    segmentAfterId = log.id;
+  }
+  createTraceGroupBetweenLogs(flowId, segmentAfterId, logs[finalResponseStartIndex].id);
+}
+
 function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
-  createTraceGroupBetweenLogs(flowId, promptId, beforeId);
+  createAgentTraceGroupBeforeFinalResponse(flowId, promptId, beforeId);
 }
 
 function createTurnTraceGroup(flowId: string, beforeId: number) {
@@ -1558,28 +1593,7 @@ function createCompletedTurnTraceGroup(flowId: string) {
   const prompt = latestUserLogStmt.get(flowId) as { id: number } | null;
   if (!prompt) return;
 
-  const logs = logsAfterStmt.all(flowId, prompt.id) as LogRow[];
-  let finalMessageIndex = -1;
-  for (let index = logs.length - 1; index >= 0; index -= 1) {
-    if (isAgentMessageSource(logs[index].source)) {
-      finalMessageIndex = index;
-      break;
-    }
-  }
-  if (finalMessageIndex <= 0) return;
-
-  const finalSource = logs[finalMessageIndex].source;
-  let finalMessageStartIndex = finalMessageIndex;
-  for (let index = finalMessageIndex - 1; index >= 0; index -= 1) {
-    const source = logs[index].source;
-    if (isShellOwnedLogSource(source)) continue;
-    if (source !== finalSource) break;
-    finalMessageStartIndex = index;
-  }
-  if (finalMessageStartIndex <= 0) return;
-
-  const beforeId = logs[finalMessageStartIndex].id;
-  createTurnTraceGroup(flowId, beforeId);
+  createAgentTraceGroupBeforeFinalResponse(flowId, prompt.id, Number.MAX_SAFE_INTEGER);
 }
 
 function worktreeBranchUpdate(flowId: string): Partial<Flow> {
@@ -1890,12 +1904,19 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
   if (!runtime.threadId) throw new Error("Codex thread is not ready.");
   runtime.lastSeenAt = Date.now();
   if (runtime.activeTurnId) {
-    await sendCodexRequest(runtime, "turn/steer", {
-      threadId: runtime.threadId,
-      input: textInput(message),
-      expectedTurnId: runtime.activeTurnId,
-    });
-    return;
+    try {
+      await sendCodexRequest(runtime, "turn/steer", {
+        threadId: runtime.threadId,
+        input: textInput(message),
+        expectedTurnId: runtime.activeTurnId,
+      });
+      return;
+    } catch (error) {
+      if (!isNoActiveTurnSteerError(error)) throw error;
+      runtime.activeTurnId = undefined;
+      setActiveTurnId(runtime.flowId);
+      insertLog(runtime.flowId, "agent:status", "stale active turn cleared before starting a new turn");
+    }
   }
   const response = (await sendCodexRequest(runtime, "turn/start", codexTurnParams(runtime, flow, message))) as {
     turn?: { id?: string };

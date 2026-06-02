@@ -3124,18 +3124,6 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
   transform: translateY(4px);
 }
 
-.history-search-indicator strong {
-  font-weight: 700;
-}
-
-.history-search-indicator[data-mode="prompt"] strong {
-  color: #d97706;
-}
-
-.history-search-indicator[data-mode="shell"] strong {
-  color: #22c55e;
-}
-
 .message-input.drag-over {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--drop-accent) 36%, transparent),
@@ -3380,7 +3368,7 @@ body.theme-dark .terminal-entry-working-shell .agent-working {
 .prompt-input-pane:not(.prompt-queued) .message-input:focus {
   border-color: #6d28d9;
   box-shadow: 0 0 0 1px rgba(109, 40, 217, 0.24);
-  caret-color: #6d28d9;
+  caret-color: var(--text);
 }
 
 body.theme-dark .prompt-input-pane:not(.prompt-queued):focus-within .prompt-input-prefix {
@@ -3390,7 +3378,7 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued):focus-within .prompt-inpu
 body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
   border-color: #c084fc;
   box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.28);
-  caret-color: #c084fc;
+  caret-color: var(--text);
 }
 
 .shell-input {
@@ -3682,8 +3670,26 @@ body.theme-dark .agent-context-diff:focus-visible {
   padding: 14px;
   overflow: auto;
   overscroll-behavior: contain;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
   background: var(--terminal);
   color: var(--terminal-ink);
+}
+
+.diff-modal-code::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+
+.diff-modal-code::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.diff-modal-code::-webkit-scrollbar-thumb {
+  border: 2px solid var(--terminal);
+  border-radius: 999px;
+  background: var(--line-strong);
 }
 
 .diff-modal-code code {

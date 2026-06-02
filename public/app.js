@@ -626,9 +626,8 @@ function renderHistorySearchIndicator() {
     return;
   }
   indicator.dataset.mode = search.mode;
-  const label = search.mode === "shell" ? "shell" : "prompt";
   const resultText = search.query && !search.matches.length ? " no match" : "";
-  indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;
+  indicator.innerHTML = `i-search: ${escapeHtml(search.query)}_${resultText}`;
 }
 
 function updateHistorySearchMatches(input, query) {
@@ -3810,6 +3809,18 @@ function isLiveAgentTextSource(source) {
   return ["agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
 
+function isAgentMessageSource(source) {
+  return source === "agent" || source === "agent:message";
+}
+
+function isAgentResponseSource(source) {
+  return isAgentMessageSource(source) || source === "agent:thinking" || source === "agent:reasoning";
+}
+
+function isUserLogSource(source) {
+  return source === "user" || source === "user:queued";
+}
+
 function parseTraceGroup(log) {
   if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
@@ -3924,6 +3935,80 @@ function traceRangeForLog(log, ranges) {
   return ranges.find((range) => log.id > range.afterId && log.id < range.beforeId) || null;
 }
 
+function isTraceGroupSource(source) {
+  return source === "agent:trace-group" || source === "shell:trace-group";
+}
+
+function traceRangeLogCount(logs, afterId, beforeId) {
+  return logs.filter((log) => log.id > afterId && log.id < beforeId && !isTraceGroupSource(log.source)).length;
+}
+
+function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId) {
+  const key = `${afterId}:${beforeId}`;
+  if (seen.has(key) || traceRangeLogCount(logs, afterId, beforeId) <= 1) return;
+  result.push({ ...range, afterId, beforeId, key, count: traceRangeLogCount(logs, afterId, beforeId) });
+  seen.add(key);
+}
+
+function finalResponseStartIdForTrace(range, rangeLogs) {
+  let finalResponseIndex = -1;
+  for (let index = rangeLogs.length - 1; index >= 0; index -= 1) {
+    if (isAgentResponseSource(rangeLogs[index].source)) {
+      finalResponseIndex = index;
+      break;
+    }
+  }
+  if (finalResponseIndex < 0) return range.beforeId;
+
+  let finalResponseStartIndex = finalResponseIndex;
+  for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
+    if (!isAgentResponseSource(rangeLogs[index].source)) break;
+    finalResponseStartIndex = index;
+  }
+  return rangeLogs[finalResponseStartIndex].id;
+}
+
+function sanitizeTraceRanges(logs, ranges) {
+  const result = [];
+  const seen = new Set();
+  for (const range of ranges) {
+    const rangeLogs = logs.filter((log) => log.id > range.afterId && log.id < range.beforeId && !isTraceGroupSource(log.source));
+    const beforeId = finalResponseStartIdForTrace(range, rangeLogs);
+    let segmentAfterId = range.afterId;
+    for (const log of rangeLogs) {
+      if (log.id >= beforeId) break;
+      if (!isUserLogSource(log.source)) continue;
+      addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id);
+      segmentAfterId = log.id;
+    }
+    addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, beforeId);
+  }
+  return result;
+}
+
+function isFinalResponseLogForTrace(log, traceRange, logs) {
+  if (!isAgentResponseSource(log.source)) return false;
+  let finalResponseIndex = -1;
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const candidate = logs[index];
+    if (candidate.id <= traceRange.afterId || candidate.id >= traceRange.beforeId) continue;
+    if (isAgentResponseSource(candidate.source)) {
+      finalResponseIndex = index;
+      break;
+    }
+  }
+  if (finalResponseIndex < 0) return false;
+
+  let finalResponseStartIndex = finalResponseIndex;
+  for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
+    const candidate = logs[index];
+    if (candidate.id <= traceRange.afterId || candidate.id >= traceRange.beforeId) continue;
+    if (!isAgentResponseSource(candidate.source)) break;
+    finalResponseStartIndex = index;
+  }
+  return log.id >= logs[finalResponseStartIndex].id && log.id <= logs[finalResponseIndex].id;
+}
+
 function appendTerminalGroup(groups, log) {
   const previous = groups[groups.length - 1];
   if (previous && previous.source === log.source && isStreamingSource(log.source)) {
@@ -4016,11 +4101,11 @@ function terminalGroups(logs, flow) {
     .map((log) => parseTraceGroup(log))
     .filter((range) => range && range.kind !== "shell");
   const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
-  const traceRanges = [
+  const traceRanges = sanitizeTraceRanges(normalizedLogs, [
     ...persistedTraceRanges,
     ...runtimeDisappearedTraceRanges,
     ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),
-  ];
+  ]);
   const traceGroups = new Map();
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
@@ -4034,7 +4119,7 @@ function terminalGroups(logs, flow) {
     }
     const traceRange = traceRangeForLog(log, traceRanges);
     if (isHiddenTerminalLog(log)) continue;
-    if (traceRange) {
+    if (traceRange && !isUserLogSource(log.source) && !isFinalResponseLogForTrace(log, traceRange, normalizedLogs)) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
         traceGroup = {
