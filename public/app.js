@@ -4054,29 +4054,6 @@ function sanitizeTraceRanges(logs, ranges) {
   return result;
 }
 
-function isFinalResponseLogForTrace(log, traceRange, logs) {
-  if (!isAgentMessageSource(log.source)) return false;
-  let finalResponseIndex = -1;
-  for (let index = logs.length - 1; index >= 0; index -= 1) {
-    const candidate = logs[index];
-    if (candidate.id <= traceRange.afterId || candidate.id >= traceRange.beforeId) continue;
-    if (isAgentMessageSource(candidate.source)) {
-      finalResponseIndex = index;
-      break;
-    }
-  }
-  if (finalResponseIndex < 0) return false;
-
-  let finalResponseStartIndex = finalResponseIndex;
-  for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
-    const candidate = logs[index];
-    if (candidate.id <= traceRange.afterId || candidate.id >= traceRange.beforeId) continue;
-    if (!isAgentMessageSource(candidate.source)) break;
-    finalResponseStartIndex = index;
-  }
-  return log.id >= logs[finalResponseStartIndex].id && log.id <= logs[finalResponseIndex].id;
-}
-
 function appendTerminalGroup(groups, log, options = {}) {
   const previous = groups[groups.length - 1];
   if (!options.forceNew && previous && previous.source === log.source && isStreamingSource(log.source)) {
@@ -4149,11 +4126,24 @@ function markLiveTerminalGroup(groups, flow) {
   return groups;
 }
 
+function plainTerminalText(message) {
+  return String(message || "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\[(\d{1,3}(?:;\d{1,3})*)m/g, "");
+}
+
+function isNoisyAgentStderr(message) {
+  return /ERROR\s+rmcp::transport::worker:\s+worker quit with fatal:\s+Transport channel closed\b/.test(
+    plainTerminalText(message),
+  );
+}
+
 function isHiddenTerminalLog(log) {
   if (isAgentMessageBoundarySource(log.source)) return true;
   const message = String(log.message || "").trim();
   if (log.source === "agent:tool-result" && message === "completed exit 0") return true;
   if (log.source === "agent:tool-result" && message === "failed exit 7") return true;
+  if (log.source === "agent:stderr" && isNoisyAgentStderr(message)) return true;
   return (
     log.source === "agent:status" &&
     (/^turn started\b/.test(message) ||
@@ -4193,7 +4183,7 @@ function terminalGroups(logs, flow) {
     }
     const traceRange = traceRangeForLog(log, traceRanges);
     if (isHiddenTerminalLog(log)) continue;
-    if (traceRange && !isUserLogSource(log.source) && !isFinalResponseLogForTrace(log, traceRange, normalizedLogs)) {
+    if (traceRange && !isUserLogSource(log.source)) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
         traceGroup = {
@@ -4322,12 +4312,7 @@ function latestShellGroups(logs, clearAfterLogId = 0) {
 }
 
 function hasVisibleTerminalOutput(message) {
-  return Boolean(
-    String(message || "")
-      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-      .replace(/\[(\d{1,3}(?:;\d{1,3})*)m/g, "")
-      .trim(),
-  );
+  return Boolean(plainTerminalText(message).trim());
 }
 
 function isShellOutputLog(log) {

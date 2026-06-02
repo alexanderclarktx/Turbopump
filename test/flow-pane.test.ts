@@ -1814,6 +1814,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("/^Codex thread \\S+ ready$/i");
     expect(app).toContain('log.source === "agent:tool-result" && message === "completed exit 0"');
     expect(app).toContain('log.source === "agent:tool-result" && message === "failed exit 7"');
+    expect(app).toContain("function plainTerminalText(message)");
+    expect(app).toContain(".replace(/\\x1b\\[[0-?]*[ -/]*[@-~]/g, \"\")");
+    expect(app).toContain("function isNoisyAgentStderr(message)");
+    expect(app).toContain("plainTerminalText(message)");
+    expect(app).toContain("/ERROR\\s+rmcp::transport::worker:\\s+worker quit with fatal:\\s+Transport channel closed\\b/");
+    expect(app).toContain('log.source === "agent:stderr" && isNoisyAgentStderr(message)');
     expect(app).toContain("function isRoutineShellExitLog(log)");
     expect(app).toContain('String(log.message || "").trim() === "completed exit 0"');
     expect(app).toContain("if (isHiddenTerminalLog(log)) continue;");
@@ -2072,13 +2078,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (!isUserLogSource(log.source)) continue;");
     expect(app).toContain("addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id);");
     expect(app).toContain("addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, beforeId);");
-    expect(app).toContain("function isFinalResponseLogForTrace(log, traceRange, logs)");
-    expect(app).toContain("if (!isAgentMessageSource(log.source)) return false;");
-    expect(app).toContain("let finalResponseIndex = -1;");
-    expect(app).toContain("candidate.id <= traceRange.afterId || candidate.id >= traceRange.beforeId");
-    expect(app).toContain("if (isAgentMessageSource(candidate.source))");
-    expect(app).toContain("let finalResponseStartIndex = finalResponseIndex;");
-    expect(app).toContain("return log.id >= logs[finalResponseStartIndex].id && log.id <= logs[finalResponseIndex].id;");
+    expect(app).not.toContain("function isFinalResponseLogForTrace(log, traceRange, logs)");
     expect(app).not.toContain('String(log.message || "").trim() === "agent runtime disappeared while status was running"');
     expect(app).not.toContain("const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);");
     expect(app).toContain("function traceRangeHasAgentTurnEnd(logs, range)");
@@ -2094,7 +2094,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('ranges.push({ afterId, beforeId, count, key, kind: "shell" });');
     expect(app).toContain("if (isHiddenTerminalLog(log)) continue;");
     expect(app).toContain("if (isAgentMessageBoundarySource(log.source)) return true;");
-    expect(app).toContain("if (traceRange && !isUserLogSource(log.source) && !isFinalResponseLogForTrace(log, traceRange, normalizedLogs)) {");
+    expect(app).toContain("if (traceRange && !isUserLogSource(log.source)) {");
     expect(app).toContain("const traceRanges = sanitizeTraceRanges(normalizedLogs, [");
     expect(app).toContain("...completedTurnTraceRanges,");
     expect(app).not.toContain("...runtimeDisappearedTraceRanges,");
