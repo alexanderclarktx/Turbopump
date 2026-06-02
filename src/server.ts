@@ -273,7 +273,6 @@ const insertLogStmt = db.query(`
 const logByIdStmt = db.query("select * from logs where id = ?");
 const deleteLogByIdStmt = db.query("delete from logs where id = ?");
 const deleteLogsByFlowIdStmt = db.query("delete from logs where flowId = ?");
-const latestUserLogStmt = db.query("select id from logs where flowId = ? and source = 'user' order by id desc limit 1");
 const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
 );
@@ -805,8 +804,7 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
     const recovered = await recoverAgentRuntime(flow);
     if (recovered) return getFlow(flow.id) ?? flow;
     if (statusAge < agentRuntimeStartGraceMs) return flow;
-    const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
-    createTurnTraceGroup(flow.id, errorLogId);
+    insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
     updateFlow(flow.id, { agentStatus: "failed" });
     return getFlow(flow.id) ?? flow;
   }
@@ -1468,6 +1466,9 @@ function codexItemCompletedLog(item: Record<string, unknown>) {
   if (item.type === "mcpToolCall") {
     return { source: "agent:tool-result", message: `mcp ${String(item.status ?? "completed")}` };
   }
+  if (item.type === "agentMessage") {
+    return { source: "agent:message-boundary", message: "" };
+  }
   return null;
 }
 
@@ -1521,22 +1522,24 @@ function handleCodexServerRequest(runtime: RuntimeProcess, message: Record<strin
   return true;
 }
 
-function isAgentMessageSource(source: string) {
-  return source === "agent:message" || source === "agent";
-}
-
-function isAgentResponseSource(source: string) {
-  return isAgentMessageSource(source) || source === "agent:thinking" || source === "agent:reasoning";
-}
-
 function isUserLogSource(source: string) {
   return source === "user" || source === "user:queued";
+}
+
+function isAgentMessageBoundarySource(source: string) {
+  return source === "agent:message-boundary";
+}
+
+function isTraceCountSource(source: string) {
+  return !isAgentMessageBoundarySource(source);
 }
 
 function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
   if (beforeId <= afterId) return;
 
-  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter((log) => log.id < beforeId);
+  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter(
+    (log) => log.id < beforeId && isTraceCountSource(log.source),
+  );
   const traceCount = logs.length;
   if (traceCount <= 1) return;
 
@@ -1552,48 +1555,11 @@ function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: 
   );
 }
 
-function createAgentTraceGroupBeforeFinalResponse(flowId: string, afterId: number, beforeId: number) {
-  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter((log) => log.id < beforeId);
-  let finalResponseIndex = -1;
-  for (let index = logs.length - 1; index >= 0; index -= 1) {
-    if (isAgentResponseSource(logs[index].source)) {
-      finalResponseIndex = index;
-      break;
-    }
-  }
-  if (finalResponseIndex <= 0) return;
-
-  let finalResponseStartIndex = finalResponseIndex;
-  for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
-    if (!isAgentResponseSource(logs[index].source)) break;
-    finalResponseStartIndex = index;
-  }
-  if (finalResponseStartIndex <= 0) return;
-
-  let segmentAfterId = afterId;
-  for (const log of logs.slice(0, finalResponseStartIndex)) {
-    if (!isUserLogSource(log.source)) continue;
-    createTraceGroupBetweenLogs(flowId, segmentAfterId, log.id);
-    segmentAfterId = log.id;
-  }
-  createTraceGroupBetweenLogs(flowId, segmentAfterId, logs[finalResponseStartIndex].id);
-}
-
-function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
-  createAgentTraceGroupBeforeFinalResponse(flowId, promptId, beforeId);
-}
-
-function createTurnTraceGroup(flowId: string, beforeId: number) {
+function createCompletedTurnTraceGroup(flowId: string, beforeId: number) {
   const prompt = latestUserLogBeforeStmt.get(flowId, beforeId) as { id: number } | null;
   if (!prompt) return;
-  createTraceGroupAfterPrompt(flowId, prompt.id, beforeId);
-}
 
-function createCompletedTurnTraceGroup(flowId: string) {
-  const prompt = latestUserLogStmt.get(flowId) as { id: number } | null;
-  if (!prompt) return;
-
-  createAgentTraceGroupBeforeFinalResponse(flowId, prompt.id, Number.MAX_SAFE_INTEGER);
+  createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);
 }
 
 function worktreeBranchUpdate(flowId: string): Partial<Flow> {
@@ -1649,13 +1615,13 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     const turn = params.turn as { id?: string; status?: string; error?: { message?: string } | null } | undefined;
     if (!turn?.id || turn.id === runtime.activeTurnId) runtime.activeTurnId = undefined;
     if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
-    createCompletedTurnTraceGroup(runtime.flowId);
-    if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     if (runtime.compacting && turn?.status !== "failed") {
       finishCodexCompaction(runtime, params);
       return;
     }
-    insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
+    const turnStatusLogId = insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
+    createCompletedTurnTraceGroup(runtime.flowId, turnStatusLogId + 1);
+    if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     if (runtime.compacting) {
       runtime.compacting = false;
       runtime.compactingStartedAt = undefined;
@@ -2016,8 +1982,6 @@ async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMe
   if (!updated) throw new Error("Flow disappeared while starting agent.");
 
   const existingRuntime = agentProcesses.get(flow.id);
-  const isSteerMessage = Boolean(existingRuntime?.activeTurnId);
-  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
   let runtime: RuntimeProcess | undefined;
   let createdRuntime = false;
   try {
@@ -2115,9 +2079,7 @@ async function startAgent(flow: Flow, userMessage = "") {
   const updated = getFlow(flow.id);
   if (!updated) throw new Error("Flow disappeared while starting agent.");
 
-  const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);
   const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\n`) : 0;
-  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
   let runtime: RuntimeProcess | undefined;
   let createdRuntime = false;
   try {

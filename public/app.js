@@ -208,6 +208,8 @@ const state = {
   flowSplitSize: initialFlowSplitSize(),
   shellOutputSplitSize: initialShellOutputSplitSize(),
   ticketDrawerHidden: false,
+  ticketSearchOpen: false,
+  ticketSearchQuery: "",
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
   messageSubmitting: false,
@@ -260,6 +262,10 @@ const els = {
   linearApiKey: document.querySelector("#linearApiKey"),
   refreshLinearTickets: document.querySelector("#refreshLinearTickets"),
   createLinearTicket: document.querySelector("#createLinearTicket"),
+  searchLinearTickets: document.querySelector("#searchLinearTickets"),
+  ticketSearchPane: document.querySelector("#ticketSearchPane"),
+  ticketSearchInput: document.querySelector("#ticketSearchInput"),
+  closeTicketSearch: document.querySelector("#closeTicketSearch"),
   linearState: document.querySelector("#linearState"),
   envEditor: document.querySelector("#envEditor"),
   checkoutList: document.querySelector("#checkoutList"),
@@ -377,6 +383,31 @@ function setLinearStatusCollapsed(status, collapsed) {
   }
   group.dataset.collapsed = String(collapsed);
   group.querySelector(".ticket-status-separator")?.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function setTicketSearchOpen(open) {
+  state.ticketSearchOpen = Boolean(open);
+  els.refreshLinearTickets.hidden = state.ticketSearchOpen;
+  els.createLinearTicket.hidden = state.ticketSearchOpen;
+  els.searchLinearTickets.hidden = state.ticketSearchOpen;
+  els.ticketSearchPane.hidden = !state.ticketSearchOpen;
+}
+
+function openTicketSearch() {
+  setTicketSearchOpen(true);
+  els.ticketSearchInput.value = state.ticketSearchQuery;
+  renderTickets();
+  requestAnimationFrame(() => {
+    els.ticketSearchInput.focus({ preventScroll: true });
+    els.ticketSearchInput.select();
+  });
+}
+
+function closeTicketSearch() {
+  state.ticketSearchQuery = "";
+  els.ticketSearchInput.value = "";
+  setTicketSearchOpen(false);
+  renderTickets();
 }
 
 async function api(path, options = {}) {
@@ -2758,8 +2789,16 @@ async function loadLinearTickets(options = {}) {
 
 function renderTickets() {
   const tickets = sortedLinearTickets(state.linearTickets);
-  const pinnedTickets = orderedPinnedTickets(tickets);
+  const searchQuery = normalizedTicketSearchQuery();
+  const pinnedTickets = orderedPinnedTickets(tickets).filter((ticket) => !searchQuery || ticketMatchesTicketSearch(ticket, searchQuery));
   const groups = groupedTicketsByLinearStatus(tickets.filter((ticket) => !isLinearIssuePinned(ticket.identifier)));
+  const ticketGroups = searchQuery
+    ? groups.map((group) => ({
+        ...group,
+        collapsed: false,
+        tickets: group.tickets.filter((ticket) => ticketMatchesTicketSearch(ticket, searchQuery)),
+      }))
+    : groups;
   const signature = tickets
     .map((ticket) =>
       [
@@ -2774,7 +2813,9 @@ function renderTickets() {
     )
     .join("\u001e")
     .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"))
-    .concat("\u001d", [...state.pinnedLinearIssues].join("\u001f"));
+    .concat("\u001d", [...state.pinnedLinearIssues].join("\u001f"))
+    .concat("\u001d", state.ticketSearchOpen ? "search-open" : "search-closed", "\u001f", searchQuery)
+    .concat("\u001d", state.selectedLinearIssueId);
 
   if (els.ticketGrid.dataset.ticketSignature === signature) {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
@@ -2784,11 +2825,20 @@ function renderTickets() {
   }
 
   els.ticketGrid.dataset.ticketSignature = signature;
+
   const nodes = [renderPinnedTicketGroup(pinnedTickets)];
-  for (const group of groups) {
+  for (const group of ticketGroups) {
     nodes.push(renderTicketStatusGroup(group));
   }
   els.ticketGrid.replaceChildren(...nodes);
+}
+
+function normalizedTicketSearchQuery() {
+  return state.ticketSearchQuery.trim().toLowerCase();
+}
+
+function ticketMatchesTicketSearch(ticket, query) {
+  return String(ticket.title || "").toLowerCase().includes(query);
 }
 
 function ticketHasAgentSession(ticket) {
@@ -2854,6 +2904,8 @@ function renderTicketStatusGroup(group) {
   section.dataset.status = group.key;
   section.dataset.stateId = group.stateId;
   section.dataset.collapsed = String(group.collapsed);
+  const selectedTicketVisible = group.collapsed && group.tickets.some((ticket) => ticket.identifier === state.selectedLinearIssueId);
+  section.dataset.selectedTicketVisible = String(selectedTicketVisible);
   section.addEventListener("dragenter", (event) => handleTicketStatusDragEnter(event, group));
   section.addEventListener("dragover", (event) => handleTicketStatusDragOver(event, group));
   section.addEventListener("dragleave", handleTicketStatusDragLeave);
@@ -2863,7 +2915,10 @@ function renderTicketStatusGroup(group) {
   body.className = "ticket-status-group-body";
   const items = document.createElement("div");
   items.className = "ticket-status-group-items";
-  items.replaceChildren(...group.tickets.map((ticket) => renderTicketCard(ticket)));
+  const visibleTickets = selectedTicketVisible
+    ? group.tickets.filter((ticket) => ticket.identifier === state.selectedLinearIssueId)
+    : group.tickets;
+  items.replaceChildren(...visibleTickets.map((ticket) => renderTicketCard(ticket)));
   body.append(items);
 
   section.append(renderTicketStatusSeparator(group), body);
@@ -2976,6 +3031,11 @@ function ticketCanMoveToStatus(issueId, group) {
   return Boolean(ticket && group.stateId && (isLinearIssuePinned(issueId) || linearStatusId(ticket) !== group.stateId));
 }
 
+function ticketWouldHighlightStatusGroup(issueId, group) {
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  return Boolean(ticket && group.stateId && linearStatusId(ticket) !== group.stateId);
+}
+
 function setTicketStatusGroupDragOver(groupElement, active) {
   groupElement.classList.toggle("drag-over", active);
 }
@@ -3029,17 +3089,23 @@ function clearTicketDragState() {
 }
 
 function handleTicketStatusDragEnter(event, group) {
-  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) return;
+  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) {
+    setTicketStatusGroupDragOver(event.currentTarget, false);
+    return;
+  }
   event.preventDefault();
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightStatusGroup(state.draggingLinearIssueId, group));
 }
 
 function handleTicketStatusDragOver(event, group) {
   updateTicketDragAutoScroll(event);
-  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) return;
+  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) {
+    setTicketStatusGroupDragOver(event.currentTarget, false);
+    return;
+  }
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightStatusGroup(state.draggingLinearIssueId, group));
 }
 
 function handleTicketStatusDragLeave(event) {
@@ -3065,6 +3131,10 @@ function handleTicketStatusDrop(event, group) {
 
 function ticketCanMoveToPinned(issueId) {
   return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId));
+}
+
+function ticketWouldHighlightPinnedGroup(issueId) {
+  return ticketCanMoveToPinned(issueId) && !isLinearIssuePinned(issueId);
 }
 
 function clearPinnedTicketDropTarget(section) {
@@ -3095,7 +3165,7 @@ function updatePinnedTicketDropTarget(event) {
 function handlePinnedTicketDragEnter(event) {
   if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
   event.preventDefault();
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightPinnedGroup(state.draggingLinearIssueId));
 }
 
 function handlePinnedTicketDragOver(event) {
@@ -3103,7 +3173,7 @@ function handlePinnedTicketDragOver(event) {
   if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightPinnedGroup(state.draggingLinearIssueId));
   updatePinnedTicketDropTarget(event);
 }
 
@@ -3214,11 +3284,16 @@ function ticketAgentWorking(ticket) {
   );
 }
 
+function ticketShellRunning(ticket) {
+  return flowShellLive(flowForTicket(ticket));
+}
+
 function updateTicketCardState(card) {
   const ticket = state.linearTickets.find((item) => item.identifier === card.dataset.issue);
   const active = card.dataset.issue === state.selectedLinearIssueId;
   card.classList.toggle("active", active);
   card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+  card.classList.toggle("shell-command-active", ticketShellRunning(ticket));
   card.classList.toggle("agent-turn-notified", !active && state.notifiedLinearIssueIds.has(card.dataset.issue));
   card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
 }
@@ -3229,6 +3304,19 @@ function updateTicketCardsForIdentifiers(...identifiers) {
   for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
     if (issueIds.has(card.dataset.issue)) updateTicketCardState(card);
   }
+}
+
+function ticketInCollapsedStatusGroup(identifier) {
+  const ticket = state.linearTickets.find((item) => item.identifier === identifier);
+  return Boolean(ticket && !isLinearIssuePinned(identifier) && state.collapsedLinearStatuses.has(linearStatusKey(linearStatusName(ticket))));
+}
+
+function updateTicketSelectionCards(previousIssueId, nextIssueId) {
+  if (ticketInCollapsedStatusGroup(previousIssueId) || ticketInCollapsedStatusGroup(nextIssueId)) {
+    renderTickets();
+    return;
+  }
+  updateTicketCardsForIdentifiers(previousIssueId, nextIssueId);
 }
 
 function loadSelectedFlowLogs(issueId, flowId, options = {}) {
@@ -3283,7 +3371,6 @@ function renderTicketCard(ticket) {
   card.role = "button";
   card.draggable = true;
   card.dataset.issue = ticket.identifier;
-  updateTicketCardState(card);
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
   card.innerHTML = `
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
@@ -3294,10 +3381,11 @@ function renderTicketCard(ticket) {
     </div>
     ${
       ticket.flowId
-        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow"></div>`
+        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow" title="In flow"></div>`
         : ""
     }
   `;
+  updateTicketCardState(card);
   card.addEventListener("dragstart", (event) => {
     state.draggingLinearIssueId = ticket.identifier;
     state.suppressTicketClick = true;
@@ -3351,7 +3439,7 @@ async function selectFlow(id) {
   localStorage.setItem("flow.selectedFlowId", id);
   localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
   resumeTerminalFollow();
-  updateTicketCardsForIdentifiers(previousIssueId, flow.linearIssueId);
+  updateTicketSelectionCards(previousIssueId, flow.linearIssueId);
   renderFlowPane({ light: true });
   if (previousIssueId !== flow.linearIssueId) animateTicketSwitch();
   scheduleSelectedFlowPaneRender(flow.linearIssueId, id);
@@ -3371,7 +3459,7 @@ async function openTicketInFlowPane(ticket) {
     localStorage.removeItem("flow.selectedFlowId");
   }
   resumeTerminalFollow();
-  updateTicketCardsForIdentifiers(previousIssueId, ticket.identifier);
+  updateTicketSelectionCards(previousIssueId, ticket.identifier);
   renderFlowPane({ light: true });
   if (previousIssueId !== ticket.identifier) animateTicketSwitch();
   scheduleSelectedFlowPaneRender(ticket.identifier, flow?.id || "");
@@ -3813,8 +3901,8 @@ function isAgentMessageSource(source) {
   return source === "agent" || source === "agent:message";
 }
 
-function isAgentResponseSource(source) {
-  return isAgentMessageSource(source) || source === "agent:thinking" || source === "agent:reasoning";
+function isAgentMessageBoundarySource(source) {
+  return source === "agent:message-boundary";
 }
 
 function isUserLogSource(source) {
@@ -3842,14 +3930,6 @@ function parseTraceGroup(log) {
   }
 }
 
-function isRuntimeDisappearedLog(log) {
-  return log.source === "agent:error" && String(log.message || "").trim() === "agent runtime disappeared while status was running";
-}
-
-function isTurnCompletedLog(log) {
-  return log.source === "agent:status" && /^turn completed\b/.test(String(log.message || "").trim());
-}
-
 function isAgentTurnEndedLog(log) {
   return (
     log.source === "agent:status" &&
@@ -3875,24 +3955,35 @@ function isRoutineShellExitLog(log) {
   return (log.source === "shell:result" || log.source === "agent:tool-result") && String(log.message || "").trim() === "completed exit 0";
 }
 
-function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
+function syntheticCompletedTurnTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
   let latestUserLog = null;
-  let latestUserLogIndex = -1;
   for (let index = 0; index < logs.length; index += 1) {
     const log = logs[index];
     if (log.source === "user") {
       latestUserLog = log;
-      latestUserLogIndex = index;
       continue;
     }
-    if (!latestUserLog || !isRuntimeDisappearedLog(log)) continue;
+    if (!latestUserLog || !isAgentTurnEndedLog(log)) continue;
     const afterId = Number(latestUserLog.id);
-    const beforeId = Number(log.id);
+    let beforeId = Number(log.id) + 1;
+    for (let nextIndex = index + 1; nextIndex < logs.length; nextIndex += 1) {
+      const nextLog = logs[nextIndex];
+      if (isUserLogSource(nextLog.source)) break;
+      if (isTraceGroupSource(nextLog.source)) continue;
+      if (!isAgentMessageSource(nextLog.source)) continue;
+      beforeId = Number(nextLog.id) + 1;
+      for (let messageIndex = nextIndex + 1; messageIndex < logs.length; messageIndex += 1) {
+        const messageLog = logs[messageIndex];
+        if (!isAgentMessageSource(messageLog.source)) break;
+        beforeId = Number(messageLog.id) + 1;
+      }
+      break;
+    }
     const key = `${afterId}:${beforeId}`;
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
-    const count = index - latestUserLogIndex - 1;
+    const count = traceRangeLogCount(logs, afterId, beforeId);
     if (count <= 1) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
@@ -3900,35 +3991,8 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
   return ranges;
 }
 
-function syntheticSteerTraceRanges(logs, existingRanges) {
-  const existingKeys = new Set(existingRanges.map((range) => range.key));
-  const ranges = [];
-  let latestUserLog = null;
-  let latestUserLogIndex = -1;
-  let sawTurnCompletedSinceUser = false;
-  for (let index = 0; index < logs.length; index += 1) {
-    const log = logs[index];
-    if (log.source === "user") {
-      if (latestUserLog && !sawTurnCompletedSinceUser) {
-        const afterId = Number(latestUserLog.id);
-        const beforeId = Number(log.id);
-        const key = `${afterId}:${beforeId}`;
-        if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
-          const count = index - latestUserLogIndex - 1;
-          if (count > 1) {
-            ranges.push({ afterId, beforeId, count, key });
-            existingKeys.add(key);
-          }
-        }
-      }
-      latestUserLog = log;
-      latestUserLogIndex = index;
-      sawTurnCompletedSinceUser = false;
-      continue;
-    }
-    if (latestUserLog && isTurnCompletedLog(log)) sawTurnCompletedSinceUser = true;
-  }
-  return ranges;
+function traceRangeHasAgentTurnEnd(logs, range) {
+  return logs.some((log) => log.id > range.afterId && log.id < range.beforeId && isAgentTurnEndedLog(log));
 }
 
 function traceRangeForLog(log, ranges) {
@@ -3939,8 +4003,12 @@ function isTraceGroupSource(source) {
   return source === "agent:trace-group" || source === "shell:trace-group";
 }
 
+function isStructuralTerminalSource(source) {
+  return isTraceGroupSource(source) || isAgentMessageBoundarySource(source);
+}
+
 function traceRangeLogCount(logs, afterId, beforeId) {
-  return logs.filter((log) => log.id > afterId && log.id < beforeId && !isTraceGroupSource(log.source)).length;
+  return logs.filter((log) => log.id > afterId && log.id < beforeId && !isStructuralTerminalSource(log.source)).length;
 }
 
 function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId) {
@@ -3953,7 +4021,7 @@ function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId) {
 function finalResponseStartIdForTrace(range, rangeLogs) {
   let finalResponseIndex = -1;
   for (let index = rangeLogs.length - 1; index >= 0; index -= 1) {
-    if (isAgentResponseSource(rangeLogs[index].source)) {
+    if (isAgentMessageSource(rangeLogs[index].source)) {
       finalResponseIndex = index;
       break;
     }
@@ -3962,7 +4030,7 @@ function finalResponseStartIdForTrace(range, rangeLogs) {
 
   let finalResponseStartIndex = finalResponseIndex;
   for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
-    if (!isAgentResponseSource(rangeLogs[index].source)) break;
+    if (!isAgentMessageSource(rangeLogs[index].source)) break;
     finalResponseStartIndex = index;
   }
   return rangeLogs[finalResponseStartIndex].id;
@@ -3987,12 +4055,12 @@ function sanitizeTraceRanges(logs, ranges) {
 }
 
 function isFinalResponseLogForTrace(log, traceRange, logs) {
-  if (!isAgentResponseSource(log.source)) return false;
+  if (!isAgentMessageSource(log.source)) return false;
   let finalResponseIndex = -1;
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const candidate = logs[index];
     if (candidate.id <= traceRange.afterId || candidate.id >= traceRange.beforeId) continue;
-    if (isAgentResponseSource(candidate.source)) {
+    if (isAgentMessageSource(candidate.source)) {
       finalResponseIndex = index;
       break;
     }
@@ -4003,15 +4071,15 @@ function isFinalResponseLogForTrace(log, traceRange, logs) {
   for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
     const candidate = logs[index];
     if (candidate.id <= traceRange.afterId || candidate.id >= traceRange.beforeId) continue;
-    if (!isAgentResponseSource(candidate.source)) break;
+    if (!isAgentMessageSource(candidate.source)) break;
     finalResponseStartIndex = index;
   }
   return log.id >= logs[finalResponseStartIndex].id && log.id <= logs[finalResponseIndex].id;
 }
 
-function appendTerminalGroup(groups, log) {
+function appendTerminalGroup(groups, log, options = {}) {
   const previous = groups[groups.length - 1];
-  if (previous && previous.source === log.source && isStreamingSource(log.source)) {
+  if (!options.forceNew && previous && previous.source === log.source && isStreamingSource(log.source)) {
     previous.message += log.message;
     previous.lastAt = log.createdAt;
     previous.logIds.push(log.id);
@@ -4025,6 +4093,7 @@ function appendTerminalGroup(groups, log) {
     message: log.message,
     createdAt: log.createdAt,
     lastAt: log.createdAt,
+    boundaryBefore: Boolean(options.forceNew),
   };
   groups.push(group);
   return group;
@@ -4049,7 +4118,7 @@ function mergeAdjacentStreamingGroups(groups) {
   const result = [];
   for (const group of groups) {
     const previous = result[result.length - 1];
-    if (previous && previous.source === group.source && isStreamingSource(group.source)) {
+    if (previous && !group.boundaryBefore && previous.source === group.source && isStreamingSource(group.source)) {
       previous.message += group.message;
       previous.lastAt = group.lastAt;
       previous.logIds.push(...(group.logIds || [group.id]));
@@ -4081,6 +4150,7 @@ function markLiveTerminalGroup(groups, flow) {
 }
 
 function isHiddenTerminalLog(log) {
+  if (isAgentMessageBoundarySource(log.source)) return true;
   const message = String(log.message || "").trim();
   if (log.source === "agent:tool-result" && message === "completed exit 0") return true;
   if (log.source === "agent:tool-result" && message === "failed exit 7") return true;
@@ -4099,16 +4169,20 @@ function terminalGroups(logs, flow) {
   const normalizedLogs = agentPaneLogs(logs, flow);
   const persistedTraceRanges = normalizedLogs
     .map((log) => parseTraceGroup(log))
-    .filter((range) => range && range.kind !== "shell");
-  const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
+    .filter((range) => range && range.kind !== "shell" && (range.kind || traceRangeHasAgentTurnEnd(normalizedLogs, range)));
+  const completedTurnTraceRanges = syntheticCompletedTurnTraceRanges(normalizedLogs, persistedTraceRanges);
   const traceRanges = sanitizeTraceRanges(normalizedLogs, [
+    ...completedTurnTraceRanges,
     ...persistedTraceRanges,
-    ...runtimeDisappearedTraceRanges,
-    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),
   ]);
   const traceGroups = new Map();
+  let forceTerminalGroupBoundary = false;
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
+    if (isAgentMessageBoundarySource(log.source)) {
+      forceTerminalGroupBoundary = true;
+      continue;
+    }
     const previousGroup = groups[groups.length - 1];
     if (
       log.source === "agent:tool" &&
@@ -4138,11 +4212,13 @@ function terminalGroups(logs, flow) {
         traceGroups.set(traceRange.key, traceGroup);
         groups.push(traceGroup);
       }
-      appendTerminalGroup(traceGroup.children, log);
+      appendTerminalGroup(traceGroup.children, log, { forceNew: forceTerminalGroupBoundary });
+      forceTerminalGroupBoundary = false;
       traceGroup.lastAt = log.createdAt;
       continue;
     }
-    appendTerminalGroup(groups, log);
+    appendTerminalGroup(groups, log, { forceNew: forceTerminalGroupBoundary });
+    forceTerminalGroupBoundary = false;
   }
   return markLiveTerminalGroup(mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups)), flow);
 }
@@ -4996,6 +5072,10 @@ function toggleTerminalTraceGroup(details) {
     }
     details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
     if (shouldFollowLatest) scrollTerminalToLatestNow(terminal);
+    flushDeferredTerminalLogRender(terminal, {
+      fromTraceFlush: true,
+      scrollToLatest: Boolean(shouldFollowLatest && terminalAtLatest(terminal)),
+    });
     details._traceToggleTimer = 0;
   }, duration);
 }
@@ -5226,11 +5306,10 @@ function renderLogs(id, options = {}) {
     terminal._flowLogFlowId === id &&
     terminal._flowLogSignature &&
     !options.force &&
-    !options.scrollToLatest &&
-    !agentWorking &&
-    (state.terminalFollowPaused || !terminalAtLatest(terminal))
+    ((terminalTraceInteractionActive(terminal) && !options.fromTraceFlush) ||
+      (!options.scrollToLatest && !agentWorking && (state.terminalFollowPaused || !terminalAtLatest(terminal))))
   ) {
-    terminal._flowLogPending = id;
+    deferTerminalLogRender(terminal, id, options);
     return;
   }
 
@@ -5255,8 +5334,36 @@ function renderLogs(id, options = {}) {
   terminal._flowLogSignature = signature;
   terminal._flowLogRenderedKeys = nextKeys;
   terminal._flowLogPending = "";
+  terminal._flowLogPendingOptions = null;
   if (atLatest) scrollTerminalToLatestNow(terminal);
   renderShellOutputPane(id);
+}
+
+function terminalTraceInteractionActive(terminal) {
+  return Boolean(terminal?.querySelector(".terminal-trace-animating"));
+}
+
+function mergeLogRenderOptions(existing = {}, incoming = {}) {
+  return {
+    force: Boolean(existing.force || incoming.force),
+    scrollToLatest: Boolean(existing.scrollToLatest || incoming.scrollToLatest),
+    suppressIncoming: Boolean(existing.suppressIncoming || incoming.suppressIncoming),
+    fromTraceFlush: Boolean(existing.fromTraceFlush || incoming.fromTraceFlush),
+  };
+}
+
+function deferTerminalLogRender(terminal, flowId, options = {}) {
+  terminal._flowLogPending = flowId;
+  terminal._flowLogPendingOptions = mergeLogRenderOptions(terminal._flowLogPendingOptions || {}, options);
+}
+
+function flushDeferredTerminalLogRender(terminal, options = {}) {
+  const pendingFlowId = terminal?._flowLogPending;
+  if (!pendingFlowId) return;
+  const pendingOptions = mergeLogRenderOptions(terminal._flowLogPendingOptions || {}, options);
+  terminal._flowLogPending = "";
+  terminal._flowLogPendingOptions = null;
+  renderLogs(pendingFlowId, pendingOptions);
 }
 
 function escapeHtml(value) {
@@ -5483,6 +5590,17 @@ els.linearKeyForm.addEventListener("submit", async (event) => {
 
 els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));
 els.createLinearTicket.addEventListener("click", () => void createPinnedLinearTicket());
+els.searchLinearTickets.addEventListener("click", openTicketSearch);
+els.closeTicketSearch.addEventListener("click", closeTicketSearch);
+els.ticketSearchInput.addEventListener("input", () => {
+  state.ticketSearchQuery = els.ticketSearchInput.value;
+  renderTickets();
+});
+els.ticketSearchInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  closeTicketSearch();
+});
 els.ticketGrid.addEventListener("dragover", handleTicketGridDragOver);
 
 els.flowPane.querySelector(".flow-resizer").addEventListener("pointerdown", startFlowSplitResize);
@@ -5502,10 +5620,8 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
   if (terminalAtLatest(terminal)) resumeTerminalFollow();
-  const pendingFlowId = terminal._flowLogPending;
-  if (!pendingFlowId || !terminalAtLatest(terminal)) return;
-  terminal._flowLogPending = "";
-  renderLogs(pendingFlowId, { scrollToLatest: true });
+  if (!terminal._flowLogPending || !terminalAtLatest(terminal)) return;
+  flushDeferredTerminalLogRender(terminal, { scrollToLatest: true });
 });
 
 els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
