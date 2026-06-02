@@ -797,6 +797,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-meta .linear-meta-priority {\n  display: inline-grid;");
     expect(css).toContain("min-width: 13px;\n  border: 0;\n  background: transparent;\n  padding: 0;");
     expect(css).toContain(".linear-meta > span,\n.linear-comments > header span");
+    expect(css).toContain(".linear-meta > span {\n  user-select: none;\n  -webkit-user-select: none;\n}");
     expect(css).not.toContain(".linear-meta span,\n.linear-comments > header span");
   });
 
@@ -916,7 +917,15 @@ describe("Turbopump pane markup", () => {
 
   test("grows the ticket favicon smoothly while the agent is in a turn", () => {
     expect(app).toContain("function ticketAgentWorking(ticket)");
-    expect(app).toContain("flowRuntimeActive(flow)");
+    const ticketAgentWorking = app.slice(
+      app.indexOf("function ticketAgentWorking(ticket)"),
+      app.indexOf("function ticketShellRunning(ticket)"),
+    );
+    expect(ticketAgentWorking).toContain("flowAgentRunning(flow)");
+    expect(ticketAgentWorking).toContain("state.messageSubmitting");
+    expect(ticketAgentWorking).not.toContain("flowRuntimeActive(flow)");
+    expect(ticketAgentWorking).not.toContain("state.shellSubmitting");
+    expect(ticketAgentWorking).not.toContain("state.interruptSubmitting");
     expect(app).toContain('card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));');
     expect(app).toContain("function updateTicketCardState(card)");
     expect(app).toContain("renderTickets();\n    renderFlowPane();");
@@ -2510,7 +2519,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);");
     expect(app).toContain('indicator.dataset.mode = "";');
     expect(app).toContain("indicator.dataset.mode = search.mode;");
-    expect(app).toContain("indicator.innerHTML = `i-search: ${escapeHtml(search.query)}_${resultText}`;");
+    expect(app).toContain('indicator.innerHTML = `<span class="history-search-label">i-search:</span> ${escapeHtml(search.query)}_${resultText}`;');
+    expect(css).toContain('.history-search-indicator[data-mode="prompt"] .history-search-label {\n  color: #6d28d9;\n}');
+    expect(css).toContain('.history-search-indicator[data-mode="shell"] .history-search-label {\n  color: #22c55e;\n}');
+    expect(css).toContain('body.theme-dark .history-search-indicator[data-mode="prompt"] .history-search-label {\n  color: #c084fc;\n}');
     expect(app).not.toContain("bck-i-search");
     expect(app).toContain("function scrollTerminalToLatestNow(terminal)");
     expect(app).toContain("function followTerminalToLatestDuringLayout(terminal, durationMs)");

@@ -658,7 +658,7 @@ function renderHistorySearchIndicator() {
   }
   indicator.dataset.mode = search.mode;
   const resultText = search.query && !search.matches.length ? " no match" : "";
-  indicator.innerHTML = `i-search: ${escapeHtml(search.query)}_${resultText}`;
+  indicator.innerHTML = `<span class="history-search-label">i-search:</span> ${escapeHtml(search.query)}_${resultText}`;
 }
 
 function updateHistorySearchMatches(input, query) {
@@ -3278,9 +3278,7 @@ function ticketAgentWorking(ticket) {
   return Boolean(
     repoUrlConfigured() &&
       flow &&
-      (flowRuntimeActive(flow) ||
-        (flow.id === state.selectedFlowId &&
-          (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting))),
+      (flowAgentRunning(flow) || (flow.id === state.selectedFlowId && state.messageSubmitting)),
   );
 }
 

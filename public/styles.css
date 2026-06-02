@@ -2110,6 +2110,11 @@ body.flow-resizing {
   line-height: 1.4;
 }
 
+.linear-meta > span {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .linear-meta .linear-meta-priority {
   display: inline-grid;
   place-items: center;
@@ -3203,6 +3208,18 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
   margin-bottom: 8px;
   opacity: 1;
   transform: translateY(4px);
+}
+
+.history-search-indicator[data-mode="prompt"] .history-search-label {
+  color: #6d28d9;
+}
+
+.history-search-indicator[data-mode="shell"] .history-search-label {
+  color: #22c55e;
+}
+
+body.theme-dark .history-search-indicator[data-mode="prompt"] .history-search-label {
+  color: #c084fc;
 }
 
 .message-input.drag-over {
