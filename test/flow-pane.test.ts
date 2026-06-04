@@ -433,11 +433,12 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("pointer-events: none;");
     expect(server).toContain("function listWorktrees()");
     expect(server).toContain("Date.parse(a.lastPromptAt || a.createdAt || \"\")");
-    expect(server).toContain("async function refreshWorktreeLinearStatuses()");
-    expect(server).toContain("await refreshWorktreeLinearStatuses();");
-    expect(server).toContain("if (linearBackoffRemainingMs() > 0) return;");
-    expect(server).toContain("for (const flow of flows) {");
-    expect(server).toContain("if (error instanceof LinearUnavailableError) return;");
+    expect(server).toContain("linearStatus: flow?.linearStatus ?? \"\",");
+    expect(server).not.toContain("function refreshWorktreeLinearStatuses()");
+    expect(server).not.toContain("function scheduleWorktreeLinearStatusRefresh()");
+    expect(server).not.toContain("worktreeLinearStatusRefreshRunning");
+    expect(server).not.toContain('if (url.pathname === "/api/checkouts" && request.method === "GET") {\n    await');
+    expect(server).not.toContain('if (url.pathname === "/api/checkouts" && request.method === "GET") {\n    schedule');
     expect(server).toContain("latestPromptTimestamp(flow.id)");
     expect(server).toContain('url.pathname === "/api/checkouts"');
     expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
@@ -590,8 +591,8 @@ describe("Turbopump pane markup", () => {
   });
 
   test("prevents horizontal scrolling in Linear panes", () => {
-    expect(css).toContain(".ticket-grid {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  overflow-x: hidden;\n  overflow-y: auto;");
-    expect(css).toContain(".linear-detail {\n  display: grid;\n  align-content: start;\n  gap: 12px;\n  padding: 14px;\n  overflow-x: hidden;\n  overflow-y: auto;");
+    expect(css).toContain(".ticket-grid {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  contain: layout paint style;\n  overflow-x: hidden;\n  overflow-y: auto;");
+    expect(css).toContain(".linear-detail {\n  display: grid;\n  align-content: start;\n  gap: 12px;\n  padding: 14px;\n  contain: layout paint style;\n  overflow-x: hidden;\n  overflow-y: auto;");
   });
 
   test("prevents horizontal scrolling in the Settings pane", () => {

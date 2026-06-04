@@ -14,7 +14,7 @@
   --terminal: #fbfcfe;
   --terminal-ink: #1f2937;
   --motion-fast: 100ms ease-out;
-  --motion-pane: 160ms ease;
+  --motion-pane: 110ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 @property --ticket-drawer-size {
@@ -1302,6 +1302,7 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  contain: layout paint style;
   opacity: 1;
   transition:
     opacity var(--motion-pane),
@@ -1394,6 +1395,7 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  contain: layout paint style;
   overflow-x: hidden;
   overflow-y: auto;
   min-height: 0;
@@ -2151,6 +2153,7 @@ body.flow-resizing .flow-content {
   align-content: start;
   gap: 12px;
   padding: 14px;
+  contain: layout paint style;
   overflow-x: hidden;
   overflow-y: auto;
   min-height: 0;
@@ -2702,6 +2705,7 @@ body.theme-dark .terminal-entry-body a {
   gap: 10px;
   min-height: 0;
   padding: 14px 14px 6px;
+  contain: layout paint style;
   overflow: auto;
   overflow-anchor: none;
   background: var(--terminal);
@@ -3622,6 +3626,7 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
   min-width: 0;
   min-height: 0;
   padding: 10px 12px;
+  contain: layout paint style;
   overflow: auto;
   overscroll-behavior: contain;
   background: var(--terminal);

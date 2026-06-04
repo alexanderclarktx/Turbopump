@@ -572,24 +572,6 @@ function listWorktrees() {
     });
 }
 
-async function refreshWorktreeLinearStatuses() {
-  if (!linearAuthHeader()) return;
-  if (linearBackoffRemainingMs() > 0) return;
-  const flowsByWorktree = worktreeFlowMap();
-  const worktreeNames = new Set(listWorktreeDirectories().map((entry) => entry.name));
-  const flows = [...flowsByWorktree.entries()]
-    .filter(([name]) => worktreeNames.has(name))
-    .map(([, flow]) => flow);
-  for (const flow of flows) {
-    try {
-      await syncLinearStatus(flow);
-    } catch (error) {
-      if (error instanceof LinearUnavailableError) return;
-      throw error;
-    }
-  }
-}
-
 function worktreePathForName(name: string) {
   const safeName = basename(name);
   if (!safeName || safeName !== name || safeName === "." || safeName === "..") {
@@ -2640,7 +2622,6 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/checkouts" && request.method === "GET") {
-    await refreshWorktreeLinearStatuses();
     return json({ checkouts: listWorktrees() });
   }
 
