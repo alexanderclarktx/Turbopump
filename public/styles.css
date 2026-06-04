@@ -1968,6 +1968,9 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
     "terminal"
     "form";
   grid-template-rows: minmax(0, 1fr) auto;
+  transition:
+    --shell-pane-size var(--motion-pane),
+    --shell-resizer-size var(--motion-pane);
 }
 
 .terminal-panel.shell-output-visible {

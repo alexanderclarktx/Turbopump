@@ -4499,9 +4499,10 @@ function renderShellOutputPane(flowId) {
   const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
   const hasGroups = Boolean(groups.length);
   const showPane = !state.shellPaneHidden;
+  const keepShellGrid = showPane || state.shellPaneHidden;
   const shellLive = showPane && flowShellLive(flow);
   pane.hidden = !showPane;
-  agentPanel?.classList.toggle("shell-output-visible", showPane);
+  agentPanel?.classList.toggle("shell-output-visible", keepShellGrid);
   if (showPane) applyShellOutputSplitSize();
   if (!hasGroups && !shellLive) {
     pane.replaceChildren();

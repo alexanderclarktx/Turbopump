@@ -1502,7 +1502,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (!isRoutineShellExitLog(log)) appendTerminalGroup(groups, log);");
     expect(app).toContain("const showPane = !state.shellPaneHidden;");
     expect(app).toContain("pane.hidden = !showPane;");
-    expect(app).toContain('agentPanel?.classList.toggle("shell-output-visible", showPane);');
+    expect(app).toContain("const keepShellGrid = showPane || state.shellPaneHidden;");
+    expect(app).toContain('agentPanel?.classList.toggle("shell-output-visible", keepShellGrid);');
     expect(app).toContain("if (showPane) applyShellOutputSplitSize();");
     expect(app).toContain("async function interruptSelectedFlow()");
     expect(app).toContain("function flowRuntimeActive(flow)");
@@ -2495,6 +2496,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('if (kind === "shell" && state.shellPaneHidden) return false;');
     expect(app).toContain("if (state.shellPaneHidden) promptInput()?.focus();\n    else shellInput()?.focus();");
     expect(css).toContain("body.shell-pane-hidden .prompt-input-pane {\n  padding-right: 14px;\n}");
+    expect(css).toContain(".terminal-panel {\n  --shell-resizer-size: 8px;");
+    expect(css).toContain("transition:\n    --shell-pane-size var(--motion-pane),\n    --shell-resizer-size var(--motion-pane);");
     expect(css).toContain("body.shell-pane-hidden .shell-command-panel {\n  opacity: 0;");
     expect(css).toContain("--shell-pane-size: 0px !important;");
     expect(css).toContain("--shell-resizer-size: 0px;");
