@@ -182,7 +182,7 @@ db.exec(`
     agentStatus text not null default 'idle',
     agentModel text not null default '',
     agentReasoningEffort text not null default '',
-    agentServiceTier text not null default '',
+    agentServiceTier text not null default 'fast',
     agentContextTokensUsed integer not null default 0,
     agentContextWindow integer not null default 0,
     serving integer not null default 0,
@@ -211,7 +211,7 @@ db.exec(`
 tryMigration("alter table flows drop column stage");
 tryMigration("alter table flows add column agentModel text not null default ''");
 tryMigration("alter table flows add column agentReasoningEffort text not null default ''");
-tryMigration("alter table flows add column agentServiceTier text not null default ''");
+tryMigration("alter table flows add column agentServiceTier text not null default 'fast'");
 tryMigration("alter table flows add column agentContextTokensUsed integer not null default 0");
 tryMigration("alter table flows add column agentContextWindow integer not null default 0");
 tryMigration("alter table flows add column prUrl text not null default ''");
@@ -279,6 +279,7 @@ const latestUserLogBeforeStmt = db.query(
 const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
 const latestLogIdStmt = db.query("select id from logs where flowId = ? order by id desc limit 1");
 const shellOutputStateStmt = db.query("select clearAfterLogId from shell_output_state where flowId = ?");
+const allShellOutputStateStmt = db.query("select flowId, clearAfterLogId from shell_output_state");
 const setShellOutputClearAfterLogIdStmt = db.query(`
   insert into shell_output_state (flowId, clearAfterLogId, updatedAt) values (?, ?, ?)
   on conflict(flowId) do update set clearAfterLogId = excluded.clearAfterLogId, updatedAt = excluded.updatedAt
@@ -467,6 +468,11 @@ function shellOutputClearAfterLogId(flowId: string) {
   return row?.clearAfterLogId ?? 0;
 }
 
+function shellOutputClearAfterLogIds() {
+  const rows = allShellOutputStateStmt.all() as Array<{ flowId: string; clearAfterLogId: number }>;
+  return new Map(rows.map((row) => [row.flowId, row.clearAfterLogId]));
+}
+
 function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number) {
   const normalized = Number.isFinite(clearAfterLogId) ? Math.max(0, Math.trunc(clearAfterLogId)) : 0;
   setShellOutputClearAfterLogIdStmt.run(flowId, normalized, now());
@@ -500,15 +506,16 @@ function runtimeAdjustedFlow(flow: Flow) {
   };
 }
 
-function clientFlow(flow: Flow) {
+function clientFlow(flow: Flow, clearAfterLogId = shellOutputClearAfterLogId(flow.id)) {
   return {
     ...runtimeAdjustedFlow(flow),
-    shellOutputClearAfterLogId: shellOutputClearAfterLogId(flow.id),
+    shellOutputClearAfterLogId: clearAfterLogId,
   };
 }
 
 function listClientFlows() {
-  return listFlows().map((flow) => clientFlow(flow));
+  const clearAfterLogIds = shellOutputClearAfterLogIds();
+  return listFlows().map((flow) => clientFlow(flow, clearAfterLogIds.get(flow.id) ?? 0));
 }
 
 function worktreeNameFromPath(path: string) {
@@ -979,7 +986,7 @@ class LinearUnavailableError extends Error {
 }
 
 const linearUnavailableBackoffMs = 30_000;
-const linearRequestTimeoutMs = 500_000;
+const linearRequestTimeoutMs = 5_000;
 let linearUnavailableUntil = 0;
 let lastLinearUnavailableWarningAt = 0;
 
@@ -2751,15 +2758,16 @@ async function handleApi(request: Request, url: URL) {
     const createdAt = now();
     db.query(`
       insert into flows (
-        id, linearIssueId, linearIssueUrl, title, linearStatus,
+        id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier,
         checkoutPath, branchName, baseSha, agentStatus, serving, createdAt, updatedAt
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       parsed.identifier,
       body.url?.trim() || linearIssue?.url || parsed.url,
       body.title?.trim() || linearIssue?.title || parsed.identifier,
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
+      "fast",
       target,
       branch,
       baseSha,

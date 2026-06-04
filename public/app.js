@@ -5,6 +5,7 @@ const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const NOTIFIED_LINEAR_ISSUES_KEY = "flow.notifiedLinearIssueIds";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
+const LINEAR_PANE_HIDDEN_KEY = "flow.linearPaneHidden";
 const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
 const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
 const THEME_KEY = "flow.theme";
@@ -17,6 +18,9 @@ const DEFAULT_FAVICON_HREF = "/favicon.svg";
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
 const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
+const LOG_PREFETCH_DELAY_MS = 750;
+const LOG_PREFETCH_BATCH_SIZE = 1;
+const LOG_PREFETCH_MAX_FLOW_COUNT = 3;
 const TERMINAL_TRACE_INITIAL_RENDER_COUNT = 18;
 const TERMINAL_TRACE_RENDER_BATCH_SIZE = 48;
 const TERMINAL_TRACE_OPEN_DURATION_MS = 90;
@@ -194,6 +198,7 @@ const state = {
   logPrefetchingFlowIds: new Set(),
   logPrefetchFailedFlowIds: new Set(),
   logPrefetchTimer: 0,
+  logPrefetchedFlowCount: 0,
   selectionRenderFrame: 0,
   ticketSwitchFadeTimer: 0,
   pendingShellOutputRenders: new Set(),
@@ -206,6 +211,7 @@ const state = {
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
   pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
+  linearPaneHidden: initialBooleanSetting(LINEAR_PANE_HIDDEN_KEY),
   shellOutputSplitSize: initialShellOutputSplitSize(),
   ticketDrawerHidden: false,
   ticketSearchOpen: false,
@@ -213,6 +219,7 @@ const state = {
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
   messageSubmitting: false,
+  messageSubmittingFlowId: "",
   queuedPrompt: null,
   queuedPromptFlushTimer: 0,
   shellSubmitting: false,
@@ -253,6 +260,7 @@ const els = {
   settingsPane: document.querySelector("#settingsPane"),
   settingsContent: document.querySelector(".settings-content"),
   settingsToggle: document.querySelector("#settingsToggle"),
+  ticketDrawer: document.querySelector(".ticket-drawer"),
   themeToggle: document.querySelector("#themeToggle"),
   repoUrl: document.querySelector("#repoUrl"),
   serveCommand: document.querySelector("#serveCommand"),
@@ -893,12 +901,14 @@ function runtimeStatusActive(status) {
 function canSubmitPromptMessage() {
   const flow = selectedFlow();
   const ticket = selectedTicket();
+  const agentCanAcceptMessage =
+    !flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow));
   return Boolean(
     repoUrlConfigured() &&
       (flow || ticket) &&
       !state.messageSubmitting &&
       !state.agentImageUploading &&
-      !flowAgentRunning(flow) &&
+      agentCanAcceptMessage &&
       !promptQueuedForFlow(flow),
   );
 }
@@ -1004,9 +1014,59 @@ function scheduleQueuedPromptFlush() {
 
 async function flushQueuedPrompt() {
   const queued = state.queuedPrompt;
-  const flow = selectedFlow();
-  if (!queued || !flow?.id || flow.id !== queued.flowId || flowAgentRunning(flow) || state.messageSubmitting) return;
-  await submitPromptMessage();
+  const flow = state.flows.find((item) => item.id === queued?.flowId) || null;
+  if (!queued || !flow?.id || flowAgentRunning(flow) || state.messageSubmitting) return;
+  await submitQueuedPromptMessage(queued, flow);
+}
+
+async function submitQueuedPromptMessage(queued, flow) {
+  const message = String(queued?.message || "").trim();
+  if (!flow?.id || !message) {
+    if (state.queuedPrompt === queued) clearQueuedPrompt();
+    return;
+  }
+
+  const selected = flow.id === state.selectedFlowId;
+  if (state.queuedPrompt === queued) {
+    state.queuedPrompt = null;
+    updateMessageInputMode();
+  }
+  if (selected) {
+    const input = promptInput();
+    if (input && input.value === queued.message) {
+      input.value = "";
+      resizeMessageInput();
+      saveActiveTicketInputState();
+    }
+    state.messageSubmitting = true;
+    state.messageSubmittingFlowId = flow.id;
+    scheduleAgentWorkingPoll(flow.id);
+    renderFlowPane();
+    renderLogs(flow.id, { force: true, scrollToLatest: true });
+  } else if (flow.linearIssueId) {
+    const inputState = ticketInputState(flow.linearIssueId);
+    if (inputState.promptValue === queued.message) inputState.promptValue = "";
+  }
+  renderTickets();
+  try {
+    const data = await api(`/api/flows/${flow.id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    if (data.flow) upsertFlow(data.flow);
+    await loadLogs(flow.id, selected ? { scrollToLatest: true } : {});
+  } finally {
+    if (selected) {
+      state.messageSubmitting = false;
+      state.messageSubmittingFlowId = "";
+      scheduleQueuedPromptFlush();
+      renderTickets();
+      renderFlowPane();
+      promptInput().focus();
+    } else {
+      renderTickets();
+    }
+  }
 }
 
 async function interruptSelectedFlow() {
@@ -1632,6 +1692,9 @@ function toggleSettingsCollapsed() {
 function setTicketDrawerHidden(hidden) {
   state.ticketDrawerHidden = hidden;
   document.body.classList.toggle("tickets-collapsed", hidden);
+  els.ticketDrawer.setAttribute("aria-label", hidden ? "Expand tickets" : "Tickets");
+  if (hidden) els.ticketDrawer.setAttribute("tabindex", "0");
+  else els.ticketDrawer.removeAttribute("tabindex");
   applyFlowSplitSize();
 }
 
@@ -1639,12 +1702,32 @@ function toggleTicketDrawerHidden() {
   setTicketDrawerHidden(!state.ticketDrawerHidden);
 }
 
+function setLinearPaneHidden(hidden) {
+  const restoreTerminalBottom = terminalBottomRestorer();
+  if (!hidden && state.flowSplitSize <= 1) state.flowSplitSize = 50;
+  state.linearPaneHidden = hidden;
+  document.body.classList.toggle("linear-pane-hidden", hidden);
+  const linearPanel = els.flowPane.querySelector(".linear-panel");
+  const linearRail = els.flowPane.querySelector(".linear-pane-rail");
+  if (linearPanel) linearPanel.setAttribute("aria-hidden", String(hidden));
+  if (linearRail) linearRail.setAttribute("aria-expanded", String(!hidden));
+  localStorage.setItem(LINEAR_PANE_HIDDEN_KEY, String(hidden));
+  applyFlowSplitSize();
+  restoreTerminalBottom();
+}
+
+function toggleLinearPaneHidden() {
+  setLinearPaneHidden(!state.linearPaneHidden);
+}
+
 function setShellPaneHidden(hidden) {
   const restoreTerminalBottom = terminalBottomRestorer();
   state.shellPaneHidden = hidden;
   document.body.classList.toggle("shell-pane-hidden", hidden);
   const shellPanel = els.flowPane.querySelector(".shell-command-panel");
+  const shellRail = els.flowPane.querySelector(".shell-pane-rail");
   if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));
+  if (shellRail) shellRail.setAttribute("aria-expanded", String(!hidden));
   if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");
   localStorage.setItem(SHELL_PANE_HIDDEN_KEY, String(hidden));
   renderShellOutputPane(state.selectedFlowId);
@@ -1797,6 +1880,11 @@ function applyFlowSplitSize() {
   const rect = content.getBoundingClientRect();
   const applied = appliedFlowSplitSize();
   const resizer = els.flowPane.querySelector(".flow-resizer");
+  if (state.linearPaneHidden) {
+    resizer.setAttribute("aria-valuenow", "0");
+    content.style.setProperty("--top-pane-size", "0px");
+    return 0;
+  }
   if (rect.height) {
     const bounds = flowSplitBounds(content, rect);
     resizer.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
@@ -1808,9 +1896,14 @@ function applyFlowSplitSize() {
 }
 
 function setFlowSplitSize(value) {
-  state.flowSplitSize = clampFlowSplitSize(value);
+  const next = clampFlowSplitSize(value);
+  if (!state.linearPaneHidden && next <= 1) {
+    setLinearPaneHidden(true);
+    return;
+  }
+  state.flowSplitSize = next;
   const applied = applyFlowSplitSize();
-  state.flowSplitSize = applied;
+  if (!state.linearPaneHidden) state.flowSplitSize = applied;
   localStorage.setItem(FLOW_SPLIT_SIZE_KEY, String(state.flowSplitSize));
 }
 
@@ -1861,11 +1954,12 @@ async function bootstrap() {
   renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
   setTicketDrawerHidden(state.ticketDrawerHidden);
-  setShellPaneHidden(state.shellPaneHidden);
   setFlowSplitSize(state.flowSplitSize);
   setShellOutputSplitSize(state.shellOutputSplitSize);
+  setLinearPaneHidden(state.linearPaneHidden);
+  setShellPaneHidden(state.shellPaneHidden);
   requestAnimationFrame(() => document.body.classList.remove("app-booting"));
-  const data = await api("/api/bootstrap");
+  const [data, env] = await Promise.all([api("/api/bootstrap"), api("/api/env")]);
   setFlows(data.flows);
   els.repoUrl.value = data.repo.repoUrl || "";
   els.serveCommand.value = data.repo.serveCommand || "";
@@ -1876,7 +1970,6 @@ async function bootstrap() {
   state.linearSignedIn = data.linear.signedIn;
   setDefaultSettingsState(data.linear);
   updateLinearState(data.linear);
-  const env = await api("/api/env");
   renderEnvEditor(env.contents || "");
   lastSavedEnv = envEditorContents();
   render();
@@ -2767,6 +2860,7 @@ async function loadLinearTickets(options = {}) {
     state.linearTickets = nextTickets;
     state.linearTicketsLoaded = true;
     state.logPrefetchFailedFlowIds.clear();
+    state.logPrefetchedFlowCount = 0;
     if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
     els.ticketState.textContent = formatLastUpdated();
@@ -3278,7 +3372,7 @@ function ticketAgentWorking(ticket) {
   return Boolean(
     repoUrlConfigured() &&
       flow &&
-      (flowAgentRunning(flow) || (flow.id === state.selectedFlowId && state.messageSubmitting)),
+      (flowAgentRunning(flow) || state.messageSubmittingFlowId === flow.id),
   );
 }
 
@@ -3780,10 +3874,11 @@ async function loadLogs(id, options = {}) {
 
 function scheduleTicketLogPrefetch() {
   if (state.logPrefetchTimer || !state.linearTicketsLoaded) return;
+  if (state.logPrefetchedFlowCount >= LOG_PREFETCH_MAX_FLOW_COUNT) return;
   state.logPrefetchTimer = window.setTimeout(() => {
     state.logPrefetchTimer = 0;
     void prefetchTicketLogs();
-  }, 180);
+  }, LOG_PREFETCH_DELAY_MS);
 }
 
 async function prefetchTicketLogs() {
@@ -3800,12 +3895,13 @@ async function prefetchTicketLogs() {
       continue;
     }
     flowIds.push(flow.id);
-    if (flowIds.length >= 4) break;
+    if (flowIds.length >= LOG_PREFETCH_BATCH_SIZE) break;
   }
   if (!flowIds.length) return;
 
   for (const flowId of flowIds) {
     if (state.logBackfilledFlowIds.has(flowId)) continue;
+    state.logPrefetchedFlowCount += 1;
     state.logPrefetchingFlowIds.add(flowId);
     try {
       await loadLogs(flowId, { suppressIncoming: true });
@@ -3818,6 +3914,7 @@ async function prefetchTicketLogs() {
   }
 
   if (
+    state.logPrefetchedFlowCount < LOG_PREFETCH_MAX_FLOW_COUNT &&
     sortedLinearTickets(state.linearTickets).some((ticket) => {
       const flow = flowForTicket(ticket);
       return (
@@ -4009,10 +4106,51 @@ function traceRangeLogCount(logs, afterId, beforeId) {
   return logs.filter((log) => log.id > afterId && log.id < beforeId && !isStructuralTerminalSource(log.source)).length;
 }
 
-function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId) {
+function lowerBound(values, target) {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (values[mid] < target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function upperBound(values, target) {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (values[mid] <= target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function logIdsHaveRangeEntry(ids, afterId, beforeId) {
+  return lowerBound(ids, beforeId) > upperBound(ids, afterId);
+}
+
+function traceRangeLogCounter(logs) {
+  const ids = logs
+    .filter((log) => !isStructuralTerminalSource(log.source))
+    .map((log) => Number(log.id))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  return (afterId, beforeId) => lowerBound(ids, beforeId) - upperBound(ids, afterId);
+}
+
+function sortedTraceRanges(ranges) {
+  return [...ranges].sort((a, b) => a.afterId - b.afterId || a.beforeId - b.beforeId);
+}
+
+function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId, countRange = traceRangeLogCounter(logs)) {
   const key = `${afterId}:${beforeId}`;
-  if (seen.has(key) || traceRangeLogCount(logs, afterId, beforeId) <= 1) return;
-  result.push({ ...range, afterId, beforeId, key, count: traceRangeLogCount(logs, afterId, beforeId) });
+  if (seen.has(key)) return;
+  const count = countRange(afterId, beforeId);
+  if (count <= 1) return;
+  result.push({ ...range, afterId, beforeId, key, count });
   seen.add(key);
 }
 
@@ -4037,6 +4175,7 @@ function finalResponseStartIdForTrace(range, rangeLogs) {
 function sanitizeTraceRanges(logs, ranges) {
   const result = [];
   const seen = new Set();
+  const countRange = traceRangeLogCounter(logs);
   for (const range of ranges) {
     const rangeLogs = logs.filter((log) => log.id > range.afterId && log.id < range.beforeId && !isTraceGroupSource(log.source));
     const beforeId = finalResponseStartIdForTrace(range, rangeLogs);
@@ -4044,10 +4183,10 @@ function sanitizeTraceRanges(logs, ranges) {
     for (const log of rangeLogs) {
       if (log.id >= beforeId) break;
       if (!isUserLogSource(log.source)) continue;
-      addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id);
+      addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id, countRange);
       segmentAfterId = log.id;
     }
-    addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, beforeId);
+    addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, beforeId, countRange);
   }
   return result;
 }
@@ -4118,7 +4257,7 @@ function latestTerminalContentGroup(groups) {
 }
 
 function markLiveTerminalGroup(groups, flow) {
-  if (!flowAgentRunning(flow) || (state.messageSubmitting && flow?.id === state.selectedFlowId)) return groups;
+  if (!flowAgentRunning(flow) || state.messageSubmittingFlowId === flow?.id) return groups;
   const group = latestTerminalContentGroup(groups);
   if (group && isLiveAgentTextSource(group.source)) group.liveStreaming = true;
   return groups;
@@ -4155,16 +4294,24 @@ function isHiddenTerminalLog(log) {
 function terminalGroups(logs, flow) {
   const groups = [];
   const normalizedLogs = agentPaneLogs(logs, flow);
+  const agentTurnEndIds = normalizedLogs
+    .filter(isAgentTurnEndedLog)
+    .map((log) => Number(log.id))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
   const persistedTraceRanges = normalizedLogs
     .map((log) => parseTraceGroup(log))
-    .filter((range) => range && range.kind !== "shell" && (range.kind || traceRangeHasAgentTurnEnd(normalizedLogs, range)));
+    .filter((range) => range && range.kind !== "shell" && (range.kind || logIdsHaveRangeEntry(agentTurnEndIds, range.afterId, range.beforeId)));
   const completedTurnTraceRanges = syntheticCompletedTurnTraceRanges(normalizedLogs, persistedTraceRanges);
-  const traceRanges = sanitizeTraceRanges(normalizedLogs, [
-    ...completedTurnTraceRanges,
-    ...persistedTraceRanges,
-  ]);
+  const traceRanges = sortedTraceRanges(
+    sanitizeTraceRanges(normalizedLogs, [
+      ...completedTurnTraceRanges,
+      ...persistedTraceRanges,
+    ]),
+  );
   const traceGroups = new Map();
   let forceTerminalGroupBoundary = false;
+  let traceRangeIndex = 0;
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
     if (isAgentMessageBoundarySource(log.source)) {
@@ -4179,7 +4326,11 @@ function terminalGroups(logs, flow) {
     ) {
       continue;
     }
-    const traceRange = traceRangeForLog(log, traceRanges);
+    const logId = Number(log.id);
+    while (traceRanges[traceRangeIndex] && traceRanges[traceRangeIndex].beforeId <= logId) traceRangeIndex += 1;
+    const currentTraceRange = traceRanges[traceRangeIndex];
+    const traceRange =
+      currentTraceRange && logId > currentTraceRange.afterId && logId < currentTraceRange.beforeId ? currentTraceRange : null;
     if (isHiddenTerminalLog(log)) continue;
     if (traceRange && !isUserLogSource(log.source)) {
       let traceGroup = traceGroups.get(traceRange.key);
@@ -5159,7 +5310,7 @@ function agentWorkingForFlow(flow) {
   return Boolean(
     agentEnabled &&
       flow &&
-      (state.messageSubmitting ||
+      (state.messageSubmittingFlowId === flow.id ||
         flowAgentRunning(flow) ||
         (state.interruptSubmitting && flowRuntimeKind(flow) === "agent")),
   );
@@ -5201,7 +5352,7 @@ async function pollAgentWorkingFlow() {
   }
   state.agentWorkingPollInFlight = true;
   try {
-    await loadLogs(flowId, { scrollToLatest: state.messageSubmitting });
+    await loadLogs(flowId, { scrollToLatest: state.messageSubmittingFlowId === flowId });
     const data = await api(`/api/flows/${flowId}/agent/status`);
     if (data.flow) upsertFlow(data.flow);
     render();
@@ -5422,6 +5573,7 @@ function connectWs() {
       const shouldScrollToSubmittedPrompt =
         log.flowId === state.selectedFlowId &&
         state.messageSubmitting &&
+        log.flowId === state.messageSubmittingFlowId &&
         (log.source === "user" || log.source === "user:queued");
       scheduleLogRender(log.flowId, shouldScrollToSubmittedPrompt ? { scrollToLatest: true } : {});
     }
@@ -5450,6 +5602,7 @@ function resizeFlowSplitFromPointer(clientY) {
 
 function startFlowSplitResize(event) {
   event.preventDefault();
+  if (state.linearPaneHidden) setLinearPaneHidden(false);
   document.body.classList.add("flow-resizing");
   resizeFlowSplitFromPointer(event.clientY);
 
@@ -5479,6 +5632,7 @@ function setShellOutputSplitSizeKeepingTerminalBottom(value) {
 
 function startShellOutputSplitResize(event) {
   event.preventDefault();
+  if (state.shellPaneHidden) setShellPaneHidden(false);
   document.body.classList.add("shell-output-resizing");
   resizeShellOutputSplitFromPointer(event.clientX);
 
@@ -5512,6 +5666,18 @@ els.settingsPane.addEventListener("keydown", (event) => {
   if (!state.settingsCollapsed || !["Enter", " "].includes(event.key)) return;
   event.preventDefault();
   setSettingsCollapsed(false);
+});
+
+els.ticketDrawer.addEventListener("click", (event) => {
+  if (!state.ticketDrawerHidden || event.target !== els.ticketDrawer) return;
+  setTicketDrawerHidden(false);
+});
+
+els.ticketDrawer.addEventListener("keydown", (event) => {
+  if (event.target !== els.ticketDrawer) return;
+  if (!state.ticketDrawerHidden || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  setTicketDrawerHidden(false);
 });
 
 els.settingsPane.addEventListener(
@@ -5587,18 +5753,24 @@ els.ticketSearchInput.addEventListener("keydown", (event) => {
 els.ticketGrid.addEventListener("dragover", handleTicketGridDragOver);
 
 els.flowPane.querySelector(".flow-resizer").addEventListener("pointerdown", startFlowSplitResize);
+els.flowPane.querySelector(".flow-resizer").addEventListener("dblclick", toggleLinearPaneHidden);
 els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) => {
   if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
   event.preventDefault();
+  if (state.linearPaneHidden) setLinearPaneHidden(false);
   setFlowSplitSize(state.flowSplitSize + (event.key === "ArrowDown" ? 5 : -5));
 });
 
 els.flowPane.querySelector(".shell-output-resizer").addEventListener("pointerdown", startShellOutputSplitResize);
+els.flowPane.querySelector(".shell-output-resizer").addEventListener("dblclick", toggleShellPaneHidden);
 els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", (event) => {
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
+  if (state.shellPaneHidden) setShellPaneHidden(false);
   setShellOutputSplitSizeKeepingTerminalBottom(state.shellOutputSplitSize + (event.key === "ArrowLeft" ? 5 : -5));
 });
+els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
+els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
@@ -5855,8 +6027,12 @@ async function submitPromptMessage() {
   const message = input.value.trim();
   if (!message && !state.pendingAgentImages.length) return;
   const flow = selectedFlow();
-  if (flowAgentRunning(flow)) {
+  if (flowAgentRunning(flow) && !flowAgentCompacting(flow)) {
     if (!promptQueuedForFlow(flow) && queuePromptMessage(input)) return;
+    flashBlockedInput(input);
+    return;
+  }
+  if (flowAgentQueuedMessage(flow)) {
     flashBlockedInput(input);
     return;
   }
@@ -5872,7 +6048,9 @@ async function submitPromptMessage() {
   rememberInputHistory(message, "prompt");
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  const initialFlow = selectedFlow();
   state.messageSubmitting = true;
+  state.messageSubmittingFlowId = initialFlow?.id || "";
   input.value = "";
   updateMessageInputMode();
   resizeMessageInput();
@@ -5885,6 +6063,7 @@ async function submitPromptMessage() {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
     submittedFlowId = flow.id;
+    state.messageSubmittingFlowId = flow.id;
     scheduleAgentWorkingPoll(flow.id);
     renderFlowPane();
     renderLogs(flow.id, { force: true, scrollToLatest: true });
@@ -5896,6 +6075,8 @@ async function submitPromptMessage() {
     state.pendingAgentImages = [];
   } finally {
     state.messageSubmitting = false;
+    state.messageSubmittingFlowId = "";
+    scheduleQueuedPromptFlush();
     if (submittedFlowId) await loadLogs(submittedFlowId, { scrollToLatest: true });
     renderTickets();
     renderFlowPane();
