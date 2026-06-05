@@ -24,6 +24,23 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("](<");
   });
 
+  test("renders local file links as inline code", () => {
+    const html = renderLinearMarkdown(
+      "- [use-is-unread-at-navigation.ts](/Users/alex/project/src/app/(protected)/[workspaceId]/(main)/components/conversation-view/use-is-unread-at-navigation.ts:13) latches unread state.",
+    );
+
+    expect(html).toContain("<li><code>use-is-unread-at-navigation.ts</code> latches unread state.</li>");
+    expect(html).not.toContain("<a href=");
+    expect(html).not.toContain("/[workspaceId]/(main)");
+  });
+
+  test("renders angle-bracketed local file links as inline code", () => {
+    const html = renderLinearMarkdown("[My File](</Users/alex/My Project/file.ts:201>)");
+
+    expect(html).toBe("<code>My File</code>");
+    expect(html).not.toContain("<a href=");
+  });
+
   test("renders bare URLs", () => {
     const html = renderLinearMarkdown("See https://platform.claude.com/workspaces/default/sessions/sess_123");
 

@@ -257,6 +257,12 @@ type ServerWebSocket = {
   send: (message: string) => void;
 };
 
+type WsRequest = {
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+};
+
 const getSettingStmt = db.query("select value from settings where key = ?");
 const setSettingStmt = db.query(`
   insert into settings (key, value) values (?, ?)
@@ -277,6 +283,12 @@ const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
 );
 const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
+const logsPageStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc limit ?");
+const logsBeforePageStmt = db.query(`
+  select * from (
+    select * from logs where flowId = ? and id < ? order by id desc limit ?
+  ) order by id asc
+`);
 const latestLogIdStmt = db.query("select id from logs where flowId = ? order by id desc limit 1");
 const shellOutputStateStmt = db.query("select clearAfterLogId from shell_output_state where flowId = ?");
 const allShellOutputStateStmt = db.query("select flowId, clearAfterLogId from shell_output_state");
@@ -406,6 +418,74 @@ function broadcast(event: string, payload: unknown) {
     } catch {
       clients.delete(client);
     }
+  }
+}
+
+function sendWsResponse(ws: ServerWebSocket, requestId: unknown, payload: unknown) {
+  ws.send(JSON.stringify({ event: "response", requestId, payload }));
+}
+
+function sendWsError(ws: ServerWebSocket, requestId: unknown, error: unknown) {
+  ws.send(
+    JSON.stringify({
+      event: "response",
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+}
+
+function wsParams(value: unknown) {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function wsFlowId(params: Record<string, unknown>) {
+  const flowId = String(params.flowId || "");
+  if (!flowId || !getFlow(flowId)) throw new Error("Flow not found");
+  return flowId;
+}
+
+async function handleWsRequest(ws: ServerWebSocket, rawMessage: string | Buffer) {
+  let request: WsRequest;
+  try {
+    request = JSON.parse(String(rawMessage)) as WsRequest;
+  } catch {
+    return;
+  }
+
+  if (request.id === undefined || typeof request.method !== "string") return;
+
+  try {
+    const params = wsParams(request.params);
+    if (request.method === "logs") {
+      const flowId = wsFlowId(params);
+      const limit = Math.min(1000, Math.max(1, Math.trunc(Number(params.limit ?? 1000) || 1000)));
+      if (params.before !== undefined) {
+        const before = Number(params.before);
+        const normalizedBefore = Number.isFinite(before) && before > 0 ? Math.trunc(before) : Number.MAX_SAFE_INTEGER;
+        const logs = logsBeforePageStmt.all(flowId, normalizedBefore, limit);
+        sendWsResponse(ws, request.id, { logs });
+        return;
+      }
+      const after = Number(params.after ?? 0);
+      const logs = logsPageStmt.all(flowId, Number.isFinite(after) ? Math.max(0, Math.trunc(after)) : 0, limit);
+      sendWsResponse(ws, request.id, { logs });
+      return;
+    }
+
+    if (request.method === "flow") {
+      const flowId = wsFlowId(params);
+      const reconciled = await reconcileAgentHeartbeat(getFlow(flowId) as Flow);
+      sendWsResponse(ws, request.id, {
+        flow: clientFlow(reconciled),
+        turnRunning: Boolean(agentProcesses.get(flowId)?.activeTurnId),
+      });
+      return;
+    }
+
+    throw new Error(`Unsupported WebSocket method: ${request.method}`);
+  } catch (error) {
+    sendWsError(ws, request.id, error);
   }
 }
 
@@ -1438,7 +1518,8 @@ function codexItemStartedLog(item: Record<string, unknown>) {
     return { source: "agent:tool", message: `${String(item.server ?? "")}.${String(item.tool ?? "")}` };
   }
   if (item.type === "webSearch") {
-    return { source: "agent:tool", message: `web search: ${String(item.query ?? "")}` };
+    const query = String(item.query ?? "");
+    return { source: "agent:tool", message: query ? `web search: ${query}` : "web search" };
   }
   return null;
 }
@@ -2774,14 +2855,6 @@ async function handleApi(request: Request, url: URL) {
       return json({ flow: clientFlow(flow) });
     }
 
-    if (parts[3] === "logs" && request.method === "GET") {
-      const after = Number(url.searchParams.get("after") ?? 0);
-      const logs = db
-        .query("select * from logs where flowId = ? and id > ? order by id asc limit 1000")
-        .all(id, after);
-      return json({ logs });
-    }
-
     if (parts[3] === "logs" && request.method === "DELETE") {
       let payload: { ids?: unknown };
       try {
@@ -2830,14 +2903,6 @@ async function handleApi(request: Request, url: URL) {
         insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
       }
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
-    }
-
-    if (parts[3] === "agent" && parts[4] === "status" && request.method === "GET") {
-      const reconciled = await reconcileAgentHeartbeat(flow);
-      return json({
-        flow: clientFlow(reconciled),
-        turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId),
-      });
     }
 
     if (parts[3] === "agent" && parts[4] === "interrupt" && request.method === "POST") {
@@ -2953,7 +3018,9 @@ Bun.serve({
     open(ws) {
       clients.add(ws as unknown as ServerWebSocket);
     },
-    message() { },
+    message(ws, message) {
+      void handleWsRequest(ws as unknown as ServerWebSocket, message);
+    },
     close(ws) {
       clients.delete(ws as unknown as ServerWebSocket);
     },

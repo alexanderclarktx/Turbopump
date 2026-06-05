@@ -17,10 +17,12 @@ const ERROR_TOAST_DURATION_MS = 8000;
 const DEFAULT_FAVICON_HREF = "/favicon.svg";
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
-const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
 const LOG_PREFETCH_DELAY_MS = 750;
 const LOG_PREFETCH_BATCH_SIZE = 1;
 const LOG_PREFETCH_MAX_FLOW_COUNT = 3;
+const LOG_PAGE_SIZE = 200;
+const AGENT_TRACE_INITIAL_TURN_COUNT = 6;
+const AGENT_TRACE_TURN_PAGE_SIZE = 6;
 const TERMINAL_TRACE_INITIAL_RENDER_COUNT = 18;
 const TERMINAL_TRACE_RENDER_BATCH_SIZE = 48;
 const TERMINAL_TRACE_OPEN_DURATION_MS = 90;
@@ -191,8 +193,12 @@ const state = {
   linearDetails: new Map(),
   logs: new Map(),
   logIds: new Map(),
+  firstLogId: new Map(),
   lastLogId: new Map(),
   logBackfilledFlowIds: new Set(),
+  logOlderCompleteFlowIds: new Set(),
+  logOlderLoadingFlowIds: new Set(),
+  terminalVisibleTurnCounts: new Map(),
   pendingLogRenders: new Map(),
   logRenderFrame: 0,
   logPrefetchingFlowIds: new Set(),
@@ -228,9 +234,6 @@ const state = {
   pendingAgentImages: [],
   agentImageUploading: false,
   agentImageDragDepth: 0,
-  agentWorkingPollFlowId: "",
-  agentWorkingPollTimer: 0,
-  agentWorkingPollInFlight: false,
   promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
   promptHistoryOrder: new Map(),
@@ -297,6 +300,11 @@ let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
 let lastSavedEnv = "";
 let faviconSourceSvg = "";
+let realtimeWs = null;
+let realtimeWsOpenPromise = null;
+let wsRequestId = 0;
+const pendingWsRequests = new Map();
+const flowSnapshotRequestingIds = new Set();
 const TICKET_DRAG_SCROLL_EDGE_PX = 72;
 const TICKET_DRAG_SCROLL_MAX_STEP_PX = 18;
 
@@ -794,10 +802,17 @@ function setInputMode(mode) {
 function updateMessageInputMode() {
   const input = promptInput();
   if (!input) return;
+  const flow = selectedFlow();
   const queued = promptQueuedForSelectedFlow();
+  const queuedCanSteer = promptQueuedCanSteer(flow);
   const pane = els.flowPane.querySelector(".prompt-input-pane");
   const prefix = els.flowPane.querySelector(".prompt-input-prefix");
+  const queuedHint = els.flowPane.querySelector(".queued-prompt-hint");
   pane?.classList.toggle("prompt-queued", queued);
+  if (queuedHint) {
+    queuedHint.hidden = !queued;
+    queuedHint.textContent = queuedCanSteer ? "message queued — press S to steer instead" : "message queued";
+  }
   if (prefix) {
     if (queued && !prefix.querySelector(".queued-prompt-spinner")) {
       prefix.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
@@ -868,6 +883,10 @@ function promptQueuedForSelectedFlow() {
   return promptQueuedForFlow(selectedFlow());
 }
 
+function promptQueuedCanSteer(flow = selectedFlow()) {
+  return promptQueuedForFlow(flow) && flowAgentRunning(flow) && !flowAgentCompacting(flow);
+}
+
 function flowShellRunning(flow) {
   if (!flow) return false;
   if (hasSplitRuntimeStatus(flow)) {
@@ -901,14 +920,12 @@ function runtimeStatusActive(status) {
 function canSubmitPromptMessage() {
   const flow = selectedFlow();
   const ticket = selectedTicket();
-  const agentCanAcceptMessage =
-    !flowAgentRunning(flow) || (flowAgentCompacting(flow) && !flowAgentQueuedMessage(flow));
   return Boolean(
     repoUrlConfigured() &&
       (flow || ticket) &&
       !state.messageSubmitting &&
       !state.agentImageUploading &&
-      agentCanAcceptMessage &&
+      !flowAgentRunning(flow) &&
       !promptQueuedForFlow(flow),
   );
 }
@@ -979,9 +996,64 @@ function queuePromptMessage(input) {
   return true;
 }
 
+async function submitQueuedPromptSteer() {
+  const queued = state.queuedPrompt;
+  const flow = selectedFlow();
+  const input = promptInput();
+  const message = String(queued?.message || "").trim();
+  if (!queued || !flow?.id || queued.flowId !== flow.id || !message) {
+    if (queued === state.queuedPrompt) clearQueuedPrompt();
+    return true;
+  }
+  if (!promptQueuedCanSteer(flow) || state.messageSubmitting) {
+    flashBlockedInput(input);
+    return true;
+  }
+
+  state.queuedPrompt = null;
+  updateMessageInputMode();
+  if (input && input.value === queued.message) {
+    input.value = "";
+    resizeMessageInput();
+    saveActiveTicketInputState();
+  }
+  state.messageSubmitting = true;
+  state.messageSubmittingFlowId = flow.id;
+  requestFlowSnapshot(flow.id);
+  renderTickets();
+  renderFlowPane();
+  try {
+    const data = await api(`/api/flows/${flow.id}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    if (data.flow) upsertFlow(data.flow);
+    await loadLogs(flow.id, { scrollToLatest: true });
+  } finally {
+    state.messageSubmitting = false;
+    state.messageSubmittingFlowId = "";
+    renderTickets();
+    renderFlowPane();
+    promptInput()?.focus();
+  }
+  return true;
+}
+
 function handleQueuedPromptKeydown(event) {
   if (!promptQueuedForSelectedFlow()) return false;
   if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;
+  if (
+    promptQueuedCanSteer() &&
+    event.key.toLowerCase() === "s" &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.isComposing
+  ) {
+    event.preventDefault();
+    if (!event.repeat) void submitQueuedPromptSteer();
+    return true;
+  }
   if (event.key === "$" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing) {
     event.preventDefault();
     if (!event.repeat && focusShellInputPaneForShortcut()) return true;
@@ -1040,7 +1112,7 @@ async function submitQueuedPromptMessage(queued, flow) {
     }
     state.messageSubmitting = true;
     state.messageSubmittingFlowId = flow.id;
-    scheduleAgentWorkingPoll(flow.id);
+    requestFlowSnapshot(flow.id);
     renderFlowPane();
     renderLogs(flow.id, { force: true, scrollToLatest: true });
   } else if (flow.linearIssueId) {
@@ -1161,7 +1233,7 @@ function handleCommandK(event) {
   event.preventDefault();
   event.stopImmediatePropagation();
   if (event.repeat) return true;
-  if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");
+  toggleTheme();
   return true;
 }
 
@@ -1758,6 +1830,10 @@ function setTheme(theme) {
   localStorage.setItem(THEME_KEY, theme);
 }
 
+function toggleTheme() {
+  setTheme(state.theme === "dark" ? "light" : "dark");
+}
+
 function faviconLink() {
   let link = document.querySelector("link[rel='icon']");
   if (!link) {
@@ -1979,7 +2055,7 @@ async function bootstrap() {
     void loadFlowDiff(flow.id, { force: true });
   }
   if (state.linearSignedIn) await loadLinearTickets();
-  connectWs();
+  void connectWs().catch(() => {});
 }
 
 function render() {
@@ -2005,8 +2081,12 @@ function clearFlowClientState(flowId) {
   clearLinearIssueNotification(linearIssueIdForFlowId(flowId), { render: false });
   state.logs.delete(flowId);
   state.logIds.delete(flowId);
+  state.firstLogId.delete(flowId);
   state.lastLogId.delete(flowId);
   state.logBackfilledFlowIds.delete(flowId);
+  state.logOlderCompleteFlowIds.delete(flowId);
+  state.logOlderLoadingFlowIds.delete(flowId);
+  state.terminalVisibleTurnCounts.delete(flowId);
   state.pendingLogRenders.delete(flowId);
   state.logPrefetchingFlowIds.delete(flowId);
   state.logPrefetchFailedFlowIds.delete(flowId);
@@ -2743,6 +2823,7 @@ function appendLogEntry(log) {
   }
   ids.add(id);
   rememberLogHistory(log);
+  state.firstLogId.set(flowId, Math.min(state.firstLogId.get(flowId) || id, id));
   if (state.logBackfilledFlowIds.has(flowId)) {
     state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
   }
@@ -3585,7 +3666,6 @@ function renderFlowPane(options = {}) {
   renderAgentContext(flow);
   renderAgentImageContext();
   if (!issueId) {
-    stopAgentWorkingPoll();
     return;
   }
 
@@ -3610,7 +3690,6 @@ function renderFlowPane(options = {}) {
   } else if (flow) {
     renderLogs(flow.id);
   } else {
-    stopAgentWorkingPoll();
     renderShellOutputPane("");
     const terminal = els.flowPane.querySelector(".terminal");
     terminal._flowLogFlowId = "";
@@ -3629,21 +3708,32 @@ function renderAgentImageContext() {
   container.hidden = !images.length && !state.agentImageUploading;
   const uploading = state.agentImageUploading ? '<span class="agent-image-chip pending">uploading...</span>' : "";
   container.innerHTML = `${images
-    .map(
-      (image, index) => `
-        <span class="agent-image-chip" title="${escapeAttribute(image.path)}">
-          <span>${escapeHtml(image.name || image.relativePath || "image")}</span>
-          <button type="button" aria-label="Remove image" data-index="${index}">×</button>
-        </span>
-      `,
-    )
+    .map((image, index) => renderAgentImageChip(image, { index }))
     .join("")}${uploading}`;
 }
 
-function agentMessageWithImages(message) {
-  if (!state.pendingAgentImages.length) return message;
-  const attachments = state.pendingAgentImages
-    .map((image) => `- ${image.path}${image.relativePath ? ` (${image.relativePath})` : ""}`)
+function renderAgentImageChip(image, options = {}) {
+  const label = image.name || imageLabelFromPath(image.relativePath || image.path) || "image";
+  const removable = options.index !== undefined;
+  return `
+    <span class="agent-image-chip" title="${escapeAttribute(image.path || label)}">
+      <span>${escapeHtml(label)}</span>
+      ${removable ? `<button type="button" aria-label="Remove image" data-index="${options.index}">×</button>` : ""}
+    </span>
+  `;
+}
+
+function imageLabelFromPath(path) {
+  return String(path || "").split("/").filter(Boolean).pop() || "";
+}
+
+function agentMessageWithImages(message, images = state.pendingAgentImages) {
+  if (!images.length) return message;
+  const attachments = images
+    .map((image) => {
+      const name = image.name ? `${image.name}: ` : "";
+      return `- ${name}${image.path}${image.relativePath ? ` (${image.relativePath})` : ""}`;
+    })
     .join("\n");
   return `${message}\n\nAttached images:\n${attachments}`;
 }
@@ -3661,6 +3751,14 @@ function eventHasDraggedFiles(event) {
   const types = [...(event.dataTransfer?.types || [])];
   if (types.includes("Files")) return true;
   return [...(event.dataTransfer?.items || [])].some((item) => item.kind === "file");
+}
+
+function eventTargetsPromptInputPane(event) {
+  return Boolean(event.target?.closest?.(".prompt-input-pane"));
+}
+
+function focusPromptInputForImageDrag(event) {
+  if (eventTargetsPromptInputPane(event)) focusInputPane("prompt");
 }
 
 function setAgentImageDragActive(active) {
@@ -3844,32 +3942,115 @@ async function ensureSelectedFlow() {
 
 async function loadLogs(id, options = {}) {
   if (!state.logs.has(id)) state.logs.set(id, []);
-  const shouldBackfill = options.resetCursor || !state.logBackfilledFlowIds.has(id);
-  let cursor = shouldBackfill ? 0 : state.lastLogId.get(id) || 0;
-  if (shouldBackfill) state.lastLogId.set(id, 0);
+  if (options.resetCursor) resetFlowLogWindow(id);
+  const shouldLoadRecent = !state.logBackfilledFlowIds.has(id);
+  let cursor = state.lastLogId.get(id) || 0;
 
   const appendedLogs = [];
-  while (true) {
-    const data = await api(`/api/flows/${id}/logs?after=${cursor}`);
-    if (!data.logs.length) break;
-
-    let highestLogId = cursor;
-    for (const log of data.logs) {
-      highestLogId = Math.max(highestLogId, log.id);
-      if (appendLogEntry(log)) appendedLogs.push(log);
+  if (shouldLoadRecent) {
+    while (true) {
+      const before = state.firstLogId.get(id) || Number.MAX_SAFE_INTEGER;
+      const data = await wsRequest("logs", { flowId: id, before, limit: LOG_PAGE_SIZE });
+      for (const log of data.logs) {
+        if (appendLogEntry(log)) appendedLogs.push(log);
+      }
+      rememberLoadedLogBounds(id, data.logs);
+      if (data.logs.length < LOG_PAGE_SIZE) {
+        state.logOlderCompleteFlowIds.add(id);
+        break;
+      }
+      const flow = state.flows.find((item) => item.id === id) || null;
+      const groups = terminalGroups(state.logs.get(id) || [], flow);
+      if (terminalTurnCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;
     }
+    state.logBackfilledFlowIds.add(id);
+    state.terminalVisibleTurnCounts.set(id, AGENT_TRACE_INITIAL_TURN_COUNT);
+  } else {
+    while (true) {
+      const data = await wsRequest("logs", { flowId: id, after: cursor, limit: LOG_PAGE_SIZE });
+      if (!data.logs.length) break;
 
-    cursor = Math.max(cursor, highestLogId);
-    state.lastLogId.set(id, Math.max(state.lastLogId.get(id) || 0, cursor));
-    if (data.logs.length < 1000) break;
+      let highestLogId = cursor;
+      for (const log of data.logs) {
+        highestLogId = Math.max(highestLogId, log.id);
+        if (appendLogEntry(log)) appendedLogs.push(log);
+      }
+
+      cursor = Math.max(cursor, highestLogId);
+      state.lastLogId.set(id, Math.max(state.lastLogId.get(id) || 0, cursor));
+      if (data.logs.length < LOG_PAGE_SIZE) break;
+    }
   }
-  state.logBackfilledFlowIds.add(id);
 
   if (options.shellOnly || (appendedLogs.length && appendedLogs.every(isShellOnlyRenderLog))) {
     renderShellOutputPane(id);
     return;
   }
-  renderLogs(id, { ...options, suppressIncoming: Boolean(options.suppressIncoming || shouldBackfill) });
+  renderLogs(id, { ...options, suppressIncoming: Boolean(options.suppressIncoming || shouldLoadRecent) });
+}
+
+function resetFlowLogWindow(flowId) {
+  state.logs.set(flowId, []);
+  state.logIds.set(flowId, new Set());
+  state.firstLogId.delete(flowId);
+  state.lastLogId.delete(flowId);
+  state.logBackfilledFlowIds.delete(flowId);
+  state.logOlderCompleteFlowIds.delete(flowId);
+  state.logOlderLoadingFlowIds.delete(flowId);
+  state.terminalVisibleTurnCounts.delete(flowId);
+}
+
+function rememberLoadedLogBounds(flowId, logs) {
+  for (const log of logs) {
+    const id = Number(log.id);
+    if (!Number.isFinite(id)) continue;
+    state.firstLogId.set(flowId, Math.min(state.firstLogId.get(flowId) || id, id));
+    state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
+  }
+}
+
+async function loadOlderTerminalTraceMessages(options = {}) {
+  const flowId = state.selectedFlowId;
+  if (!flowId || state.logOlderLoadingFlowIds.has(flowId)) return;
+  const terminal = els.flowPane.querySelector(".terminal");
+  if (!terminal) return;
+  const renderOptions = {
+    force: true,
+    preserveScrollTop: Boolean(options.preserveScrollTop),
+    suppressIncoming: true,
+  };
+
+  const visibleCount = terminalVisibleTurnCount(flowId);
+  state.terminalVisibleTurnCounts.set(flowId, visibleCount + AGENT_TRACE_TURN_PAGE_SIZE);
+  pauseTerminalFollow();
+
+  const flow = state.flows.find((item) => item.id === flowId) || null;
+  const groups = terminalGroups(state.logs.get(flowId) || [], flow);
+  if (terminalTurnCount(groups) > visibleCount || state.logOlderCompleteFlowIds.has(flowId)) {
+    renderLogs(flowId, renderOptions);
+    return;
+  }
+
+  state.logOlderLoadingFlowIds.add(flowId);
+  renderLogs(flowId, renderOptions);
+  try {
+    const before = state.firstLogId.get(flowId) || Number.MAX_SAFE_INTEGER;
+    const data = await wsRequest("logs", { flowId, before, limit: LOG_PAGE_SIZE });
+    if (!data.logs.length) {
+      state.logOlderCompleteFlowIds.add(flowId);
+      renderLogs(flowId, renderOptions);
+      return;
+    }
+    for (const log of data.logs) {
+      appendLogEntry(log);
+    }
+    rememberLoadedLogBounds(flowId, data.logs);
+    if (data.logs.length < LOG_PAGE_SIZE) state.logOlderCompleteFlowIds.add(flowId);
+    renderLogs(flowId, renderOptions);
+  } finally {
+    state.logOlderLoadingFlowIds.delete(flowId);
+    renderLogs(flowId, renderOptions);
+  }
 }
 
 function scheduleTicketLogPrefetch() {
@@ -4588,11 +4769,40 @@ function usesTerminalMarkdownToggle(source) {
   return ["agent", "agent:message"].includes(source);
 }
 
-function renderTerminalMarkdownOutput(message, showToggle = false) {
-  const toggle = showToggle
-    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>`
-    : "";
-  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true, compactBlankLines: true })}</div>`;
+function splitTerminalAttachedImages(message) {
+  const text = String(message || "");
+  const marker = "\n\nAttached images:\n";
+  const markerIndex = text.lastIndexOf(marker);
+  if (markerIndex === -1) return { message: text, images: [] };
+
+  const visibleMessage = text.slice(0, markerIndex);
+  const attachmentText = text.slice(markerIndex + marker.length);
+  const images = [];
+  for (const line of attachmentText.split("\n")) {
+    if (!line.trim()) continue;
+    const match = line.match(/^-\s+(?:(.*?):\s+)?(.+?)(?:\s+\(([^()]+)\))?$/);
+    if (!match) return { message: text, images: [] };
+    images.push({
+      name: match[1] || "",
+      path: match[2] || "",
+      relativePath: match[3] || "",
+    });
+  }
+  return images.length ? { message: visibleMessage, images } : { message: text, images: [] };
+}
+
+function renderTerminalAttachedImages(images) {
+  if (!images.length) return "";
+  return `<div class="terminal-attached-images">${images.map((image) => renderAgentImageChip(image)).join("")}</div>`;
+}
+
+function renderTerminalMarkdownContent(message) {
+  const parsed = splitTerminalAttachedImages(message);
+  return `${renderLinearMarkdown(parsed.message, "", { images: false, links: true, compactBlankLines: true })}${renderTerminalAttachedImages(parsed.images)}`;
+}
+
+function renderTerminalMarkdownOutput(message) {
+  return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message)}</div>`;
 }
 
 function renderTerminalStreamingTextOutput(message) {
@@ -4801,7 +5011,8 @@ function renderAnsiText(root, message) {
 }
 
 function toggleTerminalMarkdownOutput(button) {
-  const body = button.closest(".terminal-entry-body");
+  const entry = button.closest(".terminal-entry");
+  const body = entry?.querySelector(".terminal-entry-body");
   const content = body?.querySelector(".terminal-markdown-content");
   if (!content) return;
 
@@ -4810,10 +5021,10 @@ function toggleTerminalMarkdownOutput(button) {
   button.setAttribute("aria-pressed", String(showingRaw));
   button.setAttribute("aria-label", "Toggle raw markdown");
   button.title = "Toggle raw markdown";
-  button.textContent = "Raw";
+  button.textContent = "raw";
   content.innerHTML = showingRaw
     ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
-    : renderLinearMarkdown(raw, "", { images: false, links: true, compactBlankLines: true });
+    : renderTerminalMarkdownContent(raw);
   if (!showingRaw) highlightCodeBlocks(content);
   applyTerminalMessageClamps(body.closest(".terminal-entry") || body);
 }
@@ -4950,6 +5161,17 @@ function appendTerminalBlock(fragment, group, options = {}) {
   label.className = "terminal-entry-label";
   label.textContent = meta.label;
 
+  let markdownToggle = null;
+  if (!group.liveStreaming && usesTerminalMarkdownToggle(group.source)) {
+    markdownToggle = document.createElement("button");
+    markdownToggle.type = "button";
+    markdownToggle.className = "terminal-markdown-toggle";
+    markdownToggle.setAttribute("aria-pressed", "false");
+    markdownToggle.setAttribute("aria-label", "Toggle raw markdown");
+    markdownToggle.title = "Toggle raw markdown";
+    markdownToggle.textContent = "raw";
+  }
+
   let time = null;
   if (meta.tone !== "output") {
     time = document.createElement("time");
@@ -4970,7 +5192,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
       body.innerHTML = renderTerminalStreamingTextOutput(message);
       highlightCodeBlocks(body);
     } else {
-      body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
+      body.innerHTML = renderTerminalMarkdownOutput(message);
       highlightCodeBlocks(body);
     }
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
@@ -4979,7 +5201,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
     body.innerHTML = renderInlineMarkdown(message, { images: false, links: false });
   }
 
-  header.replaceChildren(marker, label, ...(time ? [time] : []));
+  header.replaceChildren(marker, label, ...(markdownToggle ? [markdownToggle] : []), ...(time ? [time] : []));
   block.replaceChildren(
     header,
     ...(meta.tone === "output" ? [renderOutputDeleteButton(group)] : []),
@@ -5317,58 +5539,18 @@ function agentWorkingForFlow(flow) {
   );
 }
 
-function stopAgentWorkingPoll(flowId = "") {
-  if (flowId && state.agentWorkingPollFlowId !== flowId) return;
-  if (state.agentWorkingPollTimer) clearTimeout(state.agentWorkingPollTimer);
-  state.agentWorkingPollFlowId = "";
-  state.agentWorkingPollTimer = 0;
+function syncAgentWorkingPushState(flowId, agentWorking) {
+  if (agentWorking && flowId === state.selectedFlowId) requestFlowSnapshot(flowId);
 }
 
-function scheduleAgentWorkingPoll(flowId) {
-  if (state.agentWorkingPollTimer || state.agentWorkingPollInFlight) return;
-  state.agentWorkingPollFlowId = flowId;
-  state.agentWorkingPollTimer = setTimeout(pollAgentWorkingFlow, AGENT_WORKING_POLL_INTERVAL_MS);
-}
-
-function syncAgentWorkingPoll(flowId, agentWorking) {
-  if (!agentWorking) {
-    stopAgentWorkingPoll(flowId);
-    return;
-  }
-  scheduleAgentWorkingPoll(flowId);
-}
-
-async function pollAgentWorkingFlow() {
-  const flowId = state.agentWorkingPollFlowId;
-  state.agentWorkingPollTimer = 0;
-  if (!flowId || flowId !== state.selectedFlowId) {
-    stopAgentWorkingPoll(flowId);
-    return;
-  }
-
-  const flow = state.flows.find((item) => item.id === flowId) || null;
-  if (!agentWorkingForFlow(flow)) {
-    stopAgentWorkingPoll(flowId);
-    return;
-  }
-  state.agentWorkingPollInFlight = true;
-  try {
-    await loadLogs(flowId, { scrollToLatest: state.messageSubmittingFlowId === flowId });
-    const data = await api(`/api/flows/${flowId}/agent/status`);
+function requestFlowSnapshot(flowId) {
+  if (!flowId || flowSnapshotRequestingIds.has(flowId)) return;
+  flowSnapshotRequestingIds.add(flowId);
+  void wsRequest("flow", { flowId }).then((data) => {
     if (data.flow) upsertFlow(data.flow);
-    render();
-  } catch {
-    // Keep the polling loop alive; transient fetch failures should not freeze the indicator.
-  } finally {
-    state.agentWorkingPollInFlight = false;
-  }
-
-  const updated = state.flows.find((item) => item.id === flowId) || null;
-  if (flowId === state.selectedFlowId && agentWorkingForFlow(updated)) {
-    scheduleAgentWorkingPoll(flowId);
-  } else {
-    stopAgentWorkingPoll(flowId);
-  }
+  }).catch(() => {}).finally(() => {
+    flowSnapshotRequestingIds.delete(flowId);
+  });
 }
 
 function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
@@ -5410,6 +5592,34 @@ function terminalGroupsSignature(groups) {
   return groups.map((group) => terminalGroupSignaturePart(group)).join("\u001f");
 }
 
+function terminalVisibleTurnCount(flowId) {
+  return state.terminalVisibleTurnCounts.get(flowId) || AGENT_TRACE_INITIAL_TURN_COUNT;
+}
+
+function visibleTerminalGroups(flowId, groups) {
+  const startIndex = terminalVisibleTurnStartIndex(flowId, groups);
+  return groups.slice(startIndex);
+}
+
+function terminalTraceCanLoadMore(flowId, groups) {
+  return terminalVisibleTurnStartIndex(flowId, groups) > 0 || !state.logOlderCompleteFlowIds.has(flowId);
+}
+
+function terminalVisibleTurnStartIndex(flowId, groups) {
+  const visibleTurns = terminalVisibleTurnCount(flowId);
+  let seenTurns = 0;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    if (!isUserLogSource(groups[index].source)) continue;
+    seenTurns += 1;
+    if (seenTurns >= visibleTurns) return index;
+  }
+  return 0;
+}
+
+function terminalTurnCount(groups) {
+  return groups.filter((group) => isUserLogSource(group.source)).length;
+}
+
 function scheduleLogRender(id, options = {}) {
   if (!id) return;
   const existing = state.pendingLogRenders.get(id) || {};
@@ -5432,11 +5642,14 @@ function renderLogs(id, options = {}) {
   renderShellOutputPane(id);
   const flow = state.flows.find((item) => item.id === id) || null;
   const logs = state.logs.get(id) || [];
-  const groups = terminalGroups(logs, flow);
+  const allGroups = terminalGroups(logs, flow);
+  const groups = visibleTerminalGroups(id, allGroups);
+  const canLoadMore = terminalTraceCanLoadMore(id, allGroups);
+  const loadMoreLoading = state.logOlderLoadingFlowIds.has(id);
   const agentWorking = agentWorkingForFlow(flow);
   const agentWorkingKind = agentWorking ? "agent" : "idle";
-  syncAgentWorkingPoll(id, agentWorking);
-  const signature = `${terminalGroupsSignature(groups)}\u001fworking:${agentWorking}:${agentWorkingKind}`;
+  syncAgentWorkingPushState(id, agentWorking);
+  const signature = `${terminalGroupsSignature(groups)}\u001fworking:${agentWorking}:${agentWorkingKind}\u001fload-more:${canLoadMore}:${loadMoreLoading}`;
   if (
     terminal._flowLogFlowId === id &&
     terminal._flowLogSignature &&
@@ -5454,10 +5667,13 @@ function renderLogs(id, options = {}) {
   }
 
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
+  const scrollHeightBeforeRender = terminal.scrollHeight;
+  const scrollTopBeforeRender = terminal.scrollTop;
   const animateIncoming = !options.suppressIncoming;
   const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
   const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
   const fragment = document.createDocumentFragment();
+  if (canLoadMore) appendTerminalLoadMoreButton(fragment, { loading: loadMoreLoading });
   for (const group of groups) {
     const renderKey = terminalGroupRenderKey(group);
     appendTerminalBlock(fragment, group, { incoming: Boolean(animateIncoming && previousKeys && !previousKeys.has(renderKey)) });
@@ -5471,7 +5687,24 @@ function renderLogs(id, options = {}) {
   terminal._flowLogPending = "";
   terminal._flowLogPendingOptions = null;
   if (atLatest) scrollTerminalToLatestNow(terminal);
+  else if (options.preserveScrollTop) {
+    terminal.scrollTop = scrollTopBeforeRender + (terminal.scrollHeight - scrollHeightBeforeRender);
+  }
   renderShellOutputPane(id);
+}
+
+function appendTerminalLoadMoreButton(fragment, options = {}) {
+  const row = document.createElement("div");
+  row.className = "terminal-load-more-row";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "terminal-load-more";
+  button.disabled = Boolean(options.loading);
+  button.textContent = options.loading ? "loading..." : "load more";
+
+  row.replaceChildren(button);
+  fragment.appendChild(row);
 }
 
 function terminalTraceInteractionActive(terminal) {
@@ -5484,6 +5717,7 @@ function mergeLogRenderOptions(existing = {}, incoming = {}) {
     scrollToLatest: Boolean(existing.scrollToLatest || incoming.scrollToLatest),
     suppressIncoming: Boolean(existing.suppressIncoming || incoming.suppressIncoming),
     fromTraceFlush: Boolean(existing.fromTraceFlush || incoming.fromTraceFlush),
+    preserveScrollTop: Boolean(existing.preserveScrollTop || incoming.preserveScrollTop),
   };
 }
 
@@ -5522,19 +5756,78 @@ function formatDate(value) {
   });
 }
 
-function connectWs() {
-  const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
-  ws.addEventListener("open", () => {
-    const flow = selectedFlow();
-    if (flow) {
-      void api(`/api/flows/${flow.id}`).then((data) => {
-        if (data.flow) upsertFlow(data.flow);
-      }).catch(() => {});
-      void loadLogs(flow.id);
-    }
+function rejectPendingWsRequests(error) {
+  for (const pending of pendingWsRequests.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(error);
+  }
+  pendingWsRequests.clear();
+}
+
+function handleWsResponse(message) {
+  const pending = pendingWsRequests.get(message.requestId);
+  if (!pending) return false;
+  clearTimeout(pending.timeout);
+  pendingWsRequests.delete(message.requestId);
+  if (message.error) pending.reject(new Error(message.error));
+  else pending.resolve(message.payload || {});
+  return true;
+}
+
+function ensureWs() {
+  if (realtimeWs?.readyState === WebSocket.OPEN) return Promise.resolve(realtimeWs);
+  if (realtimeWs?.readyState === WebSocket.CONNECTING && realtimeWsOpenPromise) return realtimeWsOpenPromise;
+  return connectWs();
+}
+
+function wsRequest(method, params = {}) {
+  return ensureWs().then((ws) => {
+    const id = ++wsRequestId;
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        pendingWsRequests.delete(id);
+        reject(new Error("WebSocket request timed out."));
+      }, 10000);
+      pendingWsRequests.set(id, { resolve, reject, timeout });
+      try {
+        ws.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timeout);
+        pendingWsRequests.delete(id);
+        reject(error);
+      }
+    });
   });
+}
+
+function connectWs() {
+  if (realtimeWs?.readyState === WebSocket.OPEN) return Promise.resolve(realtimeWs);
+  if (realtimeWs?.readyState === WebSocket.CONNECTING && realtimeWsOpenPromise) return realtimeWsOpenPromise;
+
+  const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
+  realtimeWs = ws;
+  realtimeWsOpenPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    ws.addEventListener("open", () => {
+      settled = true;
+      resolve(ws);
+      const flow = selectedFlow();
+      if (flow) {
+        requestFlowSnapshot(flow.id);
+        void loadLogs(flow.id);
+      }
+    }, { once: true });
+    ws.addEventListener("error", () => {
+      if (!settled) reject(new Error("WebSocket connection failed."));
+    }, { once: true });
+    ws.addEventListener("close", () => {
+      if (!settled) reject(new Error("WebSocket disconnected."));
+    }, { once: true });
+  });
+
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
+    if (message.event === "response" && handleWsResponse(message)) return;
     if (message.event === "flows") {
       const previousFlows = state.flows;
       setFlows(message.payload);
@@ -5591,7 +5884,13 @@ function connectWs() {
       }
     }
   });
-  ws.addEventListener("close", () => setTimeout(connectWs, 1000));
+  ws.addEventListener("close", () => {
+    if (realtimeWs === ws) realtimeWs = null;
+    realtimeWsOpenPromise = null;
+    rejectPendingWsRequests(new Error("WebSocket disconnected."));
+    setTimeout(() => void connectWs().catch(() => {}), 1000);
+  });
+  return realtimeWsOpenPromise;
 }
 
 function resizeFlowSplitFromPointer(clientY) {
@@ -5655,7 +5954,7 @@ els.settingsToggle.addEventListener("click", (event) => {
 
 els.themeToggle.addEventListener("click", (event) => {
   event.stopPropagation();
-  setTheme(state.theme === "dark" ? "light" : "dark");
+  toggleTheme();
 });
 
 els.settingsPane.addEventListener("click", () => {
@@ -5781,6 +6080,14 @@ els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
 });
 
 els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
+  const loadMore = event.target.closest(".terminal-load-more");
+  if (loadMore) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true });
+    return;
+  }
+
   const toggle = event.target.closest(".terminal-markdown-toggle");
   if (!toggle) return;
   event.preventDefault();
@@ -5837,6 +6144,7 @@ document.addEventListener("dragenter", (event) => {
   event.preventDefault();
   event.stopPropagation();
   state.agentImageDragDepth += 1;
+  focusPromptInputForImageDrag(event);
   setAgentImageDragActive(true);
 }, true);
 
@@ -5845,6 +6153,7 @@ document.addEventListener("dragover", (event) => {
   event.preventDefault();
   event.stopPropagation();
   event.dataTransfer.dropEffect = "copy";
+  focusPromptInputForImageDrag(event);
   setAgentImageDragActive(true);
 }, true);
 
@@ -6028,12 +6337,12 @@ async function submitPromptMessage() {
   const message = input.value.trim();
   if (!message && !state.pendingAgentImages.length) return;
   const flow = selectedFlow();
-  if (flowAgentRunning(flow) && !flowAgentCompacting(flow)) {
+  if (flowAgentRunning(flow)) {
+    if (flowAgentQueuedMessage(flow)) {
+      flashBlockedInput(input);
+      return;
+    }
     if (!promptQueuedForFlow(flow) && queuePromptMessage(input)) return;
-    flashBlockedInput(input);
-    return;
-  }
-  if (flowAgentQueuedMessage(flow)) {
     flashBlockedInput(input);
     return;
   }
@@ -6045,7 +6354,8 @@ async function submitPromptMessage() {
     flashBlockedInput(input);
     return;
   }
-  const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
+  const submittedImages = [...state.pendingAgentImages];
+  const agentMessage = agentMessageWithImages(message || "Use the attached image context.", submittedImages);
   rememberInputHistory(message, "prompt");
   cancelHistorySearch();
   resetInputHistoryNavigation();
@@ -6053,6 +6363,7 @@ async function submitPromptMessage() {
   state.messageSubmitting = true;
   state.messageSubmittingFlowId = initialFlow?.id || "";
   input.value = "";
+  state.pendingAgentImages = [];
   updateMessageInputMode();
   resizeMessageInput();
   saveActiveTicketInputState();
@@ -6065,7 +6376,7 @@ async function submitPromptMessage() {
     if (!flow) return;
     submittedFlowId = flow.id;
     state.messageSubmittingFlowId = flow.id;
-    scheduleAgentWorkingPoll(flow.id);
+    requestFlowSnapshot(flow.id);
     renderFlowPane();
     renderLogs(flow.id, { force: true, scrollToLatest: true });
     const data = await api(`/api/flows/${flow.id}/message`, {
@@ -6073,7 +6384,9 @@ async function submitPromptMessage() {
       body: JSON.stringify({ message: agentMessage }),
     });
     if (data.flow) upsertFlow(data.flow);
-    state.pendingAgentImages = [];
+  } catch (error) {
+    state.pendingAgentImages = [...submittedImages, ...state.pendingAgentImages];
+    throw error;
   } finally {
     state.messageSubmitting = false;
     state.messageSubmittingFlowId = "";

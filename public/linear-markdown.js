@@ -329,7 +329,7 @@ export function renderInlineMarkdown(value, options = {}) {
   const { images = true, links = true } = options;
   const text = String(value || "");
   const markdownPattern =
-    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/|\/)[^)>\s]+))\s*\)|(https?:\/\/[^\s<>()]+)/g;
+    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/[^\s<>()]+|\/(?:[^\s<>()]|\([^)]*\))+)))\s*\)|(https?:\/\/[^\s<>()]+)/g;
   let cursor = 0;
   let html = "";
 
@@ -347,6 +347,8 @@ export function renderInlineMarkdown(value, options = {}) {
     } else if (imageMarker && images) {
       const imageSrc = linearImageSource(url);
       html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" data-image-preview data-image-preview-alt="${escapeAttribute(label || "Linear attachment")}"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;
+    } else if (isLocalFileLink(url)) {
+      html += `<code>${escapeHtml(label || url)}</code>`;
     } else if (links) {
       html += `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(label || url)}</a>`;
     } else {
@@ -358,6 +360,11 @@ export function renderInlineMarkdown(value, options = {}) {
 
   html += renderTextWithSentenceBreaks(text.slice(cursor));
   return html;
+}
+
+function isLocalFileLink(url) {
+  const value = String(url || "");
+  return /^\/(?:Users|home|workspace|workspaces|tmp|private|var|Volumes)\//.test(value);
 }
 
 export function renderTextWithSentenceBreaks(value) {
