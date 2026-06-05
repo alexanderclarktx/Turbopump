@@ -128,7 +128,7 @@
       <aside class="ticket-drawer">
         <div class="ticket-drawer-header">
           <div>
-            <h2>Linear Tickets</h2>
+            <h2>Tickets</h2>
             <p id="ticketState">Connect Linear to load assigned tickets.</p>
           </div>
           <div class="ticket-drawer-actions">
@@ -146,7 +146,26 @@
                 <path d="M5 12h14" />
               </svg>
             </button>
+            <button id="searchLinearTickets" class="icon-button" type="button" aria-label="Search tickets" title="Search tickets">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6" />
+                <path d="m16 16 4 4" />
+              </svg>
+            </button>
           </div>
+        </div>
+        <div id="ticketSearchPane" class="ticket-search-pane" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6" />
+            <path d="m16 16 4 4" />
+          </svg>
+          <input id="ticketSearchInput" type="search" autocomplete="off" />
+          <button id="closeTicketSearch" class="icon-button" type="button" aria-label="Close ticket search" title="Close ticket search">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
         </div>
         <div class="ticket-grid" id="ticketGrid"></div>
       </aside>
@@ -154,6 +173,13 @@
       <section class="workspace">
         <article class="flow-pane empty" id="flowPane">
           <div class="flow-content">
+            <button
+              class="pane-rail linear-pane-rail"
+              type="button"
+              aria-expanded="true"
+              aria-label="Expand Linear pane"
+              title="Expand Linear pane"
+            ></button>
             <div class="linear-panel">
               <div class="linear-detail"></div>
             </div>
@@ -167,6 +193,13 @@
               tabindex="0"
             ></div>
             <div class="agent-panel terminal-panel">
+              <button
+              class="pane-rail shell-pane-rail"
+              type="button"
+              aria-expanded="true"
+              aria-label="Expand Shell pane"
+              title="Expand Shell pane"
+              ></button>
               <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
               <div class="terminal" role="log" aria-live="polite"></div>
               <div
@@ -181,6 +214,9 @@
               <div class="shell-output-pane" role="log" aria-live="polite" hidden></div>
               <form class="message-form">
                 <div class="history-search-indicator" aria-live="polite" aria-hidden="true"></div>
+                <div class="queued-prompt-hint" aria-live="polite" hidden>
+                  message queued
+                </div>
                 <div class="prompt-input-pane">
                   <span class="input-pane-prefix prompt-input-prefix" aria-hidden="true">&gt;</span>
                   <textarea class="message-input" rows="1"></textarea>
@@ -225,7 +261,7 @@
             <div><dt><kbd>Ctrl + Z</kbd></dt><dd>Previous history match</dd></div>
             <div><dt><kbd>Up / Down</kbd></dt><dd>Navigate input history</dd></div>
             <div><dt><kbd>$</kbd></dt><dd>Focus shell from anywhere</dd></div>
-            <div><dt><kbd>Cmd + K</kbd></dt><dd>Clear focused shell</dd></div>
+            <div><dt><kbd>Cmd + Z</kbd></dt><dd>Toggle theme</dd></div>
             <div><dt><kbd>Ctrl + C</kbd></dt><dd>Interrupt running shell</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Interrupt agent or close panels</dd></div>
           </dl>
@@ -240,15 +276,15 @@
         title="Switch to dark mode"
       >
         <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2" />
-          <path d="M12 20v2" />
-          <path d="m4.93 4.93 1.41 1.41" />
-          <path d="m17.66 17.66 1.41 1.41" />
-          <path d="M2 12h2" />
-          <path d="M20 12h2" />
-          <path d="m6.34 17.66-1.41 1.41" />
-          <path d="m19.07 4.93-1.41 1.41" />
+          <circle cx="12" cy="12" r="4.75" />
+          <path d="M12 2.25v1.5" />
+          <path d="M12 20.25v1.5" />
+          <path d="m4.95 4.95 1.05 1.05" />
+          <path d="m18 18 1.05 1.05" />
+          <path d="M2.25 12h1.5" />
+          <path d="M20.25 12h1.5" />
+          <path d="m6 18-1.05 1.05" />
+          <path d="m19.05 4.95-1.05 1.05" />
         </svg>
         <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M20.1 14.3A8 8 0 0 1 9.7 3.9 8.5 8.5 0 1 0 20.1 14.3Z" />

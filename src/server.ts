@@ -42,6 +42,14 @@ type Flow = {
   shellRuntimeStatus?: "running" | "interrupting" | "";
   agentCompacting?: boolean;
   agentQueuedMessage?: boolean;
+  queuedPrompt?: QueuedPrompt | null;
+};
+
+type QueuedPrompt = {
+  flowId: string;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type LogRow = {
@@ -182,7 +190,7 @@ db.exec(`
     agentStatus text not null default 'idle',
     agentModel text not null default '',
     agentReasoningEffort text not null default '',
-    agentServiceTier text not null default '',
+    agentServiceTier text not null default 'fast',
     agentContextTokensUsed integer not null default 0,
     agentContextWindow integer not null default 0,
     serving integer not null default 0,
@@ -204,6 +212,13 @@ db.exec(`
     updatedAt text not null
   );
 
+  create table if not exists queued_prompts (
+    flowId text primary key,
+    message text not null,
+    createdAt text not null,
+    updatedAt text not null
+  );
+
   create index if not exists logs_flow_id_id_idx on logs(flowId, id);
   create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);
   create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
@@ -211,7 +226,7 @@ db.exec(`
 tryMigration("alter table flows drop column stage");
 tryMigration("alter table flows add column agentModel text not null default ''");
 tryMigration("alter table flows add column agentReasoningEffort text not null default ''");
-tryMigration("alter table flows add column agentServiceTier text not null default ''");
+tryMigration("alter table flows add column agentServiceTier text not null default 'fast'");
 tryMigration("alter table flows add column agentContextTokensUsed integer not null default 0");
 tryMigration("alter table flows add column agentContextWindow integer not null default 0");
 tryMigration("alter table flows add column prUrl text not null default ''");
@@ -257,6 +272,12 @@ type ServerWebSocket = {
   send: (message: string) => void;
 };
 
+type WsRequest = {
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+};
+
 const getSettingStmt = db.query("select value from settings where key = ?");
 const setSettingStmt = db.query(`
   insert into settings (key, value) values (?, ?)
@@ -273,17 +294,29 @@ const insertLogStmt = db.query(`
 const logByIdStmt = db.query("select * from logs where id = ?");
 const deleteLogByIdStmt = db.query("delete from logs where id = ?");
 const deleteLogsByFlowIdStmt = db.query("delete from logs where flowId = ?");
-const latestUserLogStmt = db.query("select id from logs where flowId = ? and source = 'user' order by id desc limit 1");
 const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
 );
 const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
+const logsPageStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc limit ?");
+const logsBeforePageStmt = db.query(`
+  select * from (
+    select * from logs where flowId = ? and id < ? order by id desc limit ?
+  ) order by id asc
+`);
 const latestLogIdStmt = db.query("select id from logs where flowId = ? order by id desc limit 1");
 const shellOutputStateStmt = db.query("select clearAfterLogId from shell_output_state where flowId = ?");
+const allShellOutputStateStmt = db.query("select flowId, clearAfterLogId from shell_output_state");
 const setShellOutputClearAfterLogIdStmt = db.query(`
   insert into shell_output_state (flowId, clearAfterLogId, updatedAt) values (?, ?, ?)
   on conflict(flowId) do update set clearAfterLogId = excluded.clearAfterLogId, updatedAt = excluded.updatedAt
 `);
+const queuedPromptByFlowIdStmt = db.query("select * from queued_prompts where flowId = ?");
+const setQueuedPromptStmt = db.query(`
+  insert into queued_prompts (flowId, message, createdAt, updatedAt) values (?, ?, ?, ?)
+  on conflict(flowId) do update set message = excluded.message, updatedAt = excluded.updatedAt
+`);
+const deleteQueuedPromptStmt = db.query("delete from queued_prompts where flowId = ?");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -409,6 +442,74 @@ function broadcast(event: string, payload: unknown) {
   }
 }
 
+function sendWsResponse(ws: ServerWebSocket, requestId: unknown, payload: unknown) {
+  ws.send(JSON.stringify({ event: "response", requestId, payload }));
+}
+
+function sendWsError(ws: ServerWebSocket, requestId: unknown, error: unknown) {
+  ws.send(
+    JSON.stringify({
+      event: "response",
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+}
+
+function wsParams(value: unknown) {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function wsFlowId(params: Record<string, unknown>) {
+  const flowId = String(params.flowId || "");
+  if (!flowId || !getFlow(flowId)) throw new Error("Flow not found");
+  return flowId;
+}
+
+async function handleWsRequest(ws: ServerWebSocket, rawMessage: string | Buffer) {
+  let request: WsRequest;
+  try {
+    request = JSON.parse(String(rawMessage)) as WsRequest;
+  } catch {
+    return;
+  }
+
+  if (request.id === undefined || typeof request.method !== "string") return;
+
+  try {
+    const params = wsParams(request.params);
+    if (request.method === "logs") {
+      const flowId = wsFlowId(params);
+      const limit = Math.min(1000, Math.max(1, Math.trunc(Number(params.limit ?? 1000) || 1000)));
+      if (params.before !== undefined) {
+        const before = Number(params.before);
+        const normalizedBefore = Number.isFinite(before) && before > 0 ? Math.trunc(before) : Number.MAX_SAFE_INTEGER;
+        const logs = logsBeforePageStmt.all(flowId, normalizedBefore, limit);
+        sendWsResponse(ws, request.id, { logs });
+        return;
+      }
+      const after = Number(params.after ?? 0);
+      const logs = logsPageStmt.all(flowId, Number.isFinite(after) ? Math.max(0, Math.trunc(after)) : 0, limit);
+      sendWsResponse(ws, request.id, { logs });
+      return;
+    }
+
+    if (request.method === "flow") {
+      const flowId = wsFlowId(params);
+      const reconciled = await reconcileAgentHeartbeat(getFlow(flowId) as Flow);
+      sendWsResponse(ws, request.id, {
+        flow: clientFlow(reconciled),
+        turnRunning: Boolean(agentProcesses.get(flowId)?.activeTurnId),
+      });
+      return;
+    }
+
+    throw new Error(`Unsupported WebSocket method: ${request.method}`);
+  } catch (error) {
+    sendWsError(ws, request.id, error);
+  }
+}
+
 function insertLog(flowId: string, source: string, message: string) {
   if (deletedFlowIds.has(flowId)) return 0;
   const createdAt = now();
@@ -468,6 +569,35 @@ function shellOutputClearAfterLogId(flowId: string) {
   return row?.clearAfterLogId ?? 0;
 }
 
+function shellOutputClearAfterLogIds() {
+  const rows = allShellOutputStateStmt.all() as Array<{ flowId: string; clearAfterLogId: number }>;
+  return new Map(rows.map((row) => [row.flowId, row.clearAfterLogId]));
+}
+
+function queuedPromptForFlow(flowId: string) {
+  return queuedPromptByFlowIdStmt.get(flowId) as QueuedPrompt | null;
+}
+
+function normalizeQueuedPromptMessage(value: unknown) {
+  const message = String(value ?? "").trim();
+  if (!message) throw new Error("Queued message cannot be blank.");
+  return message;
+}
+
+function setQueuedPrompt(flowId: string, message: string) {
+  const existing = queuedPromptForFlow(flowId);
+  const timestamp = now();
+  setQueuedPromptStmt.run(flowId, message, existing?.createdAt ?? timestamp, timestamp);
+  broadcast("flows", listClientFlows());
+}
+
+function clearQueuedPrompt(flowId: string, options: { broadcast?: boolean } = {}) {
+  const existing = queuedPromptForFlow(flowId);
+  deleteQueuedPromptStmt.run(flowId);
+  if (existing && options.broadcast !== false) broadcast("flows", listClientFlows());
+  return Boolean(existing);
+}
+
 function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number) {
   const normalized = Number.isFinite(clearAfterLogId) ? Math.max(0, Math.trunc(clearAfterLogId)) : 0;
   setShellOutputClearAfterLogIdStmt.run(flowId, normalized, now());
@@ -501,15 +631,17 @@ function runtimeAdjustedFlow(flow: Flow) {
   };
 }
 
-function clientFlow(flow: Flow) {
+function clientFlow(flow: Flow, clearAfterLogId = shellOutputClearAfterLogId(flow.id)) {
   return {
     ...runtimeAdjustedFlow(flow),
-    shellOutputClearAfterLogId: shellOutputClearAfterLogId(flow.id),
+    shellOutputClearAfterLogId: clearAfterLogId,
+    queuedPrompt: queuedPromptForFlow(flow.id),
   };
 }
 
 function listClientFlows() {
-  return listFlows().map((flow) => clientFlow(flow));
+  const clearAfterLogIds = shellOutputClearAfterLogIds();
+  return listFlows().map((flow) => clientFlow(flow, clearAfterLogIds.get(flow.id) ?? 0));
 }
 
 function worktreeNameFromPath(path: string) {
@@ -564,24 +696,6 @@ function listWorktrees() {
       const bTime = Date.parse(b.lastPromptAt || b.createdAt || "");
       return bTime - aTime || a.name.localeCompare(b.name);
     });
-}
-
-async function refreshWorktreeLinearStatuses() {
-  if (!linearAuthHeader()) return;
-  if (linearBackoffRemainingMs() > 0) return;
-  const flowsByWorktree = worktreeFlowMap();
-  const worktreeNames = new Set(listWorktreeDirectories().map((entry) => entry.name));
-  const flows = [...flowsByWorktree.entries()]
-    .filter(([name]) => worktreeNames.has(name))
-    .map(([, flow]) => flow);
-  for (const flow of flows) {
-    try {
-      await syncLinearStatus(flow);
-    } catch (error) {
-      if (error instanceof LinearUnavailableError) return;
-      throw error;
-    }
-  }
 }
 
 function worktreePathForName(name: string) {
@@ -646,6 +760,7 @@ function deleteFlowTraceData(flowId: string) {
   deletedFlowIds.add(flowId);
   deleteLogsByFlowIdStmt.run(flowId);
   deleteShellOutputStateByFlowIdStmt.run(flowId);
+  deleteQueuedPromptStmt.run(flowId);
   deleteSettingByKeyStmt.run(codexThreadSettingKey(flowId));
   deleteSettingByKeyStmt.run(codexActiveTurnSettingKey(flowId));
   deleteFlowByIdStmt.run(flowId);
@@ -805,8 +920,7 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
     const recovered = await recoverAgentRuntime(flow);
     if (recovered) return getFlow(flow.id) ?? flow;
     if (statusAge < agentRuntimeStartGraceMs) return flow;
-    const errorLogId = insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
-    createTurnTraceGroup(flow.id, errorLogId);
+    insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\n");
     updateFlow(flow.id, { agentStatus: "failed" });
     return getFlow(flow.id) ?? flow;
   }
@@ -981,7 +1095,7 @@ class LinearUnavailableError extends Error {
 }
 
 const linearUnavailableBackoffMs = 30_000;
-const linearRequestTimeoutMs = 500_000;
+const linearRequestTimeoutMs = 5_000;
 let linearUnavailableUntil = 0;
 let lastLinearUnavailableWarningAt = 0;
 
@@ -1293,6 +1407,10 @@ function isNoActiveTurnInterruptError(error: unknown) {
   return error instanceof Error && /no active turn to interrupt/i.test(error.message);
 }
 
+function isNoActiveTurnSteerError(error: unknown) {
+  return error instanceof Error && /no active turn to steer/i.test(error.message);
+}
+
 function codexThreadMetadata(payload: {
   model?: string | null;
   reasoningEffort?: string | null;
@@ -1447,7 +1565,8 @@ function codexItemStartedLog(item: Record<string, unknown>) {
     return { source: "agent:tool", message: `${String(item.server ?? "")}.${String(item.tool ?? "")}` };
   }
   if (item.type === "webSearch") {
-    return { source: "agent:tool", message: `web search: ${String(item.query ?? "")}` };
+    const query = String(item.query ?? "");
+    return { source: "agent:tool", message: query ? `web search: ${query}` : "web search" };
   }
   return null;
 }
@@ -1463,6 +1582,9 @@ function codexItemCompletedLog(item: Record<string, unknown>) {
   }
   if (item.type === "mcpToolCall") {
     return { source: "agent:tool-result", message: `mcp ${String(item.status ?? "completed")}` };
+  }
+  if (item.type === "agentMessage") {
+    return { source: "agent:message-boundary", message: "" };
   }
   return null;
 }
@@ -1517,18 +1639,24 @@ function handleCodexServerRequest(runtime: RuntimeProcess, message: Record<strin
   return true;
 }
 
-function isAgentMessageSource(source: string) {
-  return source === "agent:message" || source === "agent";
+function isUserLogSource(source: string) {
+  return source === "user" || source === "user:queued";
 }
 
-function isShellOwnedLogSource(source: string) {
-  return source.startsWith("shell:") && source !== "shell:command";
+function isAgentMessageBoundarySource(source: string) {
+  return source === "agent:message-boundary";
+}
+
+function isTraceCountSource(source: string) {
+  return !isAgentMessageBoundarySource(source);
 }
 
 function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
   if (beforeId <= afterId) return;
 
-  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter((log) => log.id < beforeId);
+  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter(
+    (log) => log.id < beforeId && isTraceCountSource(log.source),
+  );
   const traceCount = logs.length;
   if (traceCount <= 1) return;
 
@@ -1544,42 +1672,11 @@ function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: 
   );
 }
 
-function createTraceGroupAfterPrompt(flowId: string, promptId: number, beforeId: number) {
-  createTraceGroupBetweenLogs(flowId, promptId, beforeId);
-}
-
-function createTurnTraceGroup(flowId: string, beforeId: number) {
+function createCompletedTurnTraceGroup(flowId: string, beforeId: number) {
   const prompt = latestUserLogBeforeStmt.get(flowId, beforeId) as { id: number } | null;
   if (!prompt) return;
-  createTraceGroupAfterPrompt(flowId, prompt.id, beforeId);
-}
 
-function createCompletedTurnTraceGroup(flowId: string) {
-  const prompt = latestUserLogStmt.get(flowId) as { id: number } | null;
-  if (!prompt) return;
-
-  const logs = logsAfterStmt.all(flowId, prompt.id) as LogRow[];
-  let finalMessageIndex = -1;
-  for (let index = logs.length - 1; index >= 0; index -= 1) {
-    if (isAgentMessageSource(logs[index].source)) {
-      finalMessageIndex = index;
-      break;
-    }
-  }
-  if (finalMessageIndex <= 0) return;
-
-  const finalSource = logs[finalMessageIndex].source;
-  let finalMessageStartIndex = finalMessageIndex;
-  for (let index = finalMessageIndex - 1; index >= 0; index -= 1) {
-    const source = logs[index].source;
-    if (isShellOwnedLogSource(source)) continue;
-    if (source !== finalSource) break;
-    finalMessageStartIndex = index;
-  }
-  if (finalMessageStartIndex <= 0) return;
-
-  const beforeId = logs[finalMessageStartIndex].id;
-  createTurnTraceGroup(flowId, beforeId);
+  createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);
 }
 
 function worktreeBranchUpdate(flowId: string): Partial<Flow> {
@@ -1635,13 +1732,13 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     const turn = params.turn as { id?: string; status?: string; error?: { message?: string } | null } | undefined;
     if (!turn?.id || turn.id === runtime.activeTurnId) runtime.activeTurnId = undefined;
     if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
-    createCompletedTurnTraceGroup(runtime.flowId);
-    if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
-    insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
     if (runtime.compacting && turn?.status !== "failed") {
       finishCodexCompaction(runtime, params);
       return;
     }
+    const turnStatusLogId = insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
+    createCompletedTurnTraceGroup(runtime.flowId, turnStatusLogId + 1);
+    if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     if (runtime.compacting) {
       runtime.compacting = false;
       runtime.compactingStartedAt = undefined;
@@ -1890,12 +1987,19 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
   if (!runtime.threadId) throw new Error("Codex thread is not ready.");
   runtime.lastSeenAt = Date.now();
   if (runtime.activeTurnId) {
-    await sendCodexRequest(runtime, "turn/steer", {
-      threadId: runtime.threadId,
-      input: textInput(message),
-      expectedTurnId: runtime.activeTurnId,
-    });
-    return;
+    try {
+      await sendCodexRequest(runtime, "turn/steer", {
+        threadId: runtime.threadId,
+        input: textInput(message),
+        expectedTurnId: runtime.activeTurnId,
+      });
+      return;
+    } catch (error) {
+      if (!isNoActiveTurnSteerError(error)) throw error;
+      runtime.activeTurnId = undefined;
+      setActiveTurnId(runtime.flowId);
+      insertLog(runtime.flowId, "agent:status", "stale active turn cleared before starting a new turn");
+    }
   }
   const response = (await sendCodexRequest(runtime, "turn/start", codexTurnParams(runtime, flow, message))) as {
     turn?: { id?: string };
@@ -1995,8 +2099,6 @@ async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMe
   if (!updated) throw new Error("Flow disappeared while starting agent.");
 
   const existingRuntime = agentProcesses.get(flow.id);
-  const isSteerMessage = Boolean(existingRuntime?.activeTurnId);
-  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
   let runtime: RuntimeProcess | undefined;
   let createdRuntime = false;
   try {
@@ -2014,10 +2116,47 @@ async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMe
   }
 }
 
+async function startQueuedPromptIfReady(flowId: string) {
+  const flow = getFlow(flowId);
+  const queued = queuedPromptForFlow(flowId);
+  if (!flow || !queued) return false;
+  const runtime = agentProcesses.get(flowId);
+  if (runtime?.stopping || runtime?.compacting || runtime?.activeTurnId) return false;
+
+  clearQueuedPrompt(flowId, { broadcast: false });
+  try {
+    await startAgent(flow, queued.message);
+  } catch {
+    // startAgent records the failure on the flow.
+  }
+  broadcast("flows", listClientFlows());
+  return true;
+}
+
+async function steerQueuedPrompt(flow: Flow) {
+  const queued = queuedPromptForFlow(flow.id);
+  if (!queued) throw new Error("No queued message to steer.");
+  const runtime = agentProcesses.get(flow.id);
+  if (!runtime?.activeTurnId || runtime.compacting) throw new Error("No active agent turn to steer.");
+
+  clearQueuedPrompt(flow.id, { broadcast: false });
+  try {
+    await startAgent(flow, queued.message);
+  } catch (error) {
+    broadcast("flows", listClientFlows());
+    throw error;
+  }
+  broadcast("flows", listClientFlows());
+  return true;
+}
+
 async function startNextQueuedAgentMessage(runtime: RuntimeProcess) {
   if (runtime.stopping || runtime.compacting || runtime.activeTurnId) return;
   const queued = runtime.queuedAgentMessages?.shift();
-  if (!queued) return;
+  if (!queued) {
+    await startQueuedPromptIfReady(runtime.flowId);
+    return;
+  }
   const flow = getFlow(runtime.flowId);
   if (!flow) return;
   deleteQueuedUserLog(flow.id, queued.queuedLogId);
@@ -2094,9 +2233,7 @@ async function startAgent(flow: Flow, userMessage = "") {
   const updated = getFlow(flow.id);
   if (!updated) throw new Error("Flow disappeared while starting agent.");
 
-  const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);
   const userLogId = message ? insertLog(flow.id, "user", `${userMessage}\n`) : 0;
-  if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);
   let runtime: RuntimeProcess | undefined;
   let createdRuntime = false;
   try {
@@ -2386,6 +2523,43 @@ async function updateLinearIssueStatus(identifier: string, issueId: string, stat
   return { issue, flow: flow ? getFlow(flow.id) : null };
 }
 
+async function updateLinearIssuePriority(identifier: string, issueId: string, priority: number) {
+  if (!Number.isInteger(priority) || priority < 0 || priority > 4) throw new Error("Linear priority must be between 0 and 4.");
+  const data = await linearGraphql<{
+    issueUpdate?: {
+      success: boolean;
+      issue?: LinearIssue;
+    };
+  }>(
+    `
+      mutation UpdateIssuePriority($id: String!, $priority: Int!) {
+        issueUpdate(id: $id, input: { priority: $priority }) {
+          success
+          issue {
+            id
+            identifier
+            title
+            url
+            priority
+            estimate
+            createdAt
+            updatedAt
+            state { id name color type }
+            team { key name }
+            project { name }
+            labels { nodes { name color } }
+          }
+        }
+      }
+    `,
+    { id: issueId || identifier, priority },
+  );
+  const issue = data.issueUpdate?.issue;
+  if (!data.issueUpdate?.success || !issue) throw new Error("Linear did not update the issue priority.");
+  cacheLinearIssue(issue);
+  return { issue };
+}
+
 function linearWorkflowKey(name = "") {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -2650,7 +2824,6 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/checkouts" && request.method === "GET") {
-    await refreshWorktreeLinearStatuses();
     return json({ checkouts: listWorktrees() });
   }
 
@@ -2746,6 +2919,12 @@ async function handleApi(request: Request, url: URL) {
       broadcast("flows", listClientFlows());
       broadcast("checkouts", listWorktrees());
     }
+    return json({ ok: true, ...result, flow: result.flow ? clientFlow(result.flow) : null });
+  }
+
+  if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && parts[4] === "priority" && request.method === "POST") {
+    const body = await readJson<{ issueId?: string; priority?: number }>(request);
+    const result = await updateLinearIssuePriority(decodeURIComponent(parts[3]), body.issueId || "", Number(body.priority));
     return json({ ok: true, ...result });
   }
 
@@ -2768,15 +2947,16 @@ async function handleApi(request: Request, url: URL) {
     const createdAt = now();
     db.query(`
       insert into flows (
-        id, linearIssueId, linearIssueUrl, title, linearStatus,
+        id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier,
         checkoutPath, branchName, baseSha, agentStatus, serving, createdAt, updatedAt
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       parsed.identifier,
       body.url?.trim() || linearIssue?.url || parsed.url,
       body.title?.trim() || linearIssue?.title || parsed.identifier,
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
+      "fast",
       target,
       branch,
       baseSha,
@@ -2800,14 +2980,6 @@ async function handleApi(request: Request, url: URL) {
 
     if (parts.length === 3 && request.method === "GET") {
       return json({ flow: clientFlow(flow) });
-    }
-
-    if (parts[3] === "logs" && request.method === "GET") {
-      const after = Number(url.searchParams.get("after") ?? 0);
-      const logs = db
-        .query("select * from logs where flowId = ? and id > ? order by id asc limit 1000")
-        .all(id, after);
-      return json({ logs });
     }
 
     if (parts[3] === "logs" && request.method === "DELETE") {
@@ -2860,14 +3032,6 @@ async function handleApi(request: Request, url: URL) {
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
-    if (parts[3] === "agent" && parts[4] === "status" && request.method === "GET") {
-      const reconciled = await reconcileAgentHeartbeat(flow);
-      return json({
-        flow: clientFlow(reconciled),
-        turnRunning: Boolean(agentProcesses.get(id)?.activeTurnId),
-      });
-    }
-
     if (parts[3] === "agent" && parts[4] === "interrupt" && request.method === "POST") {
       await interruptAgent(id);
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
@@ -2882,6 +3046,36 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "agent" && request.method === "DELETE") {
       await interruptAgent(id);
       return json({ ok: true });
+    }
+
+    if (parts[3] === "queued-prompt" && (request.method === "POST" || request.method === "PUT") && parts.length === 4) {
+      try {
+        const body = await readJson<{ message?: unknown }>(request);
+        setQueuedPrompt(id, normalizeQueuedPromptMessage(body.message));
+        await startQueuedPromptIfReady(id);
+        return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+      }
+    }
+
+    if (parts[3] === "queued-prompt" && request.method === "DELETE" && parts.length === 4) {
+      clearQueuedPrompt(id);
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
+    if (parts[3] === "queued-prompt" && parts[4] === "flush" && request.method === "POST") {
+      await startQueuedPromptIfReady(id);
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
+    if (parts[3] === "queued-prompt" && parts[4] === "steer" && request.method === "POST") {
+      try {
+        await steerQueuedPrompt(flow);
+        return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+      }
     }
 
     if (parts[3] === "message" && request.method === "POST") {
@@ -2981,7 +3175,9 @@ Bun.serve({
     open(ws) {
       clients.add(ws as unknown as ServerWebSocket);
     },
-    message() { },
+    message(ws, message) {
+      void handleWsRequest(ws as unknown as ServerWebSocket, message);
+    },
     close(ws) {
       clients.delete(ws as unknown as ServerWebSocket);
     },

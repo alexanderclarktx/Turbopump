@@ -3,7 +3,9 @@ import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js
 const COLLAPSED_LINEAR_STATUSES_KEY = "flow.collapsedLinearStatuses";
 const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
+const NOTIFIED_LINEAR_ISSUES_KEY = "flow.notifiedLinearIssueIds";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
+const LINEAR_PANE_HIDDEN_KEY = "flow.linearPaneHidden";
 const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
 const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
 const THEME_KEY = "flow.theme";
@@ -12,9 +14,19 @@ const SHELL_HISTORY_KEY = "flow.shellHistory";
 const MAX_INPUT_HISTORY_ITEMS = 200;
 const DEFAULT_TOAST_DURATION_MS = 3200;
 const ERROR_TOAST_DURATION_MS = 8000;
+const DEFAULT_FAVICON_HREF = "/favicon.svg";
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
 const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
-const AGENT_WORKING_POLL_INTERVAL_MS = 2500;
+const LOG_PREFETCH_DELAY_MS = 750;
+const LOG_PREFETCH_BATCH_SIZE = 1;
+const LOG_PREFETCH_MAX_FLOW_COUNT = 3;
+const LOG_PAGE_SIZE = 200;
+const AGENT_TRACE_INITIAL_TURN_COUNT = 6;
+const AGENT_TRACE_TURN_PAGE_SIZE = 6;
+const TERMINAL_TRACE_INITIAL_RENDER_COUNT = 18;
+const TERMINAL_TRACE_RENDER_BATCH_SIZE = 48;
+const TERMINAL_TRACE_OPEN_DURATION_MS = 90;
+const TERMINAL_TRACE_CLOSE_DURATION_MS = 80;
 const QUEUED_PROMPT_PREFIX_HTML = '<span class="queued-prompt-spinner" aria-hidden="true"></span>';
 const SLASH_COMMANDS = [
   { name: "/clear", description: "Start a fresh Codex thread for this flow" },
@@ -97,6 +109,15 @@ function initialPinnedLinearIssues() {
   }
 }
 
+function initialNotifiedLinearIssues() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTIFIED_LINEAR_ISSUES_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 function initialCollapsedSettingsSections() {
   const raw = localStorage.getItem(COLLAPSED_SETTINGS_SECTIONS_KEY);
   if (raw === null) return new Set(["checkouts"]);
@@ -161,18 +182,32 @@ const state = {
   checkoutsLoading: false,
   linearTickets: [],
   linearTicketsLoaded: false,
+  linearTicketsLoading: false,
   linearViewer: null,
   linearViewerName: "",
   linearSignedIn: false,
+  notifiedLinearIssueIds: initialNotifiedLinearIssues(),
+  notificationFaviconHref: "",
+  notificationFaviconLoading: false,
   selectedLinearIssueId: localStorage.getItem("flow.selectedLinearIssueId") || "",
   selectedFlowId: localStorage.getItem("flow.selectedFlowId") || "",
   linearDetails: new Map(),
   logs: new Map(),
   logIds: new Map(),
+  firstLogId: new Map(),
   lastLogId: new Map(),
   logBackfilledFlowIds: new Set(),
+  logOlderCompleteFlowIds: new Set(),
+  logOlderLoadingFlowIds: new Set(),
+  terminalVisibleTurnCounts: new Map(),
   pendingLogRenders: new Map(),
   logRenderFrame: 0,
+  logPrefetchingFlowIds: new Set(),
+  logPrefetchFailedFlowIds: new Set(),
+  logPrefetchTimer: 0,
+  logPrefetchedFlowCount: 0,
+  selectionRenderFrame: 0,
+  ticketSwitchFadeTimer: 0,
   pendingShellOutputRenders: new Set(),
   shellOutputRenderFrame: 0,
   shellOutputClearAfterLogId: new Map(),
@@ -183,11 +218,15 @@ const state = {
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
   pinnedLinearIssues: initialPinnedLinearIssues(),
   flowSplitSize: initialFlowSplitSize(),
+  linearPaneHidden: initialBooleanSetting(LINEAR_PANE_HIDDEN_KEY),
   shellOutputSplitSize: initialShellOutputSplitSize(),
   ticketDrawerHidden: false,
+  ticketSearchOpen: false,
+  ticketSearchQuery: "",
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
   messageSubmitting: false,
+  messageSubmittingFlowId: "",
   queuedPrompt: null,
   queuedPromptFlushTimer: 0,
   shellSubmitting: false,
@@ -196,9 +235,6 @@ const state = {
   pendingAgentImages: [],
   agentImageUploading: false,
   agentImageDragDepth: 0,
-  agentWorkingPollFlowId: "",
-  agentWorkingPollTimer: 0,
-  agentWorkingPollInFlight: false,
   promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
   promptHistoryOrder: new Map(),
@@ -210,6 +246,7 @@ const state = {
   terminalFollowPaused: false,
   flowDiffs: new Map(),
   flowDiffLoadingIds: new Set(),
+  pendingFlowDiffRefreshes: new Map(),
   diffModalFlowId: "",
   diffModalDiff: null,
   diffModalLoadingFlowId: "",
@@ -227,6 +264,7 @@ const els = {
   settingsPane: document.querySelector("#settingsPane"),
   settingsContent: document.querySelector(".settings-content"),
   settingsToggle: document.querySelector("#settingsToggle"),
+  ticketDrawer: document.querySelector(".ticket-drawer"),
   themeToggle: document.querySelector("#themeToggle"),
   repoUrl: document.querySelector("#repoUrl"),
   serveCommand: document.querySelector("#serveCommand"),
@@ -236,6 +274,10 @@ const els = {
   linearApiKey: document.querySelector("#linearApiKey"),
   refreshLinearTickets: document.querySelector("#refreshLinearTickets"),
   createLinearTicket: document.querySelector("#createLinearTicket"),
+  searchLinearTickets: document.querySelector("#searchLinearTickets"),
+  ticketSearchPane: document.querySelector("#ticketSearchPane"),
+  ticketSearchInput: document.querySelector("#ticketSearchInput"),
+  closeTicketSearch: document.querySelector("#closeTicketSearch"),
   linearState: document.querySelector("#linearState"),
   envEditor: document.querySelector("#envEditor"),
   checkoutList: document.querySelector("#checkoutList"),
@@ -258,23 +300,46 @@ let ticketDragScrollFrame = 0;
 let lastSavedRepoConfig = "";
 let lastSavedAgentConfig = "";
 let lastSavedEnv = "";
+let faviconSourceSvg = "";
+let realtimeWs = null;
+let realtimeWsOpenPromise = null;
+let wsRequestId = 0;
+const pendingWsRequests = new Map();
+const flowSnapshotRequestingIds = new Set();
 const TICKET_DRAG_SCROLL_EDGE_PX = 72;
 const TICKET_DRAG_SCROLL_MAX_STEP_PX = 18;
+const LINEAR_PRIORITY_OPTIONS = [
+  { priority: 1, name: "Urgent" },
+  { priority: 2, name: "High" },
+  { priority: 3, name: "Medium" },
+  { priority: 4, name: "Low" },
+  { priority: 0, name: "No priority" },
+];
 
 function linearStatusName(ticket) {
-  return ticket.state?.name || "No status";
+  return ticket?.state?.name || "No status";
 }
 
 function linearStatusId(ticket) {
-  return ticket.state?.id || "";
+  return ticket?.state?.id || "";
 }
 
-function linearPriorityLabel(priority) {
+function linearPriorityValue(priority) {
+  const value = Number(priority);
+  return Number.isInteger(value) && value >= 1 && value <= 4 ? value : 0;
+}
+
+function linearPriorityName(priority) {
+  return LINEAR_PRIORITY_OPTIONS.find((option) => option.priority === linearPriorityValue(priority))?.name || "No priority";
+}
+
+function linearPriorityLabel(priority, options = {}) {
   const value = Number(priority);
   if (value === 1) return "Urgent priority";
   if (value === 2) return "High priority";
   if (value === 3) return "Medium priority";
   if (value === 4) return "Low priority";
+  if (options.empty) return "No priority";
   return "";
 }
 
@@ -287,10 +352,10 @@ function linearPriorityBarCount(priority) {
   return 0;
 }
 
-function renderLinearPriorityIcon(priority) {
+function renderLinearPriorityIcon(priority, options = {}) {
   const barCount = linearPriorityBarCount(priority);
-  const label = linearPriorityLabel(priority);
-  if (!barCount || !label) return "";
+  const label = linearPriorityLabel(priority, options);
+  if ((!barCount && !options.empty) || !label) return "";
   const urgent = Number(priority) === 1;
   const bars = [
     { x: 2, y: 9, height: 4 },
@@ -352,6 +417,37 @@ function setLinearStatusCollapsed(status, collapsed) {
   }
   group.dataset.collapsed = String(collapsed);
   group.querySelector(".ticket-status-separator")?.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function setTicketSearchOpen(open) {
+  state.ticketSearchOpen = Boolean(open);
+  els.refreshLinearTickets.hidden = state.ticketSearchOpen;
+  els.createLinearTicket.hidden = state.ticketSearchOpen;
+  els.searchLinearTickets.hidden = state.ticketSearchOpen;
+  els.ticketSearchPane.hidden = !state.ticketSearchOpen;
+}
+
+function updateRefreshLinearTicketsButton() {
+  els.refreshLinearTickets.disabled = state.linearTicketsLoading;
+  els.refreshLinearTickets.setAttribute("aria-busy", String(state.linearTicketsLoading));
+  els.refreshLinearTickets.classList.toggle("is-loading", state.linearTicketsLoading);
+}
+
+function openTicketSearch() {
+  setTicketSearchOpen(true);
+  els.ticketSearchInput.value = state.ticketSearchQuery;
+  renderTickets();
+  requestAnimationFrame(() => {
+    els.ticketSearchInput.focus({ preventScroll: true });
+    els.ticketSearchInput.select();
+  });
+}
+
+function closeTicketSearch() {
+  state.ticketSearchQuery = "";
+  els.ticketSearchInput.value = "";
+  setTicketSearchOpen(false);
+  renderTickets();
 }
 
 async function api(path, options = {}) {
@@ -601,9 +697,8 @@ function renderHistorySearchIndicator() {
     return;
   }
   indicator.dataset.mode = search.mode;
-  const label = search.mode === "shell" ? "shell" : "prompt";
   const resultText = search.query && !search.matches.length ? " no match" : "";
-  indicator.innerHTML = `<strong>${label}</strong> bck-i-search: ${escapeHtml(search.query)}_${resultText}`;
+  indicator.innerHTML = `<span class="history-search-label">i-search:</span> ${escapeHtml(search.query)}_${resultText}`;
 }
 
 function updateHistorySearchMatches(input, query) {
@@ -731,10 +826,19 @@ function setInputMode(mode) {
 function updateMessageInputMode() {
   const input = promptInput();
   if (!input) return;
-  const queued = promptQueuedForSelectedFlow();
+  const flow = selectedFlow();
+  const queuedPrompt = queuedPromptForFlow(flow);
+  const queued = Boolean(queuedPrompt);
+  const queuedCanSteer = promptQueuedCanSteer(flow);
   const pane = els.flowPane.querySelector(".prompt-input-pane");
   const prefix = els.flowPane.querySelector(".prompt-input-prefix");
+  const queuedHint = els.flowPane.querySelector(".queued-prompt-hint");
+  const compactQueued = queued && flowAgentCompacting(flow);
   pane?.classList.toggle("prompt-queued", queued);
+  if (queuedHint) {
+    queuedHint.hidden = !queued || compactQueued;
+    queuedHint.textContent = queuedCanSteer ? 'message queued — press "s" to steer' : "message queued";
+  }
   if (prefix) {
     if (queued && !prefix.querySelector(".queued-prompt-spinner")) {
       prefix.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
@@ -743,6 +847,10 @@ function updateMessageInputMode() {
     }
   }
   if (queued) {
+    if (input.value !== queuedPrompt.message) {
+      input.value = queuedPrompt.message;
+      resizeMessageInput();
+    }
     hideSlashMenu();
     return;
   }
@@ -797,12 +905,41 @@ function flowAgentQueuedMessage(flow) {
   return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);
 }
 
+function queuedPromptForFlow(flow) {
+  if (!flow?.id) return null;
+  if (flow.queuedPrompt?.message) {
+    return {
+      flowId: flow.id,
+      message: flow.queuedPrompt.message,
+      createdAt: flow.queuedPrompt.createdAt || "",
+      updatedAt: flow.queuedPrompt.updatedAt || "",
+    };
+  }
+  return state.queuedPrompt?.flowId === flow.id ? state.queuedPrompt : null;
+}
+
+function queuedPromptEntries() {
+  const entries = [];
+  const seen = new Set();
+  for (const flow of state.flows) {
+    const queued = queuedPromptForFlow(flow);
+    if (!queued || seen.has(flow.id)) continue;
+    seen.add(flow.id);
+    entries.push({ queued, flow });
+  }
+  return entries;
+}
+
 function promptQueuedForFlow(flow) {
-  return Boolean(flow?.id && state.queuedPrompt?.flowId === flow.id);
+  return Boolean(queuedPromptForFlow(flow));
 }
 
 function promptQueuedForSelectedFlow() {
   return promptQueuedForFlow(selectedFlow());
+}
+
+function promptQueuedCanSteer(flow = selectedFlow()) {
+  return promptQueuedForFlow(flow) && flowAgentRunning(flow) && !flowAgentCompacting(flow);
 }
 
 function flowShellRunning(flow) {
@@ -874,6 +1011,15 @@ function handleInputPaneTabKeydown(event) {
   return true;
 }
 
+function focusShellInputPaneForShortcut() {
+  if (!canSwitchInputPane()) return false;
+  if (state.shellPaneHidden) {
+    revealShellPaneForInputFocus();
+    return true;
+  }
+  return focusInputPane("shell");
+}
+
 function flashBlockedInput(input) {
   if (!input) return;
   input.classList.remove("input-submit-blocked");
@@ -882,19 +1028,29 @@ function flashBlockedInput(input) {
   window.setTimeout(() => input.classList.remove("input-submit-blocked"), 420);
 }
 
-function clearQueuedPrompt() {
+function clearQueuedPrompt(options = {}) {
+  const flow = selectedFlow();
+  const queued = queuedPromptForFlow(flow) || state.queuedPrompt;
   state.queuedPrompt = null;
   updateMessageInputMode();
   saveActiveTicketInputState();
+  if (options.persist !== false && queued?.flowId) {
+    void api(`/api/flows/${encodeURIComponent(queued.flowId)}/queued-prompt`, { method: "DELETE" })
+      .then((data) => {
+        if (data.flow) upsertFlow(data.flow);
+      })
+      .catch(() => {});
+  }
 }
 
-function queuePromptMessage(input) {
+async function queuePromptMessage(input) {
   const flow = selectedFlow();
-  if (!flow?.id || state.queuedPrompt || !input) return false;
-  state.queuedPrompt = {
+  if (!flow?.id || promptQueuedForFlow(flow) || !input) return false;
+  const queued = {
     flowId: flow.id,
     message: input.value,
   };
+  state.queuedPrompt = queued;
   cancelHistorySearch();
   resetInputHistoryNavigation();
   updateMessageInputMode();
@@ -902,11 +1058,90 @@ function queuePromptMessage(input) {
   saveActiveTicketInputState();
   renderTickets();
   renderFlowPane();
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/queued-prompt`, {
+      method: "PUT",
+      body: JSON.stringify({ message: queued.message }),
+    });
+    if (state.queuedPrompt === queued) state.queuedPrompt = null;
+    if (data.flow) upsertFlow(data.flow);
+  } catch (error) {
+    if (state.queuedPrompt === queued) clearQueuedPrompt({ persist: false });
+    throw error;
+  }
+  return true;
+}
+
+async function submitQueuedPromptSteer() {
+  const flow = selectedFlow();
+  const queued = queuedPromptForFlow(flow);
+  const input = promptInput();
+  const message = String(queued?.message || "").trim();
+  if (!queued || !flow?.id || queued.flowId !== flow.id || !message) {
+    if (queued === state.queuedPrompt) clearQueuedPrompt({ persist: false });
+    return true;
+  }
+  if (!promptQueuedCanSteer(flow) || state.messageSubmitting) {
+    flashBlockedInput(input);
+    return true;
+  }
+
+  state.queuedPrompt = null;
+  updateFlowQueuedPrompt(flow.id, null);
+  updateMessageInputMode();
+  if (input && input.value === queued.message) {
+    input.value = "";
+    resizeMessageInput();
+    saveActiveTicketInputState();
+  }
+  state.messageSubmitting = true;
+  state.messageSubmittingFlowId = flow.id;
+  requestFlowSnapshot(flow.id);
+  renderTickets();
+  renderFlowPane();
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/steer`, { method: "POST" });
+    if (data.flow) upsertFlow(data.flow);
+    await loadLogs(flow.id, { scrollToLatest: true });
+  } finally {
+    state.messageSubmitting = false;
+    state.messageSubmittingFlowId = "";
+    renderTickets();
+    renderFlowPane();
+    promptInput()?.focus();
+  }
   return true;
 }
 
 function handleQueuedPromptKeydown(event) {
   if (!promptQueuedForSelectedFlow()) return false;
+  if (
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.isComposing &&
+    ["a", "c"].includes(event.key.toLowerCase())
+  ) {
+    return false;
+  }
+  if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;
+  if (
+    promptQueuedCanSteer() &&
+    event.key.toLowerCase() === "s" &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.isComposing
+  ) {
+    event.preventDefault();
+    if (!event.repeat) void submitQueuedPromptSteer();
+    return true;
+  }
+  if (event.key === "$" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing) {
+    event.preventDefault();
+    if (!event.repeat && focusShellInputPaneForShortcut()) return true;
+    if (event.repeat) return true;
+  }
   if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
   event.preventDefault();
   if (event.key === "Backspace" || event.key === "Escape") {
@@ -925,7 +1160,7 @@ function handleQueuedPromptBeforeInput(event) {
 }
 
 function scheduleQueuedPromptFlush() {
-  if (!state.queuedPrompt || state.queuedPromptFlushTimer) return;
+  if (!queuedPromptEntries().length || state.queuedPromptFlushTimer) return;
   state.queuedPromptFlushTimer = window.setTimeout(() => {
     state.queuedPromptFlushTimer = 0;
     void flushQueuedPrompt();
@@ -933,10 +1168,60 @@ function scheduleQueuedPromptFlush() {
 }
 
 async function flushQueuedPrompt() {
-  const queued = state.queuedPrompt;
-  const flow = selectedFlow();
-  if (!queued || !flow?.id || flow.id !== queued.flowId || flowAgentRunning(flow) || state.messageSubmitting) return;
-  await submitPromptMessage();
+  if (state.messageSubmitting) return;
+  for (const { queued, flow } of queuedPromptEntries()) {
+    if (!queued || !flow?.id || flowAgentRunning(flow)) continue;
+    await submitQueuedPromptMessage(queued, flow);
+    return;
+  }
+}
+
+async function submitQueuedPromptMessage(queued, flow) {
+  const message = String(queued?.message || "").trim();
+  if (!flow?.id || !message) {
+    if (state.queuedPrompt === queued) clearQueuedPrompt();
+    return;
+  }
+
+  const selected = flow.id === state.selectedFlowId;
+  if (state.queuedPrompt === queued) {
+    state.queuedPrompt = null;
+  }
+  updateFlowQueuedPrompt(flow.id, null);
+  updateMessageInputMode();
+  if (selected) {
+    const input = promptInput();
+    if (input && input.value === queued.message) {
+      input.value = "";
+      resizeMessageInput();
+      saveActiveTicketInputState();
+    }
+    state.messageSubmitting = true;
+    state.messageSubmittingFlowId = flow.id;
+    requestFlowSnapshot(flow.id);
+    renderFlowPane();
+    renderLogs(flow.id, { force: true, scrollToLatest: true });
+  } else if (flow.linearIssueId) {
+    const inputState = ticketInputState(flow.linearIssueId);
+    if (inputState.promptValue === queued.message) inputState.promptValue = "";
+  }
+  renderTickets();
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/flush`, { method: "POST" });
+    if (data.flow) upsertFlow(data.flow);
+    await loadLogs(flow.id, selected ? { scrollToLatest: true } : {});
+  } finally {
+    if (selected) {
+      state.messageSubmitting = false;
+      state.messageSubmittingFlowId = "";
+      scheduleQueuedPromptFlush();
+      renderTickets();
+      renderFlowPane();
+      promptInput().focus();
+    } else {
+      renderTickets();
+    }
+  }
 }
 
 async function interruptSelectedFlow() {
@@ -995,12 +1280,12 @@ function focusMessageInputForKey(event) {
   const start = input.selectionStart ?? input.value.length;
   const end = input.selectionEnd ?? input.value.length;
   event.preventDefault();
+  if (event.key === "$" && focusShellInputPaneForShortcut()) return true;
   if (promptQueuedForSelectedFlow()) {
     input.focus();
     flashBlockedInput(input);
     return true;
   }
-  if (event.key === "$" && focusInputPane("shell")) return true;
   input.focus();
   input.setRangeText(event.key, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1026,12 +1311,21 @@ function handleAgentInterruptKeydown(event) {
   return true;
 }
 
-function handleCommandK(event) {
-  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "k") return false;
+function handleCommandZ(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "z") return false;
   event.preventDefault();
   event.stopImmediatePropagation();
   if (event.repeat) return true;
-  if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");
+  toggleTheme();
+  return true;
+}
+
+function handleCommandK(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "k") return false;
+  if (focusedInputPaneKind() !== "shell") return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!event.repeat) void submitShellCommand("clear");
   return true;
 }
 
@@ -1562,6 +1856,9 @@ function toggleSettingsCollapsed() {
 function setTicketDrawerHidden(hidden) {
   state.ticketDrawerHidden = hidden;
   document.body.classList.toggle("tickets-collapsed", hidden);
+  els.ticketDrawer.setAttribute("aria-label", hidden ? "Expand tickets" : "Tickets");
+  if (hidden) els.ticketDrawer.setAttribute("tabindex", "0");
+  else els.ticketDrawer.removeAttribute("tabindex");
   applyFlowSplitSize();
 }
 
@@ -1569,12 +1866,32 @@ function toggleTicketDrawerHidden() {
   setTicketDrawerHidden(!state.ticketDrawerHidden);
 }
 
+function setLinearPaneHidden(hidden) {
+  const restoreTerminalBottom = terminalBottomRestorer();
+  if (!hidden && state.flowSplitSize <= 1) state.flowSplitSize = 50;
+  state.linearPaneHidden = hidden;
+  document.body.classList.toggle("linear-pane-hidden", hidden);
+  const linearPanel = els.flowPane.querySelector(".linear-panel");
+  const linearRail = els.flowPane.querySelector(".linear-pane-rail");
+  if (linearPanel) linearPanel.setAttribute("aria-hidden", String(hidden));
+  if (linearRail) linearRail.setAttribute("aria-expanded", String(!hidden));
+  localStorage.setItem(LINEAR_PANE_HIDDEN_KEY, String(hidden));
+  applyFlowSplitSize();
+  restoreTerminalBottom();
+}
+
+function toggleLinearPaneHidden() {
+  setLinearPaneHidden(!state.linearPaneHidden);
+}
+
 function setShellPaneHidden(hidden) {
   const restoreTerminalBottom = terminalBottomRestorer();
   state.shellPaneHidden = hidden;
   document.body.classList.toggle("shell-pane-hidden", hidden);
   const shellPanel = els.flowPane.querySelector(".shell-command-panel");
+  const shellRail = els.flowPane.querySelector(".shell-pane-rail");
   if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));
+  if (shellRail) shellRail.setAttribute("aria-expanded", String(!hidden));
   if (hidden && focusedInputPaneKind() === "shell") focusInputPane("prompt");
   localStorage.setItem(SHELL_PANE_HIDDEN_KEY, String(hidden));
   renderShellOutputPane(state.selectedFlowId);
@@ -1603,6 +1920,99 @@ function applyTheme(theme) {
 function setTheme(theme) {
   applyTheme(theme);
   localStorage.setItem(THEME_KEY, theme);
+}
+
+function toggleTheme() {
+  setTheme(state.theme === "dark" ? "light" : "dark");
+}
+
+function faviconLink() {
+  let link = document.querySelector("link[rel='icon']");
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    link.type = "image/svg+xml";
+    document.head.append(link);
+  }
+  return link;
+}
+
+function notifiedFaviconSvg(source) {
+  const dot = `
+  <g aria-hidden="true">
+    <circle cx="50" cy="54" r="9" fill="#ffff00" />
+  </g>`;
+  return source.includes("</svg>") ? source.replace("</svg>", `${dot}\n</svg>`) : source;
+}
+
+async function notificationFaviconHref() {
+  if (state.notificationFaviconHref) return state.notificationFaviconHref;
+  if (!faviconSourceSvg) faviconSourceSvg = await fetch(DEFAULT_FAVICON_HREF).then((response) => response.text());
+  state.notificationFaviconHref = `data:image/svg+xml,${encodeURIComponent(notifiedFaviconSvg(faviconSourceSvg))}`;
+  return state.notificationFaviconHref;
+}
+
+async function updateBrowserTabNotification() {
+  const link = faviconLink();
+  if (!state.notifiedLinearIssueIds.size) {
+    link.href = DEFAULT_FAVICON_HREF;
+    return;
+  }
+  if (state.notificationFaviconLoading) return;
+  state.notificationFaviconLoading = true;
+  try {
+    link.href = await notificationFaviconHref();
+  } catch {
+    link.href =
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='50' cy='54' r='9' fill='%23ffff00'/%3E%3C/svg%3E";
+  } finally {
+    state.notificationFaviconLoading = false;
+  }
+  if (!state.notifiedLinearIssueIds.size) link.href = DEFAULT_FAVICON_HREF;
+}
+
+function persistLinearIssueNotifications() {
+  localStorage.setItem(NOTIFIED_LINEAR_ISSUES_KEY, JSON.stringify([...state.notifiedLinearIssueIds]));
+}
+
+function flowForId(flowId) {
+  return state.flows.find((flow) => flow.id === flowId) || null;
+}
+
+function linearIssueIdForFlowId(flowId) {
+  return flowForId(flowId)?.linearIssueId || "";
+}
+
+function clearLinearIssueNotification(identifier, options = {}) {
+  if (!identifier || !state.notifiedLinearIssueIds.delete(identifier)) return false;
+  persistLinearIssueNotifications();
+  void updateBrowserTabNotification();
+  if (options.render !== false) renderTickets();
+  return true;
+}
+
+function canAcknowledgeSelectedNotification() {
+  return document.visibilityState === "visible" && (typeof document.hasFocus !== "function" || document.hasFocus());
+}
+
+function acknowledgeSelectedLinearIssueNotification() {
+  if (!canAcknowledgeSelectedNotification()) return;
+  clearLinearIssueNotification(state.selectedLinearIssueId);
+}
+
+function notifyAgentTurnEnded(flowId) {
+  const issueId = linearIssueIdForFlowId(flowId);
+  if (!issueId || (issueId === state.selectedLinearIssueId && canAcknowledgeSelectedNotification())) return;
+  state.notifiedLinearIssueIds.add(issueId);
+  persistLinearIssueNotifications();
+  void updateBrowserTabNotification();
+  renderTickets();
+}
+
+function refreshFlowDiffAfterAgentTurn(flowId) {
+  if (!flowId) return;
+  const modalOpen = state.diffModalFlowId === flowId;
+  void loadFlowDiff(flowId, { force: true, modal: modalOpen, patch: modalOpen });
 }
 
 function setDefaultSettingsState(linear) {
@@ -1638,6 +2048,11 @@ function applyFlowSplitSize() {
   const rect = content.getBoundingClientRect();
   const applied = appliedFlowSplitSize();
   const resizer = els.flowPane.querySelector(".flow-resizer");
+  if (state.linearPaneHidden) {
+    resizer.setAttribute("aria-valuenow", "0");
+    content.style.setProperty("--top-pane-size", "0px");
+    return 0;
+  }
   if (rect.height) {
     const bounds = flowSplitBounds(content, rect);
     resizer.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
@@ -1649,9 +2064,14 @@ function applyFlowSplitSize() {
 }
 
 function setFlowSplitSize(value) {
-  state.flowSplitSize = clampFlowSplitSize(value);
+  const next = clampFlowSplitSize(value);
+  if (!state.linearPaneHidden && next <= 1) {
+    setLinearPaneHidden(true);
+    return;
+  }
+  state.flowSplitSize = next;
   const applied = applyFlowSplitSize();
-  state.flowSplitSize = applied;
+  if (!state.linearPaneHidden) state.flowSplitSize = applied;
   localStorage.setItem(FLOW_SPLIT_SIZE_KEY, String(state.flowSplitSize));
 }
 
@@ -1698,14 +2118,16 @@ function setShellOutputSplitSize(value) {
 
 async function bootstrap() {
   applyTheme(state.theme);
+  void updateBrowserTabNotification();
   renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
   setTicketDrawerHidden(state.ticketDrawerHidden);
-  setShellPaneHidden(state.shellPaneHidden);
   setFlowSplitSize(state.flowSplitSize);
   setShellOutputSplitSize(state.shellOutputSplitSize);
+  setLinearPaneHidden(state.linearPaneHidden);
+  setShellPaneHidden(state.shellPaneHidden);
   requestAnimationFrame(() => document.body.classList.remove("app-booting"));
-  const data = await api("/api/bootstrap");
+  const [data, env] = await Promise.all([api("/api/bootstrap"), api("/api/env")]);
   setFlows(data.flows);
   els.repoUrl.value = data.repo.repoUrl || "";
   els.serveCommand.value = data.repo.serveCommand || "";
@@ -1716,7 +2138,6 @@ async function bootstrap() {
   state.linearSignedIn = data.linear.signedIn;
   setDefaultSettingsState(data.linear);
   updateLinearState(data.linear);
-  const env = await api("/api/env");
   renderEnvEditor(env.contents || "");
   lastSavedEnv = envEditorContents();
   render();
@@ -1726,7 +2147,7 @@ async function bootstrap() {
     void loadFlowDiff(flow.id, { force: true });
   }
   if (state.linearSignedIn) await loadLinearTickets();
-  connectWs();
+  void connectWs().catch(() => {});
 }
 
 function render() {
@@ -1745,21 +2166,32 @@ function setFlows(flows) {
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
   scheduleQueuedPromptFlush();
+  scheduleTicketLogPrefetch();
 }
 
 function clearFlowClientState(flowId) {
+  clearLinearIssueNotification(linearIssueIdForFlowId(flowId), { render: false });
   state.logs.delete(flowId);
   state.logIds.delete(flowId);
+  state.firstLogId.delete(flowId);
   state.lastLogId.delete(flowId);
   state.logBackfilledFlowIds.delete(flowId);
+  state.logOlderCompleteFlowIds.delete(flowId);
+  state.logOlderLoadingFlowIds.delete(flowId);
+  state.terminalVisibleTurnCounts.delete(flowId);
   state.pendingLogRenders.delete(flowId);
+  state.logPrefetchingFlowIds.delete(flowId);
+  state.logPrefetchFailedFlowIds.delete(flowId);
   state.pendingShellOutputRenders.delete(flowId);
   state.shellOutputClearAfterLogId.delete(flowId);
   state.openTraceGroups.delete(flowId);
   state.shellInterruptingFlowIds.delete(flowId);
-  if (state.queuedPrompt?.flowId === flowId) clearQueuedPrompt();
+  if (state.queuedPrompt?.flowId === flowId) state.queuedPrompt = null;
   state.flowDiffs.delete(flowId);
   state.flowDiffLoadingIds.delete(flowId);
+  for (const key of state.pendingFlowDiffRefreshes.keys()) {
+    if (key.startsWith(`${flowId}:`)) state.pendingFlowDiffRefreshes.delete(key);
+  }
   if (state.diffModalFlowId === flowId) {
     state.diffModalFlowId = "";
     state.diffModalDiff = null;
@@ -2034,6 +2466,18 @@ function diffLoadingKey(flowId, options = {}) {
   return `${flowId}:${options.patch ? "patch" : "summary"}`;
 }
 
+function rememberPendingFlowDiffRefresh(flowId, options = {}) {
+  const loadingKey = diffLoadingKey(flowId, options);
+  const pending = state.pendingFlowDiffRefreshes.get(loadingKey) || {};
+  state.pendingFlowDiffRefreshes.set(loadingKey, {
+    ...pending,
+    ...options,
+    force: true,
+    patch: Boolean(pending.patch || options.patch),
+    modal: Boolean(pending.modal || options.modal),
+  });
+}
+
 async function loadFlowDiff(flowId, options = {}) {
   if (!flowId) return null;
   const existing = state.flowDiffs.get(flowId);
@@ -2046,7 +2490,10 @@ async function loadFlowDiff(flowId, options = {}) {
     return existing;
   }
   const loadingKey = diffLoadingKey(flowId, options);
-  if (state.flowDiffLoadingIds.has(loadingKey)) return state.flowDiffs.get(flowId) || null;
+  if (state.flowDiffLoadingIds.has(loadingKey)) {
+    if (options.force) rememberPendingFlowDiffRefresh(flowId, options);
+    return state.flowDiffs.get(flowId) || null;
+  }
   state.flowDiffLoadingIds.add(loadingKey);
   if (options.modal && state.diffModalFlowId === flowId) {
     state.diffModalLoadingFlowId = flowId;
@@ -2056,7 +2503,7 @@ async function loadFlowDiff(flowId, options = {}) {
   try {
     const diff = normalizeDiff(await api(`/api/flows/${encodeURIComponent(flowId)}/diff${options.patch ? "?patch=1" : ""}`));
     const latest = state.flowDiffs.get(flowId);
-    if (!options.patch && latest?.patch) diff.patch = latest.patch;
+    if (!options.patch && !options.force && latest?.patch) diff.patch = latest.patch;
     state.flowDiffs.set(flowId, diff);
     if (options.modal && state.diffModalFlowId === flowId) {
       state.diffModalDiff = { ...diff };
@@ -2076,6 +2523,11 @@ async function loadFlowDiff(flowId, options = {}) {
   } finally {
     state.flowDiffLoadingIds.delete(loadingKey);
     renderAgentContext(selectedFlow());
+    const pending = state.pendingFlowDiffRefreshes.get(loadingKey);
+    if (pending) {
+      state.pendingFlowDiffRefreshes.delete(loadingKey);
+      void loadFlowDiff(flowId, pending);
+    }
   }
 }
 
@@ -2128,7 +2580,7 @@ function openDiffViewer(flowId) {
   state.diffModalLoadingFlowId = flowId || "";
   state.diffModalSelectedPath = "";
   renderDiffModal();
-  if (flowId) void loadFlowDiff(flowId, { patch: true, modal: true });
+  if (flowId) void loadFlowDiff(flowId, { patch: true, modal: true, force: true });
 }
 
 function closeDiffViewer() {
@@ -2463,6 +2915,7 @@ function appendLogEntry(log) {
   }
   ids.add(id);
   rememberLogHistory(log);
+  state.firstLogId.set(flowId, Math.min(state.firstLogId.get(flowId) || id, id));
   if (state.logBackfilledFlowIds.has(flowId)) {
     state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
   }
@@ -2482,9 +2935,46 @@ function upsertFlow(flow) {
   setFlows(next);
 }
 
+function updateFlowQueuedPrompt(flowId, queuedPrompt) {
+  if (!flowId) return;
+  const index = state.flows.findIndex((item) => item.id === flowId);
+  if (index === -1) return;
+  const next = [...state.flows];
+  next[index] = { ...next[index], queuedPrompt };
+  setFlows(next);
+}
+
 function flowUpdatedAtMs(flow) {
   const timestamp = Date.parse(flow?.updatedAt || "");
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function linearIssueUpdatedAtMs(issue) {
+  const timestamp = Date.parse(issue?.updatedAt || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function mergeLinearIssue(existing, incoming) {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  const existingUpdatedAt = linearIssueUpdatedAtMs(existing);
+  const incomingUpdatedAt = linearIssueUpdatedAtMs(incoming);
+  const merged = { ...existing, ...incoming };
+  if (existingUpdatedAt && incomingUpdatedAt && existingUpdatedAt > incomingUpdatedAt) {
+    return {
+      ...merged,
+      title: existing.title,
+      url: existing.url,
+      priority: existing.priority,
+      estimate: existing.estimate,
+      updatedAt: existing.updatedAt,
+      state: existing.state,
+      team: existing.team,
+      project: existing.project,
+      labels: existing.labels,
+    };
+  }
+  return merged;
 }
 
 function syncLinearTicketsWithFlows() {
@@ -2511,6 +3001,7 @@ function removeLinearIssueFromTurbopump(identifier) {
   state.linearTickets = state.linearTickets.filter((ticket) => ticket.identifier !== issueId);
   state.linearDetails.delete(issueId);
   state.ticketInputStates.delete(issueId);
+  clearLinearIssueNotification(issueId, { render: false });
   const removedPin = state.pinnedLinearIssues.delete(issueId);
   if (removedPin) persistPinnedLinearIssues();
   clearSelectedLinearIssue(issueId);
@@ -2540,6 +3031,9 @@ function updateLinearState(linear) {
 }
 
 async function loadLinearTickets(options = {}) {
+  if (state.linearTicketsLoading) return;
+  state.linearTicketsLoading = true;
+  updateRefreshLinearTicketsButton();
   try {
     els.ticketState.textContent = "Loading assigned tickets.";
     const data = await api("/api/linear/issues");
@@ -2550,6 +3044,8 @@ async function loadLinearTickets(options = {}) {
     reconcileRemovedLinearTickets(previousTickets, nextTickets);
     state.linearTickets = nextTickets;
     state.linearTicketsLoaded = true;
+    state.logPrefetchFailedFlowIds.clear();
+    state.logPrefetchedFlowCount = 0;
     if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
     els.ticketState.textContent = formatLastUpdated();
@@ -2558,6 +3054,7 @@ async function loadLinearTickets(options = {}) {
     if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
     renderTickets();
     renderFlowPane();
+    scheduleTicketLogPrefetch();
   } catch (error) {
     state.linearTickets = [];
     state.linearTicketsLoaded = true;
@@ -2566,13 +3063,24 @@ async function loadLinearTickets(options = {}) {
     els.ticketState.textContent = error.message;
     els.linearState.textContent = "Linear needs attention";
     els.linearState.classList.remove("live");
+  } finally {
+    state.linearTicketsLoading = false;
+    updateRefreshLinearTicketsButton();
   }
 }
 
 function renderTickets() {
   const tickets = sortedLinearTickets(state.linearTickets);
-  const pinnedTickets = orderedPinnedTickets(tickets);
+  const searchQuery = normalizedTicketSearchQuery();
+  const pinnedTickets = orderedPinnedTickets(tickets).filter((ticket) => !searchQuery || ticketMatchesTicketSearch(ticket, searchQuery));
   const groups = groupedTicketsByLinearStatus(tickets.filter((ticket) => !isLinearIssuePinned(ticket.identifier)));
+  const ticketGroups = searchQuery
+    ? groups.map((group) => ({
+        ...group,
+        collapsed: false,
+        tickets: group.tickets.filter((ticket) => ticketMatchesTicketSearch(ticket, searchQuery)),
+      }))
+    : groups;
   const signature = tickets
     .map((ticket) =>
       [
@@ -2587,7 +3095,9 @@ function renderTickets() {
     )
     .join("\u001e")
     .concat("\u001d", [...state.collapsedLinearStatuses].sort().join("\u001f"))
-    .concat("\u001d", [...state.pinnedLinearIssues].join("\u001f"));
+    .concat("\u001d", [...state.pinnedLinearIssues].join("\u001f"))
+    .concat("\u001d", state.ticketSearchOpen ? "search-open" : "search-closed", "\u001f", searchQuery)
+    .concat("\u001d", state.selectedLinearIssueId);
 
   if (els.ticketGrid.dataset.ticketSignature === signature) {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
@@ -2597,11 +3107,20 @@ function renderTickets() {
   }
 
   els.ticketGrid.dataset.ticketSignature = signature;
+
   const nodes = [renderPinnedTicketGroup(pinnedTickets)];
-  for (const group of groups) {
+  for (const group of ticketGroups) {
     nodes.push(renderTicketStatusGroup(group));
   }
   els.ticketGrid.replaceChildren(...nodes);
+}
+
+function normalizedTicketSearchQuery() {
+  return state.ticketSearchQuery.trim().toLowerCase();
+}
+
+function ticketMatchesTicketSearch(ticket, query) {
+  return String(ticket.title || "").toLowerCase().includes(query);
 }
 
 function ticketHasAgentSession(ticket) {
@@ -2667,6 +3186,8 @@ function renderTicketStatusGroup(group) {
   section.dataset.status = group.key;
   section.dataset.stateId = group.stateId;
   section.dataset.collapsed = String(group.collapsed);
+  const selectedTicketVisible = group.collapsed && group.tickets.some((ticket) => ticket.identifier === state.selectedLinearIssueId);
+  section.dataset.selectedTicketVisible = String(selectedTicketVisible);
   section.addEventListener("dragenter", (event) => handleTicketStatusDragEnter(event, group));
   section.addEventListener("dragover", (event) => handleTicketStatusDragOver(event, group));
   section.addEventListener("dragleave", handleTicketStatusDragLeave);
@@ -2676,7 +3197,10 @@ function renderTicketStatusGroup(group) {
   body.className = "ticket-status-group-body";
   const items = document.createElement("div");
   items.className = "ticket-status-group-items";
-  items.replaceChildren(...group.tickets.map((ticket) => renderTicketCard(ticket)));
+  const visibleTickets = selectedTicketVisible
+    ? group.tickets.filter((ticket) => ticket.identifier === state.selectedLinearIssueId)
+    : group.tickets;
+  items.replaceChildren(...visibleTickets.map((ticket) => renderTicketCard(ticket)));
   body.append(items);
 
   section.append(renderTicketStatusSeparator(group), body);
@@ -2728,6 +3252,91 @@ function renderTicketStatusSeparator(group) {
   return separator;
 }
 
+function linearStatusOptions(issue = null, fallbackStatus = null) {
+  const byStateId = new Map();
+  const addStatus = (stateId, status) => {
+    if (!stateId || !status || byStateId.has(stateId)) return;
+    byStateId.set(stateId, {
+      stateId,
+      status,
+      key: linearStatusKey(status),
+    });
+  };
+  const addIssueStatus = (item) => {
+    addStatus(linearStatusId(item), linearStatusName(item));
+  };
+  state.linearTickets.forEach(addIssueStatus);
+  if (issue) addIssueStatus(issue);
+  if (fallbackStatus) addStatus(fallbackStatus.stateId, fallbackStatus.status);
+  return [...byStateId.values()].sort((a, b) => linearStatusRank(a.key) - linearStatusRank(b.key) || a.status.localeCompare(b.status));
+}
+
+function renderLinearStatusControl(issue, statusName) {
+  const issueId = issue.identifier || state.selectedLinearIssueId;
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  const currentStateId = linearStatusId(issue) || linearStatusId(ticket);
+  if (!issueId || !statusName) return "";
+  const options = linearStatusOptions(issue, { stateId: currentStateId, status: statusName }).filter((option) => option.stateId !== currentStateId);
+  const optionButtons = options
+    .map(
+      (option, index) =>
+        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${escapeHtml(option.status)}</button>`,
+    )
+    .join("");
+  return `<span class="linear-status-control">
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${escapeHtml(statusName)}</button>
+    ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
+  </span>`;
+}
+
+function renderLinearPriorityControl(issue) {
+  const issueId = issue.identifier || state.selectedLinearIssueId;
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  const currentPriority = linearPriorityValue(issue.priority ?? ticket?.priority);
+  if (!issueId) return "";
+  const options = LINEAR_PRIORITY_OPTIONS.filter((option) => option.priority !== currentPriority);
+  const currentIcon = renderLinearPriorityIcon(currentPriority, { empty: true });
+  const currentName = linearPriorityName(currentPriority);
+  const optionButtons = options
+    .map((option, index) => {
+      const icon = renderLinearPriorityIcon(option.priority, { empty: true });
+      return `<button class="linear-priority-option" type="button" data-linear-priority-option="true" data-issue="${escapeAttribute(issueId)}" data-priority="${option.priority}" title="${escapeAttribute(option.name)}" aria-label="${escapeAttribute(option.name)}" style="--linear-priority-option-index: ${index};">${icon}</button>`;
+    })
+    .join("");
+  return `<span class="linear-priority-control">
+    <button class="linear-priority-pill" type="button" data-linear-priority-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear priority" aria-label="${escapeAttribute(currentName)}" aria-haspopup="true">${currentIcon}</button>
+    <span class="linear-priority-options" aria-label="Linear priority options">${optionButtons}</span>
+  </span>`;
+}
+
+function handleLinearDetailClick(event) {
+  if (!(event.target instanceof Element)) return;
+  const priorityButton = event.target.closest("[data-linear-priority-option]");
+  if (priorityButton && els.flowPane.contains(priorityButton)) {
+    event.preventDefault();
+    const issueId = priorityButton.dataset.issue || "";
+    const priority = Number(priorityButton.dataset.priority);
+    if (!issueId || !Number.isInteger(priority)) {
+      renderFlowPane();
+      return;
+    }
+    void moveTicketToLinearPriority(issueId, priority);
+    return;
+  }
+
+  const button = event.target.closest("[data-linear-status-option]");
+  if (!button || !els.flowPane.contains(button)) return;
+  event.preventDefault();
+  const issueId = button.dataset.issue || "";
+  const stateId = button.dataset.stateId || "";
+  const status = button.dataset.status || button.textContent || "";
+  if (!issueId || !stateId || !status) {
+    renderFlowPane();
+    return;
+  }
+  void moveTicketToLinearStatus(issueId, { stateId, status });
+}
+
 function isLinearIssuePinned(identifier) {
   return state.pinnedLinearIssues.has(identifier);
 }
@@ -2770,7 +3379,7 @@ function focusLinearTicketCard(identifier) {
 }
 
 function upsertLinearIssue(issue) {
-  const existing = state.linearTickets.some((ticket) => ticket.identifier === issue.identifier);
+  const existing = state.linearTickets.find((ticket) => ticket.identifier === issue.identifier);
   if (!existing) {
     state.linearTickets = [issue, ...state.linearTickets];
     return;
@@ -2778,9 +3387,8 @@ function upsertLinearIssue(issue) {
   state.linearTickets = state.linearTickets.map((ticket) => {
     if (ticket.identifier !== issue.identifier) return ticket;
     return {
-      ...ticket,
-      ...issue,
-      flowId: ticket.flowId || "",
+      ...mergeLinearIssue(ticket, issue),
+      flowId: issue.flowId || ticket.flowId || "",
     };
   });
 }
@@ -2788,6 +3396,11 @@ function upsertLinearIssue(issue) {
 function ticketCanMoveToStatus(issueId, group) {
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
   return Boolean(ticket && group.stateId && (isLinearIssuePinned(issueId) || linearStatusId(ticket) !== group.stateId));
+}
+
+function ticketWouldHighlightStatusGroup(issueId, group) {
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  return Boolean(ticket && group.stateId && linearStatusId(ticket) !== group.stateId);
 }
 
 function setTicketStatusGroupDragOver(groupElement, active) {
@@ -2843,17 +3456,23 @@ function clearTicketDragState() {
 }
 
 function handleTicketStatusDragEnter(event, group) {
-  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) return;
+  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) {
+    setTicketStatusGroupDragOver(event.currentTarget, false);
+    return;
+  }
   event.preventDefault();
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightStatusGroup(state.draggingLinearIssueId, group));
 }
 
 function handleTicketStatusDragOver(event, group) {
   updateTicketDragAutoScroll(event);
-  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) return;
+  if (!ticketCanMoveToStatus(state.draggingLinearIssueId, group)) {
+    setTicketStatusGroupDragOver(event.currentTarget, false);
+    return;
+  }
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightStatusGroup(state.draggingLinearIssueId, group));
 }
 
 function handleTicketStatusDragLeave(event) {
@@ -2879,6 +3498,10 @@ function handleTicketStatusDrop(event, group) {
 
 function ticketCanMoveToPinned(issueId) {
   return Boolean(state.linearTickets.some((ticket) => ticket.identifier === issueId));
+}
+
+function ticketWouldHighlightPinnedGroup(issueId) {
+  return ticketCanMoveToPinned(issueId) && !isLinearIssuePinned(issueId);
 }
 
 function clearPinnedTicketDropTarget(section) {
@@ -2909,7 +3532,7 @@ function updatePinnedTicketDropTarget(event) {
 function handlePinnedTicketDragEnter(event) {
   if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
   event.preventDefault();
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightPinnedGroup(state.draggingLinearIssueId));
 }
 
 function handlePinnedTicketDragOver(event) {
@@ -2917,7 +3540,7 @@ function handlePinnedTicketDragOver(event) {
   if (!ticketCanMoveToPinned(state.draggingLinearIssueId)) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
-  setTicketStatusGroupDragOver(event.currentTarget, true);
+  setTicketStatusGroupDragOver(event.currentTarget, ticketWouldHighlightPinnedGroup(state.draggingLinearIssueId));
   updatePinnedTicketDropTarget(event);
 }
 
@@ -2939,8 +3562,12 @@ function replaceLinearIssue(issue) {
   upsertLinearIssue(issue);
 
   const cached = state.linearDetails.get(issue.identifier);
-  if (cached?.issue) {
-    state.linearDetails.set(issue.identifier, { ...cached, issue: { ...cached.issue, ...issue } });
+  if (cached) {
+    state.linearDetails.set(issue.identifier, {
+      ...cached,
+      loading: false,
+      issue: mergeLinearIssue(cached.issue, issue),
+    });
   }
 }
 
@@ -2972,7 +3599,44 @@ async function moveTicketToLinearStatus(issueId, group) {
     syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
-    focusLinearTicketCard(issue.identifier);
+    focusLinearTicketCard(issueId);
+    els.ticketState.textContent = formatLastUpdated();
+  } catch (error) {
+    state.linearTickets = previousTickets;
+    if (previousDetail) state.linearDetails.set(issueId, previousDetail);
+    else state.linearDetails.delete(issueId);
+    renderTickets();
+    renderFlowPane();
+    els.ticketState.textContent = error.message;
+  }
+}
+
+async function moveTicketToLinearPriority(issueId, priority) {
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  const detailIssue = state.linearDetails.get(issueId)?.issue;
+  const issue = ticket || detailIssue;
+  const nextPriority = linearPriorityValue(priority);
+  if (!issue || linearPriorityValue(issue.priority) === nextPriority) return;
+
+  const previousTickets = state.linearTickets;
+  const previousDetail = state.linearDetails.get(issueId);
+  replaceLinearIssue({
+    ...issue,
+    priority: nextPriority,
+  });
+  renderTickets();
+  renderFlowPane();
+  els.ticketState.textContent = `Changing ${issueId} priority to ${linearPriorityName(nextPriority)}.`;
+
+  try {
+    const data = await api(`/api/linear/issues/${encodeURIComponent(issueId)}/priority`, {
+      method: "POST",
+      body: JSON.stringify({ issueId: issue.id, priority: nextPriority }),
+    });
+    if (data.issue) replaceLinearIssue(data.issue);
+    renderTickets();
+    renderFlowPane();
+    focusLinearTicketCard(issueId);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {
     state.linearTickets = previousTickets;
@@ -3003,6 +3667,7 @@ async function createPinnedLinearTicket() {
     syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
+    focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {
     els.ticketState.textContent = error.message;
@@ -3018,17 +3683,87 @@ function ticketAgentWorking(ticket) {
   return Boolean(
     repoUrlConfigured() &&
       flow &&
-      (flowRuntimeActive(flow) ||
-        (flow.id === state.selectedFlowId &&
-          (state.messageSubmitting || state.shellSubmitting || state.interruptSubmitting))),
+      (flowAgentRunning(flow) || state.messageSubmittingFlowId === flow.id),
   );
+}
+
+function ticketShellRunning(ticket) {
+  return flowShellLive(flowForTicket(ticket));
 }
 
 function updateTicketCardState(card) {
   const ticket = state.linearTickets.find((item) => item.identifier === card.dataset.issue);
-  card.classList.toggle("active", card.dataset.issue === state.selectedLinearIssueId);
+  const active = card.dataset.issue === state.selectedLinearIssueId;
+  card.classList.toggle("active", active);
   card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+  card.classList.toggle("shell-command-active", ticketShellRunning(ticket));
+  card.classList.toggle("agent-turn-notified", !active && state.notifiedLinearIssueIds.has(card.dataset.issue));
   card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
+}
+
+function updateTicketCardsForIdentifiers(...identifiers) {
+  const issueIds = new Set(identifiers.filter(Boolean));
+  if (!issueIds.size) return;
+  for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
+    if (issueIds.has(card.dataset.issue)) updateTicketCardState(card);
+  }
+}
+
+function ticketInCollapsedStatusGroup(identifier) {
+  const ticket = state.linearTickets.find((item) => item.identifier === identifier);
+  return Boolean(ticket && !isLinearIssuePinned(identifier) && state.collapsedLinearStatuses.has(linearStatusKey(linearStatusName(ticket))));
+}
+
+function updateTicketSelectionCards(previousIssueId, nextIssueId) {
+  if (ticketInCollapsedStatusGroup(previousIssueId) || ticketInCollapsedStatusGroup(nextIssueId)) {
+    renderTickets();
+    return;
+  }
+  updateTicketCardsForIdentifiers(previousIssueId, nextIssueId);
+}
+
+function loadSelectedFlowLogs(issueId, flowId, options = {}) {
+  return loadLogs(flowId, options).catch((error) => {
+    if (issueId === state.selectedLinearIssueId && flowId === state.selectedFlowId) {
+      toast(error.message || "Could not load agent session.", { kind: "error" });
+    }
+  });
+}
+
+function scheduleSelectedFlowPaneRender(issueId, flowId = "") {
+  if (state.selectionRenderFrame) cancelAnimationFrame(state.selectionRenderFrame);
+  state.selectionRenderFrame = requestAnimationFrame(() => {
+    state.selectionRenderFrame = requestAnimationFrame(() => {
+      state.selectionRenderFrame = 0;
+      if (issueId !== state.selectedLinearIssueId || flowId !== state.selectedFlowId) return;
+      const hasCachedLogs = flowId && ((state.logs.get(flowId) || []).length || state.logBackfilledFlowIds.has(flowId));
+      if (flowId && !hasCachedLogs) {
+        void loadSelectedFlowLogs(issueId, flowId, { scrollToLatest: true, suppressIncoming: true }).then(() => {
+          if (issueId === state.selectedLinearIssueId && flowId === state.selectedFlowId) renderFlowPane();
+        });
+        void loadFlowDiff(flowId, { force: true });
+        return;
+      }
+      renderFlowPane();
+      if (flowId) {
+        void loadSelectedFlowLogs(issueId, flowId, { scrollToLatest: true, suppressIncoming: true });
+        void loadFlowDiff(flowId, { force: true });
+      }
+    });
+  });
+}
+
+function animateTicketSwitch() {
+  const content = els.flowPane.querySelector(".flow-content");
+  if (!content) return;
+  if (state.ticketSwitchFadeTimer) window.clearTimeout(state.ticketSwitchFadeTimer);
+  content.classList.remove("ticket-switch-fade-in");
+  void content.offsetWidth;
+  content.classList.add("ticket-switch-fade-in");
+  state.ticketSwitchFadeTimer = window.setTimeout(() => {
+    content.classList.remove("ticket-switch-fade-in");
+    state.ticketSwitchFadeTimer = 0;
+  }, 120);
 }
 
 function renderTicketCard(ticket) {
@@ -3039,7 +3774,6 @@ function renderTicketCard(ticket) {
   card.role = "button";
   card.draggable = true;
   card.dataset.issue = ticket.identifier;
-  updateTicketCardState(card);
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
   card.innerHTML = `
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
@@ -3050,10 +3784,11 @@ function renderTicketCard(ticket) {
     </div>
     ${
       ticket.flowId
-        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="/favicon.svg" alt="In flow" title="In flow"></div>`
+        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow" title="In flow"></div>`
         : ""
     }
   `;
+  updateTicketCardState(card);
   card.addEventListener("dragstart", (event) => {
     state.draggingLinearIssueId = ticket.identifier;
     state.suppressTicketClick = true;
@@ -3069,7 +3804,7 @@ function renderTicketCard(ticket) {
   });
   card.addEventListener("click", () => {
     if (state.suppressTicketClick) return;
-    openTicketInFlowPane(ticket);
+    void openTicketInFlowPane(ticket);
   });
   card.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -3100,20 +3835,24 @@ function flowForTicket(ticket) {
 async function selectFlow(id) {
   const flow = state.flows.find((item) => item.id === id);
   if (!flow) return;
+  const previousIssueId = state.selectedLinearIssueId;
   state.selectedFlowId = id;
   state.selectedLinearIssueId = flow.linearIssueId;
+  clearLinearIssueNotification(flow.linearIssueId, { render: false });
   localStorage.setItem("flow.selectedFlowId", id);
   localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
   resumeTerminalFollow();
-  render();
-  await loadLogs(id, { force: true, resetCursor: true, scrollToLatest: true });
-  void loadFlowDiff(id, { force: true });
-  void loadLinearDetail(flow.linearIssueId);
+  updateTicketSelectionCards(previousIssueId, flow.linearIssueId);
+  renderFlowPane({ light: true });
+  if (previousIssueId !== flow.linearIssueId) animateTicketSwitch();
+  scheduleSelectedFlowPaneRender(flow.linearIssueId, id);
 }
 
 async function openTicketInFlowPane(ticket) {
   const flow = flowForTicket(ticket);
+  const previousIssueId = state.selectedLinearIssueId;
   state.selectedLinearIssueId = ticket.identifier;
+  clearLinearIssueNotification(ticket.identifier, { render: false });
   localStorage.setItem("flow.selectedLinearIssueId", ticket.identifier);
   if (flow) {
     state.selectedFlowId = flow.id;
@@ -3123,15 +3862,13 @@ async function openTicketInFlowPane(ticket) {
     localStorage.removeItem("flow.selectedFlowId");
   }
   resumeTerminalFollow();
-  render();
-  if (flow) {
-    await loadLogs(flow.id, { force: true, resetCursor: true, scrollToLatest: true });
-    void loadFlowDiff(flow.id, { force: true });
-  }
-  void loadLinearDetail(ticket.identifier);
+  updateTicketSelectionCards(previousIssueId, ticket.identifier);
+  renderFlowPane({ light: true });
+  if (previousIssueId !== ticket.identifier) animateTicketSwitch();
+  scheduleSelectedFlowPaneRender(ticket.identifier, flow?.id || "");
 }
 
-function renderFlowPane() {
+function renderFlowPane(options = {}) {
   const selectedFlowById = state.flows.find((item) => item.id === state.selectedFlowId) || null;
   if (!selectedFlowById && state.selectedFlowId) {
     state.selectedFlowId = "";
@@ -3159,7 +3896,6 @@ function renderFlowPane() {
   renderAgentContext(flow);
   renderAgentImageContext();
   if (!issueId) {
-    stopAgentWorkingPoll();
     return;
   }
 
@@ -3173,12 +3909,17 @@ function renderFlowPane() {
   updateMessageInputMode();
   resizeMessageInput();
 
-  renderLinearDetail({ issueId, title, issueUrl, ticket, flow });
+  renderLinearDetail({ issueId, title, issueUrl, ticket, flow }, { light: options.light });
   applyFlowSplitSize();
-  if (flow) {
+  if (flow && options.light) {
+    const terminal = els.flowPane.querySelector(".terminal");
+    terminal._flowLogFlowId = "";
+    terminal._flowLogSignature = "";
+    terminal._flowLogRenderedKeys = null;
+    terminal.textContent = "Loading agent session.";
+  } else if (flow) {
     renderLogs(flow.id);
   } else {
-    stopAgentWorkingPoll();
     renderShellOutputPane("");
     const terminal = els.flowPane.querySelector(".terminal");
     terminal._flowLogFlowId = "";
@@ -3186,7 +3927,7 @@ function renderFlowPane() {
     terminal._flowLogRenderedKeys = null;
     terminal.textContent = "No agent session yet.";
   }
-  void loadLinearDetail(issueId);
+  if (!options.light) void loadLinearDetail(issueId);
   scheduleQueuedPromptFlush();
 }
 
@@ -3197,21 +3938,32 @@ function renderAgentImageContext() {
   container.hidden = !images.length && !state.agentImageUploading;
   const uploading = state.agentImageUploading ? '<span class="agent-image-chip pending">uploading...</span>' : "";
   container.innerHTML = `${images
-    .map(
-      (image, index) => `
-        <span class="agent-image-chip" title="${escapeAttribute(image.path)}">
-          <span>${escapeHtml(image.name || image.relativePath || "image")}</span>
-          <button type="button" aria-label="Remove image" data-index="${index}">×</button>
-        </span>
-      `,
-    )
+    .map((image, index) => renderAgentImageChip(image, { index }))
     .join("")}${uploading}`;
 }
 
-function agentMessageWithImages(message) {
-  if (!state.pendingAgentImages.length) return message;
-  const attachments = state.pendingAgentImages
-    .map((image) => `- ${image.path}${image.relativePath ? ` (${image.relativePath})` : ""}`)
+function renderAgentImageChip(image, options = {}) {
+  const label = image.name || imageLabelFromPath(image.relativePath || image.path) || "image";
+  const removable = options.index !== undefined;
+  return `
+    <span class="agent-image-chip" title="${escapeAttribute(image.path || label)}">
+      <span>${escapeHtml(label)}</span>
+      ${removable ? `<button type="button" aria-label="Remove image" data-index="${options.index}">×</button>` : ""}
+    </span>
+  `;
+}
+
+function imageLabelFromPath(path) {
+  return String(path || "").split("/").filter(Boolean).pop() || "";
+}
+
+function agentMessageWithImages(message, images = state.pendingAgentImages) {
+  if (!images.length) return message;
+  const attachments = images
+    .map((image) => {
+      const name = image.name ? `${image.name}: ` : "";
+      return `- ${name}${image.path}${image.relativePath ? ` (${image.relativePath})` : ""}`;
+    })
     .join("\n");
   return `${message}\n\nAttached images:\n${attachments}`;
 }
@@ -3229,6 +3981,14 @@ function eventHasDraggedFiles(event) {
   const types = [...(event.dataTransfer?.types || [])];
   if (types.includes("Files")) return true;
   return [...(event.dataTransfer?.items || [])].some((item) => item.kind === "file");
+}
+
+function eventTargetsPromptInputPane(event) {
+  return Boolean(event.target?.closest?.(".prompt-input-pane"));
+}
+
+function focusPromptInputForImageDrag(event) {
+  if (eventTargetsPromptInputPane(event)) focusInputPane("prompt");
 }
 
 function setAgentImageDragActive(active) {
@@ -3291,24 +4051,24 @@ function renderLinearComment(comment, nested = false) {
   `;
 }
 
-function renderLinearDetail(context) {
+function renderLinearDetail(context, options = {}) {
   const container = els.flowPane.querySelector(".linear-detail");
-  const cached = state.linearDetails.get(context.issueId);
-  const issue = cached?.issue || context.ticket || {
+  const cached = options.light ? null : state.linearDetails.get(context.issueId);
+  const issue = (options.light ? context.ticket || cached?.issue : cached?.issue || context.ticket) || {
     identifier: context.issueId,
     title: context.title,
     url: context.issueUrl,
   };
-  const labels = issue.labels?.nodes || [];
-  const comments = issue.comments?.nodes || [];
+  const loading = options.light || cached?.loading;
+  const comments = options.light ? [] : issue.comments?.nodes || [];
   const commentTree = linearCommentTree(comments);
   const meta = [
     issue.project?.name,
-    issue.assignee?.name ? `Assignee: ${issue.assignee.name}` : "",
     issue.estimate ? `${issue.estimate} pts` : "",
   ].filter(Boolean);
-  const priorityMeta = renderLinearPriorityIcon(issue.priority);
+  const priorityControl = renderLinearPriorityControl(issue);
   const statusName = issue.state?.name || context.ticket?.state?.name || "";
+  const statusControl = renderLinearStatusControl(issue, statusName);
 
   container.innerHTML = `
     <section class="linear-issue">
@@ -3321,24 +4081,23 @@ function renderLinearDetail(context) {
         </div>
       </div>
       <div class="linear-meta">
-        ${priorityMeta ? `<span class="linear-meta-priority">${priorityMeta}</span>` : ""}
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-        ${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}
-        ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}
+        ${statusControl}
+        ${priorityControl}
       </div>
-      <div class="linear-description linear-markdown">${renderLinearMarkdown(issue.description, "No description.")}</div>
+      <div class="linear-description linear-markdown">${options.light ? escapeHtml(issue.description || "") : renderLinearMarkdown(issue.description, "")}</div>
     </section>
     <section class="linear-comments">
       <header>
         <h3>Comments</h3>
-        <span>${cached?.loading ? "Loading" : `${comments.length} loaded`}</span>
+        <span>${loading ? "Loading" : `${comments.length} loaded`}</span>
       </header>
       ${
         cached?.error
           ? `<p class="linear-error">${escapeHtml(cached.error)}</p>`
           : comments.length
             ? commentTree.map((comment) => renderLinearComment(comment)).join("")
-            : `<p class="linear-empty-copy">${cached?.loading ? "Loading comments." : "No comments."}</p>`
+            : `<p class="linear-empty-copy">${loading ? "Loading comments." : "No comments."}</p>`
       }
     </section>
   `;
@@ -3348,10 +4107,16 @@ async function loadLinearDetail(identifier) {
   const cached = state.linearDetails.get(identifier);
   if (cached?.issue || cached?.loading) return;
   state.linearDetails.set(identifier, { loading: true });
-  renderFlowPane();
+  if (identifier === state.selectedLinearIssueId) renderFlowPane();
   try {
     const data = await api(`/api/linear/issues/${encodeURIComponent(identifier)}`);
-    state.linearDetails.set(identifier, { loading: false, issue: data.issue });
+    const current = state.linearDetails.get(identifier);
+    state.linearDetails.set(identifier, { ...current, loading: false, issue: mergeLinearIssue(current?.issue, data.issue) });
+    if (data.issue?.identifier) {
+      upsertLinearIssue(data.issue);
+      syncLinearTicketsWithFlows();
+      renderTickets();
+    }
   } catch (error) {
     if (error.status === 404) {
       removeLinearIssueFromTurbopump(identifier);
@@ -3364,7 +4129,7 @@ async function loadLinearDetail(identifier) {
     }
     state.linearDetails.set(identifier, { loading: false, error: error.message });
   }
-  renderFlowPane();
+  if (identifier === state.selectedLinearIssueId) renderFlowPane();
 }
 
 async function createFlowFromTicket(ticket, options = {}) {
@@ -3403,32 +4168,172 @@ async function ensureSelectedFlow() {
 
 async function loadLogs(id, options = {}) {
   if (!state.logs.has(id)) state.logs.set(id, []);
-  const shouldBackfill = options.resetCursor || !state.logBackfilledFlowIds.has(id);
-  let cursor = shouldBackfill ? 0 : state.lastLogId.get(id) || 0;
-  if (shouldBackfill) state.lastLogId.set(id, 0);
+  if (options.resetCursor) resetFlowLogWindow(id);
+  const shouldLoadRecent = !state.logBackfilledFlowIds.has(id);
+  let cursor = state.lastLogId.get(id) || 0;
 
   const appendedLogs = [];
-  while (true) {
-    const data = await api(`/api/flows/${id}/logs?after=${cursor}`);
-    if (!data.logs.length) break;
-
-    let highestLogId = cursor;
-    for (const log of data.logs) {
-      highestLogId = Math.max(highestLogId, log.id);
-      if (appendLogEntry(log)) appendedLogs.push(log);
+  if (shouldLoadRecent) {
+    while (true) {
+      const before = state.firstLogId.get(id) || Number.MAX_SAFE_INTEGER;
+      const data = await wsRequest("logs", { flowId: id, before, limit: LOG_PAGE_SIZE });
+      for (const log of data.logs) {
+        if (appendLogEntry(log)) appendedLogs.push(log);
+      }
+      rememberLoadedLogBounds(id, data.logs);
+      if (data.logs.length < LOG_PAGE_SIZE) {
+        state.logOlderCompleteFlowIds.add(id);
+        break;
+      }
+      const flow = state.flows.find((item) => item.id === id) || null;
+      const groups = terminalGroups(state.logs.get(id) || [], flow);
+      if (terminalTurnCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;
     }
+    state.logBackfilledFlowIds.add(id);
+    state.terminalVisibleTurnCounts.set(id, AGENT_TRACE_INITIAL_TURN_COUNT);
+  } else {
+    while (true) {
+      const data = await wsRequest("logs", { flowId: id, after: cursor, limit: LOG_PAGE_SIZE });
+      if (!data.logs.length) break;
 
-    cursor = Math.max(cursor, highestLogId);
-    state.lastLogId.set(id, Math.max(state.lastLogId.get(id) || 0, cursor));
-    if (data.logs.length < 1000) break;
+      let highestLogId = cursor;
+      for (const log of data.logs) {
+        highestLogId = Math.max(highestLogId, log.id);
+        if (appendLogEntry(log)) appendedLogs.push(log);
+      }
+
+      cursor = Math.max(cursor, highestLogId);
+      state.lastLogId.set(id, Math.max(state.lastLogId.get(id) || 0, cursor));
+      if (data.logs.length < LOG_PAGE_SIZE) break;
+    }
   }
-  state.logBackfilledFlowIds.add(id);
 
   if (options.shellOnly || (appendedLogs.length && appendedLogs.every(isShellOnlyRenderLog))) {
     renderShellOutputPane(id);
     return;
   }
-  renderLogs(id, options);
+  renderLogs(id, { ...options, suppressIncoming: Boolean(options.suppressIncoming || shouldLoadRecent) });
+}
+
+function resetFlowLogWindow(flowId) {
+  state.logs.set(flowId, []);
+  state.logIds.set(flowId, new Set());
+  state.firstLogId.delete(flowId);
+  state.lastLogId.delete(flowId);
+  state.logBackfilledFlowIds.delete(flowId);
+  state.logOlderCompleteFlowIds.delete(flowId);
+  state.logOlderLoadingFlowIds.delete(flowId);
+  state.terminalVisibleTurnCounts.delete(flowId);
+}
+
+function rememberLoadedLogBounds(flowId, logs) {
+  for (const log of logs) {
+    const id = Number(log.id);
+    if (!Number.isFinite(id)) continue;
+    state.firstLogId.set(flowId, Math.min(state.firstLogId.get(flowId) || id, id));
+    state.lastLogId.set(flowId, Math.max(state.lastLogId.get(flowId) || 0, id));
+  }
+}
+
+async function loadOlderTerminalTraceMessages(options = {}) {
+  const flowId = state.selectedFlowId;
+  if (!flowId || state.logOlderLoadingFlowIds.has(flowId)) return;
+  const terminal = els.flowPane.querySelector(".terminal");
+  if (!terminal) return;
+  const renderOptions = {
+    force: true,
+    preserveScrollTop: Boolean(options.preserveScrollTop),
+    suppressIncoming: true,
+  };
+
+  const visibleCount = terminalVisibleTurnCount(flowId);
+  state.terminalVisibleTurnCounts.set(flowId, visibleCount + AGENT_TRACE_TURN_PAGE_SIZE);
+  pauseTerminalFollow();
+
+  const flow = state.flows.find((item) => item.id === flowId) || null;
+  const groups = terminalGroups(state.logs.get(flowId) || [], flow);
+  if (terminalTurnCount(groups) > visibleCount || state.logOlderCompleteFlowIds.has(flowId)) {
+    renderLogs(flowId, renderOptions);
+    return;
+  }
+
+  state.logOlderLoadingFlowIds.add(flowId);
+  renderLogs(flowId, renderOptions);
+  try {
+    const before = state.firstLogId.get(flowId) || Number.MAX_SAFE_INTEGER;
+    const data = await wsRequest("logs", { flowId, before, limit: LOG_PAGE_SIZE });
+    if (!data.logs.length) {
+      state.logOlderCompleteFlowIds.add(flowId);
+      renderLogs(flowId, renderOptions);
+      return;
+    }
+    for (const log of data.logs) {
+      appendLogEntry(log);
+    }
+    rememberLoadedLogBounds(flowId, data.logs);
+    if (data.logs.length < LOG_PAGE_SIZE) state.logOlderCompleteFlowIds.add(flowId);
+    renderLogs(flowId, renderOptions);
+  } finally {
+    state.logOlderLoadingFlowIds.delete(flowId);
+    renderLogs(flowId, renderOptions);
+  }
+}
+
+function scheduleTicketLogPrefetch() {
+  if (state.logPrefetchTimer || !state.linearTicketsLoaded) return;
+  if (state.logPrefetchedFlowCount >= LOG_PREFETCH_MAX_FLOW_COUNT) return;
+  state.logPrefetchTimer = window.setTimeout(() => {
+    state.logPrefetchTimer = 0;
+    void prefetchTicketLogs();
+  }, LOG_PREFETCH_DELAY_MS);
+}
+
+async function prefetchTicketLogs() {
+  const flowIds = [];
+  for (const ticket of sortedLinearTickets(state.linearTickets)) {
+    const flow = flowForTicket(ticket);
+    if (
+      !flow?.id ||
+      flow.id === state.selectedFlowId ||
+      state.logBackfilledFlowIds.has(flow.id) ||
+      state.logPrefetchingFlowIds.has(flow.id) ||
+      state.logPrefetchFailedFlowIds.has(flow.id)
+    ) {
+      continue;
+    }
+    flowIds.push(flow.id);
+    if (flowIds.length >= LOG_PREFETCH_BATCH_SIZE) break;
+  }
+  if (!flowIds.length) return;
+
+  for (const flowId of flowIds) {
+    if (state.logBackfilledFlowIds.has(flowId)) continue;
+    state.logPrefetchedFlowCount += 1;
+    state.logPrefetchingFlowIds.add(flowId);
+    try {
+      await loadLogs(flowId, { suppressIncoming: true });
+    } catch {
+      state.logPrefetchFailedFlowIds.add(flowId);
+      // Background prefetch should never interrupt foreground ticket work.
+    } finally {
+      state.logPrefetchingFlowIds.delete(flowId);
+    }
+  }
+
+  if (
+    state.logPrefetchedFlowCount < LOG_PREFETCH_MAX_FLOW_COUNT &&
+    sortedLinearTickets(state.linearTickets).some((ticket) => {
+      const flow = flowForTicket(ticket);
+      return (
+        flow?.id &&
+        flow.id !== state.selectedFlowId &&
+        !state.logBackfilledFlowIds.has(flow.id) &&
+        !state.logPrefetchFailedFlowIds.has(flow.id)
+      );
+    })
+  ) {
+    scheduleTicketLogPrefetch();
+  }
 }
 
 function logMeta(source) {
@@ -3494,6 +4399,18 @@ function isLiveAgentTextSource(source) {
   return ["agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
 
+function isAgentMessageSource(source) {
+  return source === "agent" || source === "agent:message";
+}
+
+function isAgentMessageBoundarySource(source) {
+  return source === "agent:message-boundary";
+}
+
+function isUserLogSource(source) {
+  return source === "user" || source === "user:queued";
+}
+
 function parseTraceGroup(log) {
   if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
@@ -3515,12 +4432,11 @@ function parseTraceGroup(log) {
   }
 }
 
-function isRuntimeDisappearedLog(log) {
-  return log.source === "agent:error" && String(log.message || "").trim() === "agent runtime disappeared while status was running";
-}
-
-function isTurnCompletedLog(log) {
-  return log.source === "agent:status" && /^turn completed\b/.test(String(log.message || "").trim());
+function isAgentTurnEndedLog(log) {
+  return (
+    log.source === "agent:status" &&
+    /^turn (completed|failed|canceled|cancelled|interrupted|stopped)\b/.test(String(log.message || "").trim())
+  );
 }
 
 function isShellExitLog(log) {
@@ -3541,24 +4457,35 @@ function isRoutineShellExitLog(log) {
   return (log.source === "shell:result" || log.source === "agent:tool-result") && String(log.message || "").trim() === "completed exit 0";
 }
 
-function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
+function syntheticCompletedTurnTraceRanges(logs, existingRanges) {
   const existingKeys = new Set(existingRanges.map((range) => range.key));
   const ranges = [];
   let latestUserLog = null;
-  let latestUserLogIndex = -1;
   for (let index = 0; index < logs.length; index += 1) {
     const log = logs[index];
     if (log.source === "user") {
       latestUserLog = log;
-      latestUserLogIndex = index;
       continue;
     }
-    if (!latestUserLog || !isRuntimeDisappearedLog(log)) continue;
+    if (!latestUserLog || !isAgentTurnEndedLog(log)) continue;
     const afterId = Number(latestUserLog.id);
-    const beforeId = Number(log.id);
+    let beforeId = Number(log.id) + 1;
+    for (let nextIndex = index + 1; nextIndex < logs.length; nextIndex += 1) {
+      const nextLog = logs[nextIndex];
+      if (isUserLogSource(nextLog.source)) break;
+      if (isTraceGroupSource(nextLog.source)) continue;
+      if (!isAgentMessageSource(nextLog.source)) continue;
+      beforeId = Number(nextLog.id) + 1;
+      for (let messageIndex = nextIndex + 1; messageIndex < logs.length; messageIndex += 1) {
+        const messageLog = logs[messageIndex];
+        if (!isAgentMessageSource(messageLog.source)) break;
+        beforeId = Number(messageLog.id) + 1;
+      }
+      break;
+    }
     const key = `${afterId}:${beforeId}`;
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId || existingKeys.has(key)) continue;
-    const count = index - latestUserLogIndex - 1;
+    const count = traceRangeLogCount(logs, afterId, beforeId);
     if (count <= 1) continue;
     ranges.push({ afterId, beforeId, count, key });
     existingKeys.add(key);
@@ -3566,44 +4493,114 @@ function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges) {
   return ranges;
 }
 
-function syntheticSteerTraceRanges(logs, existingRanges) {
-  const existingKeys = new Set(existingRanges.map((range) => range.key));
-  const ranges = [];
-  let latestUserLog = null;
-  let latestUserLogIndex = -1;
-  let sawTurnCompletedSinceUser = false;
-  for (let index = 0; index < logs.length; index += 1) {
-    const log = logs[index];
-    if (log.source === "user") {
-      if (latestUserLog && !sawTurnCompletedSinceUser) {
-        const afterId = Number(latestUserLog.id);
-        const beforeId = Number(log.id);
-        const key = `${afterId}:${beforeId}`;
-        if (Number.isFinite(afterId) && Number.isFinite(beforeId) && beforeId > afterId && !existingKeys.has(key)) {
-          const count = index - latestUserLogIndex - 1;
-          if (count > 1) {
-            ranges.push({ afterId, beforeId, count, key });
-            existingKeys.add(key);
-          }
-        }
-      }
-      latestUserLog = log;
-      latestUserLogIndex = index;
-      sawTurnCompletedSinceUser = false;
-      continue;
-    }
-    if (latestUserLog && isTurnCompletedLog(log)) sawTurnCompletedSinceUser = true;
-  }
-  return ranges;
+function traceRangeHasAgentTurnEnd(logs, range) {
+  return logs.some((log) => log.id > range.afterId && log.id < range.beforeId && isAgentTurnEndedLog(log));
 }
 
 function traceRangeForLog(log, ranges) {
   return ranges.find((range) => log.id > range.afterId && log.id < range.beforeId) || null;
 }
 
-function appendTerminalGroup(groups, log) {
+function isTraceGroupSource(source) {
+  return source === "agent:trace-group" || source === "shell:trace-group";
+}
+
+function isStructuralTerminalSource(source) {
+  return isTraceGroupSource(source) || isAgentMessageBoundarySource(source);
+}
+
+function traceRangeLogCount(logs, afterId, beforeId) {
+  return logs.filter((log) => log.id > afterId && log.id < beforeId && !isStructuralTerminalSource(log.source)).length;
+}
+
+function lowerBound(values, target) {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (values[mid] < target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function upperBound(values, target) {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (values[mid] <= target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function logIdsHaveRangeEntry(ids, afterId, beforeId) {
+  return lowerBound(ids, beforeId) > upperBound(ids, afterId);
+}
+
+function traceRangeLogCounter(logs) {
+  const ids = logs
+    .filter((log) => !isStructuralTerminalSource(log.source))
+    .map((log) => Number(log.id))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  return (afterId, beforeId) => lowerBound(ids, beforeId) - upperBound(ids, afterId);
+}
+
+function sortedTraceRanges(ranges) {
+  return [...ranges].sort((a, b) => a.afterId - b.afterId || a.beforeId - b.beforeId);
+}
+
+function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId, countRange = traceRangeLogCounter(logs)) {
+  const key = `${afterId}:${beforeId}`;
+  if (seen.has(key)) return;
+  const count = countRange(afterId, beforeId);
+  if (count <= 1) return;
+  result.push({ ...range, afterId, beforeId, key, count });
+  seen.add(key);
+}
+
+function finalResponseStartIdForTrace(range, rangeLogs) {
+  let finalResponseIndex = -1;
+  for (let index = rangeLogs.length - 1; index >= 0; index -= 1) {
+    if (isAgentMessageSource(rangeLogs[index].source)) {
+      finalResponseIndex = index;
+      break;
+    }
+  }
+  if (finalResponseIndex < 0) return range.beforeId;
+
+  let finalResponseStartIndex = finalResponseIndex;
+  for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
+    if (!isAgentMessageSource(rangeLogs[index].source)) break;
+    finalResponseStartIndex = index;
+  }
+  return rangeLogs[finalResponseStartIndex].id;
+}
+
+function sanitizeTraceRanges(logs, ranges) {
+  const result = [];
+  const seen = new Set();
+  const countRange = traceRangeLogCounter(logs);
+  for (const range of ranges) {
+    const rangeLogs = logs.filter((log) => log.id > range.afterId && log.id < range.beforeId && !isTraceGroupSource(log.source));
+    const beforeId = finalResponseStartIdForTrace(range, rangeLogs);
+    let segmentAfterId = range.afterId;
+    for (const log of rangeLogs) {
+      if (log.id >= beforeId) break;
+      if (!isUserLogSource(log.source)) continue;
+      addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id, countRange);
+      segmentAfterId = log.id;
+    }
+    addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, beforeId, countRange);
+  }
+  return result;
+}
+
+function appendTerminalGroup(groups, log, options = {}) {
   const previous = groups[groups.length - 1];
-  if (previous && previous.source === log.source && isStreamingSource(log.source)) {
+  if (!options.forceNew && previous && previous.source === log.source && isStreamingSource(log.source)) {
     previous.message += log.message;
     previous.lastAt = log.createdAt;
     previous.logIds.push(log.id);
@@ -3617,6 +4614,7 @@ function appendTerminalGroup(groups, log) {
     message: log.message,
     createdAt: log.createdAt,
     lastAt: log.createdAt,
+    boundaryBefore: Boolean(options.forceNew),
   };
   groups.push(group);
   return group;
@@ -3641,7 +4639,7 @@ function mergeAdjacentStreamingGroups(groups) {
   const result = [];
   for (const group of groups) {
     const previous = result[result.length - 1];
-    if (previous && previous.source === group.source && isStreamingSource(group.source)) {
+    if (previous && !group.boundaryBefore && previous.source === group.source && isStreamingSource(group.source)) {
       previous.message += group.message;
       previous.lastAt = group.lastAt;
       previous.logIds.push(...(group.logIds || [group.id]));
@@ -3666,16 +4664,30 @@ function latestTerminalContentGroup(groups) {
 }
 
 function markLiveTerminalGroup(groups, flow) {
-  if (!flowAgentRunning(flow) || (state.messageSubmitting && flow?.id === state.selectedFlowId)) return groups;
+  if (!flowAgentRunning(flow) || state.messageSubmittingFlowId === flow?.id) return groups;
   const group = latestTerminalContentGroup(groups);
   if (group && isLiveAgentTextSource(group.source)) group.liveStreaming = true;
   return groups;
 }
 
+function plainTerminalText(message) {
+  return String(message || "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\[(\d{1,3}(?:;\d{1,3})*)m/g, "");
+}
+
+function isNoisyAgentStderr(message) {
+  return /ERROR\s+rmcp::transport::worker:\s+worker quit with fatal:\s+Transport channel closed\b/.test(
+    plainTerminalText(message),
+  );
+}
+
 function isHiddenTerminalLog(log) {
+  if (isAgentMessageBoundarySource(log.source)) return true;
   const message = String(log.message || "").trim();
   if (log.source === "agent:tool-result" && message === "completed exit 0") return true;
   if (log.source === "agent:tool-result" && message === "failed exit 7") return true;
+  if (log.source === "agent:stderr" && isNoisyAgentStderr(message)) return true;
   return (
     log.source === "agent:status" &&
     (/^turn started\b/.test(message) ||
@@ -3689,18 +4701,30 @@ function isHiddenTerminalLog(log) {
 function terminalGroups(logs, flow) {
   const groups = [];
   const normalizedLogs = agentPaneLogs(logs, flow);
+  const agentTurnEndIds = normalizedLogs
+    .filter(isAgentTurnEndedLog)
+    .map((log) => Number(log.id))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
   const persistedTraceRanges = normalizedLogs
     .map((log) => parseTraceGroup(log))
-    .filter((range) => range && range.kind !== "shell");
-  const runtimeDisappearedTraceRanges = syntheticRuntimeDisappearedTraceRanges(normalizedLogs, persistedTraceRanges);
-  const traceRanges = [
-    ...persistedTraceRanges,
-    ...runtimeDisappearedTraceRanges,
-    ...syntheticSteerTraceRanges(normalizedLogs, [...persistedTraceRanges, ...runtimeDisappearedTraceRanges]),
-  ];
+    .filter((range) => range && range.kind !== "shell" && (range.kind || logIdsHaveRangeEntry(agentTurnEndIds, range.afterId, range.beforeId)));
+  const completedTurnTraceRanges = syntheticCompletedTurnTraceRanges(normalizedLogs, persistedTraceRanges);
+  const traceRanges = sortedTraceRanges(
+    sanitizeTraceRanges(normalizedLogs, [
+      ...completedTurnTraceRanges,
+      ...persistedTraceRanges,
+    ]),
+  );
   const traceGroups = new Map();
+  let forceTerminalGroupBoundary = false;
+  let traceRangeIndex = 0;
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
+    if (isAgentMessageBoundarySource(log.source)) {
+      forceTerminalGroupBoundary = true;
+      continue;
+    }
     const previousGroup = groups[groups.length - 1];
     if (
       log.source === "agent:tool" &&
@@ -3709,9 +4733,13 @@ function terminalGroups(logs, flow) {
     ) {
       continue;
     }
-    const traceRange = traceRangeForLog(log, traceRanges);
+    const logId = Number(log.id);
+    while (traceRanges[traceRangeIndex] && traceRanges[traceRangeIndex].beforeId <= logId) traceRangeIndex += 1;
+    const currentTraceRange = traceRanges[traceRangeIndex];
+    const traceRange =
+      currentTraceRange && logId > currentTraceRange.afterId && logId < currentTraceRange.beforeId ? currentTraceRange : null;
     if (isHiddenTerminalLog(log)) continue;
-    if (traceRange) {
+    if (traceRange && !isUserLogSource(log.source)) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
         traceGroup = {
@@ -3730,11 +4758,13 @@ function terminalGroups(logs, flow) {
         traceGroups.set(traceRange.key, traceGroup);
         groups.push(traceGroup);
       }
-      appendTerminalGroup(traceGroup.children, log);
+      appendTerminalGroup(traceGroup.children, log, { forceNew: forceTerminalGroupBoundary });
+      forceTerminalGroupBoundary = false;
       traceGroup.lastAt = log.createdAt;
       continue;
     }
-    appendTerminalGroup(groups, log);
+    appendTerminalGroup(groups, log, { forceNew: forceTerminalGroupBoundary });
+    forceTerminalGroupBoundary = false;
   }
   return markLiveTerminalGroup(mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups)), flow);
 }
@@ -3838,12 +4868,7 @@ function latestShellGroups(logs, clearAfterLogId = 0) {
 }
 
 function hasVisibleTerminalOutput(message) {
-  return Boolean(
-    String(message || "")
-      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-      .replace(/\[(\d{1,3}(?:;\d{1,3})*)m/g, "")
-      .trim(),
-  );
+  return Boolean(plainTerminalText(message).trim());
 }
 
 function isShellOutputLog(log) {
@@ -3881,9 +4906,10 @@ function renderShellOutputPane(flowId) {
   const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
   const hasGroups = Boolean(groups.length);
   const showPane = !state.shellPaneHidden;
+  const keepShellGrid = showPane || state.shellPaneHidden;
   const shellLive = showPane && flowShellLive(flow);
   pane.hidden = !showPane;
-  agentPanel?.classList.toggle("shell-output-visible", showPane);
+  agentPanel?.classList.toggle("shell-output-visible", keepShellGrid);
   if (showPane) applyShellOutputSplitSize();
   if (!hasGroups && !shellLive) {
     pane.replaceChildren();
@@ -3969,11 +4995,40 @@ function usesTerminalMarkdownToggle(source) {
   return ["agent", "agent:message"].includes(source);
 }
 
-function renderTerminalMarkdownOutput(message, showToggle = false) {
-  const toggle = showToggle
-    ? `<button class="terminal-markdown-toggle" type="button" aria-pressed="false" aria-label="Toggle raw markdown" title="Toggle raw markdown">Raw</button>`
-    : "";
-  return `${toggle}<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderLinearMarkdown(message, "", { images: false, links: true, compactBlankLines: true })}</div>`;
+function splitTerminalAttachedImages(message) {
+  const text = String(message || "");
+  const marker = "\n\nAttached images:\n";
+  const markerIndex = text.lastIndexOf(marker);
+  if (markerIndex === -1) return { message: text, images: [] };
+
+  const visibleMessage = text.slice(0, markerIndex);
+  const attachmentText = text.slice(markerIndex + marker.length);
+  const images = [];
+  for (const line of attachmentText.split("\n")) {
+    if (!line.trim()) continue;
+    const match = line.match(/^-\s+(?:(.*?):\s+)?(.+?)(?:\s+\(([^()]+)\))?$/);
+    if (!match) return { message: text, images: [] };
+    images.push({
+      name: match[1] || "",
+      path: match[2] || "",
+      relativePath: match[3] || "",
+    });
+  }
+  return images.length ? { message: visibleMessage, images } : { message: text, images: [] };
+}
+
+function renderTerminalAttachedImages(images) {
+  if (!images.length) return "";
+  return `<div class="terminal-attached-images">${images.map((image) => renderAgentImageChip(image)).join("")}</div>`;
+}
+
+function renderTerminalMarkdownContent(message) {
+  const parsed = splitTerminalAttachedImages(message);
+  return `${renderLinearMarkdown(parsed.message, "", { images: false, links: true, compactBlankLines: true })}${renderTerminalAttachedImages(parsed.images)}`;
+}
+
+function renderTerminalMarkdownOutput(message) {
+  return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message)}</div>`;
 }
 
 function renderTerminalStreamingTextOutput(message) {
@@ -4182,7 +5237,8 @@ function renderAnsiText(root, message) {
 }
 
 function toggleTerminalMarkdownOutput(button) {
-  const body = button.closest(".terminal-entry-body");
+  const entry = button.closest(".terminal-entry");
+  const body = entry?.querySelector(".terminal-entry-body");
   const content = body?.querySelector(".terminal-markdown-content");
   if (!content) return;
 
@@ -4191,10 +5247,10 @@ function toggleTerminalMarkdownOutput(button) {
   button.setAttribute("aria-pressed", String(showingRaw));
   button.setAttribute("aria-label", "Toggle raw markdown");
   button.title = "Toggle raw markdown";
-  button.textContent = "Raw";
+  button.textContent = "raw";
   content.innerHTML = showingRaw
     ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
-    : renderLinearMarkdown(raw, "", { images: false, links: true, compactBlankLines: true });
+    : renderTerminalMarkdownContent(raw);
   if (!showingRaw) highlightCodeBlocks(content);
   applyTerminalMessageClamps(body.closest(".terminal-entry") || body);
 }
@@ -4331,6 +5387,17 @@ function appendTerminalBlock(fragment, group, options = {}) {
   label.className = "terminal-entry-label";
   label.textContent = meta.label;
 
+  let markdownToggle = null;
+  if (!group.liveStreaming && usesTerminalMarkdownToggle(group.source)) {
+    markdownToggle = document.createElement("button");
+    markdownToggle.type = "button";
+    markdownToggle.className = "terminal-markdown-toggle";
+    markdownToggle.setAttribute("aria-pressed", "false");
+    markdownToggle.setAttribute("aria-label", "Toggle raw markdown");
+    markdownToggle.title = "Toggle raw markdown";
+    markdownToggle.textContent = "raw";
+  }
+
   let time = null;
   if (meta.tone !== "output") {
     time = document.createElement("time");
@@ -4351,7 +5418,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
       body.innerHTML = renderTerminalStreamingTextOutput(message);
       highlightCodeBlocks(body);
     } else {
-      body.innerHTML = renderTerminalMarkdownOutput(message, usesTerminalMarkdownToggle(group.source));
+      body.innerHTML = renderTerminalMarkdownOutput(message);
       highlightCodeBlocks(body);
     }
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
@@ -4360,7 +5427,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
     body.innerHTML = renderInlineMarkdown(message, { images: false, links: false });
   }
 
-  header.replaceChildren(marker, label, ...(time ? [time] : []));
+  header.replaceChildren(marker, label, ...(markdownToggle ? [markdownToggle] : []), ...(time ? [time] : []));
   block.replaceChildren(
     header,
     ...(meta.tone === "output" ? [renderOutputDeleteButton(group)] : []),
@@ -4453,8 +5520,8 @@ function appendTerminalTraceGroup(fragment, group, options = {}) {
   summary.replaceChildren(marker, label, time);
   details.replaceChildren(summary);
   if (isTerminalTraceGroupOpen(group)) {
-    materializeTerminalTraceGroup(details);
     details.open = true;
+    materializeTerminalTraceGroup(details);
   }
   fragment.appendChild(details);
 }
@@ -4478,23 +5545,84 @@ function setTerminalTraceGroupOpen(details, open) {
 }
 
 function materializeTerminalTraceGroup(details) {
-  if (details._traceBody) return details._traceBody;
+  if (details._traceBody) {
+    if ((details._traceRenderIndex || 0) > 0) scheduleTerminalTraceRender(details);
+    return details._traceBody;
+  }
 
   const body = document.createElement("div");
   body.className = "terminal-trace-body";
-  for (const child of details._traceChildren || []) appendTerminalBlock(body, child);
-
-  const children = Array.from(body.children);
-  const lastIndex = Math.max(0, children.length - 1);
-  children.forEach((child, index) => {
-    child.style.setProperty("--trace-open-delay", `${traceFoldDelay(index)}ms`);
-    child.style.setProperty("--trace-close-delay", `${traceFoldDelay(lastIndex - index) / 2}ms`);
+  const collapseButton = document.createElement("button");
+  collapseButton.type = "button";
+  collapseButton.className = "terminal-trace-collapse-line";
+  collapseButton.setAttribute("aria-label", "Collapse trace");
+  collapseButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleTerminalTraceGroup(details);
   });
+  const content = document.createElement("div");
+  content.className = "terminal-trace-body-content";
 
   details._traceBody = body;
+  details._traceBodyContent = content;
+  body.replaceChildren(collapseButton, content);
   details.appendChild(body);
-  applyTerminalMessageClamps(body);
+  details._traceRenderIndex = (details._traceChildren || []).length;
+  if (details.open) {
+    renderTerminalTraceChunk(details, { maxItems: TERMINAL_TRACE_INITIAL_RENDER_COUNT, scheduleNext: false });
+    scheduleTerminalTraceRender(details, { delay: TERMINAL_TRACE_OPEN_DURATION_MS });
+  } else {
+    scheduleTerminalTraceRender(details);
+  }
   return body;
+}
+
+function cancelTerminalTraceRender(details) {
+  if (details._traceRenderFrame) cancelAnimationFrame(details._traceRenderFrame);
+  if (details._traceRenderTimer) window.clearTimeout(details._traceRenderTimer);
+  details._traceRenderFrame = 0;
+  details._traceRenderTimer = 0;
+}
+
+function scheduleTerminalTraceRender(details, options = {}) {
+  cancelTerminalTraceRender(details);
+  const children = details._traceChildren || [];
+  if (!Number.isFinite(details._traceRenderIndex)) details._traceRenderIndex = children.length;
+  if (details._traceRenderIndex <= 0) return;
+  const run = () => {
+    details._traceRenderTimer = 0;
+    details._traceRenderFrame = requestAnimationFrame(() => renderTerminalTraceChunk(details));
+  };
+  if (options.delay) {
+    details._traceRenderTimer = window.setTimeout(run, options.delay);
+  } else {
+    run();
+  }
+}
+
+function renderTerminalTraceChunk(details, options = {}) {
+  details._traceRenderFrame = 0;
+  const body = details._traceBody;
+  const content = details._traceBodyContent;
+  if (!body || !content || !details.open) return;
+
+  const children = details._traceChildren || [];
+  const fragment = document.createDocumentFragment();
+  const appended = [];
+  const endIndex = Number.isFinite(details._traceRenderIndex) ? details._traceRenderIndex : children.length;
+  const maxItems = Math.max(1, options.maxItems || TERMINAL_TRACE_RENDER_BATCH_SIZE);
+  const startIndex = Math.max(0, endIndex - maxItems);
+
+  for (let index = endIndex - 1; index >= startIndex; index -= 1) {
+    appendTerminalBlock(fragment, children[index]);
+    if (fragment.lastElementChild) appended.push(fragment.lastElementChild);
+  }
+
+  details._traceRenderIndex = startIndex;
+  content.appendChild(fragment);
+  for (const entry of appended) applyTerminalMessageClamps(entry);
+  if (startIndex > 0 && options.scheduleNext !== false) scheduleTerminalTraceRender(details);
 }
 
 function toggleTerminalTraceGroup(details) {
@@ -4504,29 +5632,35 @@ function toggleTerminalTraceGroup(details) {
   const shouldFollowLatest = terminal && !state.terminalFollowPaused && terminalAtLatest(terminal);
   if (details._traceToggleTimer) window.clearTimeout(details._traceToggleTimer);
   details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
-  if (shouldOpen) materializeTerminalTraceGroup(details);
+  if (shouldOpen) {
+    details.open = true;
+    materializeTerminalTraceGroup(details);
+  } else {
+    cancelTerminalTraceRender(details);
+  }
   setTerminalTraceGroupOpen(details, shouldOpen);
   details.open = true;
+  void details.offsetHeight;
   details.classList.add("terminal-trace-animating", shouldOpen ? "terminal-trace-opening" : "terminal-trace-closing");
 
-  const itemCount = details.querySelectorAll(":scope > .terminal-trace-body > *").length;
-  const longestDelay = traceFoldDelay(Math.max(0, itemCount - 1));
-  const duration = shouldOpen ? Math.max(110, 125 + longestDelay) : Math.max(55, 63 + longestDelay / 2);
+  const duration = shouldOpen ? TERMINAL_TRACE_OPEN_DURATION_MS : TERMINAL_TRACE_CLOSE_DURATION_MS;
   if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, duration + 40);
   details._traceToggleTimer = window.setTimeout(() => {
     if (!shouldOpen) {
       details.open = false;
       details._traceBody?.remove();
       details._traceBody = null;
+      details._traceBodyContent = null;
+      details._traceRenderIndex = null;
     }
     details.classList.remove("terminal-trace-animating", "terminal-trace-opening", "terminal-trace-closing");
     if (shouldFollowLatest) scrollTerminalToLatestNow(terminal);
+    flushDeferredTerminalLogRender(terminal, {
+      fromTraceFlush: true,
+      scrollToLatest: Boolean(shouldFollowLatest && terminalAtLatest(terminal)),
+    });
     details._traceToggleTimer = 0;
   }, duration);
-}
-
-function traceFoldDelay(index) {
-  return Math.round(Math.log1p(Math.max(0, index) * 1.6) * 30);
 }
 
 function terminalDistanceFromBottom(terminal) {
@@ -4625,64 +5759,24 @@ function agentWorkingForFlow(flow) {
   return Boolean(
     agentEnabled &&
       flow &&
-      (state.messageSubmitting ||
+      (state.messageSubmittingFlowId === flow.id ||
         flowAgentRunning(flow) ||
         (state.interruptSubmitting && flowRuntimeKind(flow) === "agent")),
   );
 }
 
-function stopAgentWorkingPoll(flowId = "") {
-  if (flowId && state.agentWorkingPollFlowId !== flowId) return;
-  if (state.agentWorkingPollTimer) clearTimeout(state.agentWorkingPollTimer);
-  state.agentWorkingPollFlowId = "";
-  state.agentWorkingPollTimer = 0;
+function syncAgentWorkingPushState(flowId, agentWorking) {
+  if (agentWorking && flowId === state.selectedFlowId) requestFlowSnapshot(flowId);
 }
 
-function scheduleAgentWorkingPoll(flowId) {
-  if (state.agentWorkingPollTimer || state.agentWorkingPollInFlight) return;
-  state.agentWorkingPollFlowId = flowId;
-  state.agentWorkingPollTimer = setTimeout(pollAgentWorkingFlow, AGENT_WORKING_POLL_INTERVAL_MS);
-}
-
-function syncAgentWorkingPoll(flowId, agentWorking) {
-  if (!agentWorking) {
-    stopAgentWorkingPoll(flowId);
-    return;
-  }
-  scheduleAgentWorkingPoll(flowId);
-}
-
-async function pollAgentWorkingFlow() {
-  const flowId = state.agentWorkingPollFlowId;
-  state.agentWorkingPollTimer = 0;
-  if (!flowId || flowId !== state.selectedFlowId) {
-    stopAgentWorkingPoll(flowId);
-    return;
-  }
-
-  const flow = state.flows.find((item) => item.id === flowId) || null;
-  if (!agentWorkingForFlow(flow)) {
-    stopAgentWorkingPoll(flowId);
-    return;
-  }
-  state.agentWorkingPollInFlight = true;
-  try {
-    await loadLogs(flowId, { scrollToLatest: state.messageSubmitting });
-    const data = await api(`/api/flows/${flowId}/agent/status`);
+function requestFlowSnapshot(flowId) {
+  if (!flowId || flowSnapshotRequestingIds.has(flowId)) return;
+  flowSnapshotRequestingIds.add(flowId);
+  void wsRequest("flow", { flowId }).then((data) => {
     if (data.flow) upsertFlow(data.flow);
-    render();
-  } catch {
-    // Keep the polling loop alive; transient fetch failures should not freeze the indicator.
-  } finally {
-    state.agentWorkingPollInFlight = false;
-  }
-
-  const updated = state.flows.find((item) => item.id === flowId) || null;
-  if (flowId === state.selectedFlowId && agentWorkingForFlow(updated)) {
-    scheduleAgentWorkingPoll(flowId);
-  } else {
-    stopAgentWorkingPoll(flowId);
-  }
+  }).catch(() => {}).finally(() => {
+    flowSnapshotRequestingIds.delete(flowId);
+  });
 }
 
 function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
@@ -4724,6 +5818,34 @@ function terminalGroupsSignature(groups) {
   return groups.map((group) => terminalGroupSignaturePart(group)).join("\u001f");
 }
 
+function terminalVisibleTurnCount(flowId) {
+  return state.terminalVisibleTurnCounts.get(flowId) || AGENT_TRACE_INITIAL_TURN_COUNT;
+}
+
+function visibleTerminalGroups(flowId, groups) {
+  const startIndex = terminalVisibleTurnStartIndex(flowId, groups);
+  return groups.slice(startIndex);
+}
+
+function terminalTraceCanLoadMore(flowId, groups) {
+  return terminalVisibleTurnStartIndex(flowId, groups) > 0 || !state.logOlderCompleteFlowIds.has(flowId);
+}
+
+function terminalVisibleTurnStartIndex(flowId, groups) {
+  const visibleTurns = terminalVisibleTurnCount(flowId);
+  let seenTurns = 0;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    if (!isUserLogSource(groups[index].source)) continue;
+    seenTurns += 1;
+    if (seenTurns >= visibleTurns) return index;
+  }
+  return 0;
+}
+
+function terminalTurnCount(groups) {
+  return groups.filter((group) => isUserLogSource(group.source)).length;
+}
+
 function scheduleLogRender(id, options = {}) {
   if (!id) return;
   const existing = state.pendingLogRenders.get(id) || {};
@@ -4746,20 +5868,22 @@ function renderLogs(id, options = {}) {
   renderShellOutputPane(id);
   const flow = state.flows.find((item) => item.id === id) || null;
   const logs = state.logs.get(id) || [];
-  const groups = terminalGroups(logs, flow);
+  const allGroups = terminalGroups(logs, flow);
+  const groups = visibleTerminalGroups(id, allGroups);
+  const canLoadMore = terminalTraceCanLoadMore(id, allGroups);
+  const loadMoreLoading = state.logOlderLoadingFlowIds.has(id);
   const agentWorking = agentWorkingForFlow(flow);
   const agentWorkingKind = agentWorking ? "agent" : "idle";
-  syncAgentWorkingPoll(id, agentWorking);
-  const signature = `${terminalGroupsSignature(groups)}\u001fworking:${agentWorking}:${agentWorkingKind}`;
+  syncAgentWorkingPushState(id, agentWorking);
+  const signature = `${terminalGroupsSignature(groups)}\u001fworking:${agentWorking}:${agentWorkingKind}\u001fload-more:${canLoadMore}:${loadMoreLoading}`;
   if (
     terminal._flowLogFlowId === id &&
     terminal._flowLogSignature &&
     !options.force &&
-    !options.scrollToLatest &&
-    !agentWorking &&
-    (state.terminalFollowPaused || !terminalAtLatest(terminal))
+    ((terminalTraceInteractionActive(terminal) && !options.fromTraceFlush) ||
+      (!options.scrollToLatest && !agentWorking && (state.terminalFollowPaused || !terminalAtLatest(terminal))))
   ) {
-    terminal._flowLogPending = id;
+    deferTerminalLogRender(terminal, id, options);
     return;
   }
 
@@ -4769,12 +5893,16 @@ function renderLogs(id, options = {}) {
   }
 
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
+  const scrollHeightBeforeRender = terminal.scrollHeight;
+  const scrollTopBeforeRender = terminal.scrollTop;
+  const animateIncoming = !options.suppressIncoming;
   const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
   const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
   const fragment = document.createDocumentFragment();
+  if (canLoadMore) appendTerminalLoadMoreButton(fragment, { loading: loadMoreLoading });
   for (const group of groups) {
     const renderKey = terminalGroupRenderKey(group);
-    appendTerminalBlock(fragment, group, { incoming: Boolean(previousKeys && !previousKeys.has(renderKey)) });
+    appendTerminalBlock(fragment, group, { incoming: Boolean(animateIncoming && previousKeys && !previousKeys.has(renderKey)) });
   }
   if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
@@ -4783,8 +5911,54 @@ function renderLogs(id, options = {}) {
   terminal._flowLogSignature = signature;
   terminal._flowLogRenderedKeys = nextKeys;
   terminal._flowLogPending = "";
+  terminal._flowLogPendingOptions = null;
   if (atLatest) scrollTerminalToLatestNow(terminal);
+  else if (options.preserveScrollTop) {
+    terminal.scrollTop = scrollTopBeforeRender + (terminal.scrollHeight - scrollHeightBeforeRender);
+  }
   renderShellOutputPane(id);
+}
+
+function appendTerminalLoadMoreButton(fragment, options = {}) {
+  const row = document.createElement("div");
+  row.className = "terminal-load-more-row";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "terminal-load-more";
+  button.disabled = Boolean(options.loading);
+  button.textContent = options.loading ? "loading..." : "load more";
+
+  row.replaceChildren(button);
+  fragment.appendChild(row);
+}
+
+function terminalTraceInteractionActive(terminal) {
+  return Boolean(terminal?.querySelector(".terminal-trace-animating"));
+}
+
+function mergeLogRenderOptions(existing = {}, incoming = {}) {
+  return {
+    force: Boolean(existing.force || incoming.force),
+    scrollToLatest: Boolean(existing.scrollToLatest || incoming.scrollToLatest),
+    suppressIncoming: Boolean(existing.suppressIncoming || incoming.suppressIncoming),
+    fromTraceFlush: Boolean(existing.fromTraceFlush || incoming.fromTraceFlush),
+    preserveScrollTop: Boolean(existing.preserveScrollTop || incoming.preserveScrollTop),
+  };
+}
+
+function deferTerminalLogRender(terminal, flowId, options = {}) {
+  terminal._flowLogPending = flowId;
+  terminal._flowLogPendingOptions = mergeLogRenderOptions(terminal._flowLogPendingOptions || {}, options);
+}
+
+function flushDeferredTerminalLogRender(terminal, options = {}) {
+  const pendingFlowId = terminal?._flowLogPending;
+  if (!pendingFlowId) return;
+  const pendingOptions = mergeLogRenderOptions(terminal._flowLogPendingOptions || {}, options);
+  terminal._flowLogPending = "";
+  terminal._flowLogPendingOptions = null;
+  renderLogs(pendingFlowId, pendingOptions);
 }
 
 function escapeHtml(value) {
@@ -4808,19 +5982,78 @@ function formatDate(value) {
   });
 }
 
-function connectWs() {
-  const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
-  ws.addEventListener("open", () => {
-    const flow = selectedFlow();
-    if (flow) {
-      void api(`/api/flows/${flow.id}`).then((data) => {
-        if (data.flow) upsertFlow(data.flow);
-      }).catch(() => {});
-      void loadLogs(flow.id);
-    }
+function rejectPendingWsRequests(error) {
+  for (const pending of pendingWsRequests.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(error);
+  }
+  pendingWsRequests.clear();
+}
+
+function handleWsResponse(message) {
+  const pending = pendingWsRequests.get(message.requestId);
+  if (!pending) return false;
+  clearTimeout(pending.timeout);
+  pendingWsRequests.delete(message.requestId);
+  if (message.error) pending.reject(new Error(message.error));
+  else pending.resolve(message.payload || {});
+  return true;
+}
+
+function ensureWs() {
+  if (realtimeWs?.readyState === WebSocket.OPEN) return Promise.resolve(realtimeWs);
+  if (realtimeWs?.readyState === WebSocket.CONNECTING && realtimeWsOpenPromise) return realtimeWsOpenPromise;
+  return connectWs();
+}
+
+function wsRequest(method, params = {}) {
+  return ensureWs().then((ws) => {
+    const id = ++wsRequestId;
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        pendingWsRequests.delete(id);
+        reject(new Error("WebSocket request timed out."));
+      }, 10000);
+      pendingWsRequests.set(id, { resolve, reject, timeout });
+      try {
+        ws.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timeout);
+        pendingWsRequests.delete(id);
+        reject(error);
+      }
+    });
   });
+}
+
+function connectWs() {
+  if (realtimeWs?.readyState === WebSocket.OPEN) return Promise.resolve(realtimeWs);
+  if (realtimeWs?.readyState === WebSocket.CONNECTING && realtimeWsOpenPromise) return realtimeWsOpenPromise;
+
+  const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/ws`);
+  realtimeWs = ws;
+  realtimeWsOpenPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    ws.addEventListener("open", () => {
+      settled = true;
+      resolve(ws);
+      const flow = selectedFlow();
+      if (flow) {
+        requestFlowSnapshot(flow.id);
+        void loadLogs(flow.id);
+      }
+    }, { once: true });
+    ws.addEventListener("error", () => {
+      if (!settled) reject(new Error("WebSocket connection failed."));
+    }, { once: true });
+    ws.addEventListener("close", () => {
+      if (!settled) reject(new Error("WebSocket disconnected."));
+    }, { once: true });
+  });
+
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
+    if (message.event === "response" && handleWsResponse(message)) return;
     if (message.event === "flows") {
       const previousFlows = state.flows;
       setFlows(message.payload);
@@ -4849,6 +6082,10 @@ function connectWs() {
         createdAt: message.payload.createdAt,
       };
       appendLogEntry(log);
+      if (isAgentTurnEndedLog(log)) {
+        refreshFlowDiffAfterAgentTurn(log.flowId);
+        notifyAgentTurnEnded(log.flowId);
+      }
       if (isShellOnlyRenderLog(log)) {
         scheduleShellOutputRender(log.flowId);
         return;
@@ -4856,6 +6093,7 @@ function connectWs() {
       const shouldScrollToSubmittedPrompt =
         log.flowId === state.selectedFlowId &&
         state.messageSubmitting &&
+        log.flowId === state.messageSubmittingFlowId &&
         (log.source === "user" || log.source === "user:queued");
       scheduleLogRender(log.flowId, shouldScrollToSubmittedPrompt ? { scrollToLatest: true } : {});
     }
@@ -4872,7 +6110,13 @@ function connectWs() {
       }
     }
   });
-  ws.addEventListener("close", () => setTimeout(connectWs, 1000));
+  ws.addEventListener("close", () => {
+    if (realtimeWs === ws) realtimeWs = null;
+    realtimeWsOpenPromise = null;
+    rejectPendingWsRequests(new Error("WebSocket disconnected."));
+    setTimeout(() => void connectWs().catch(() => {}), 1000);
+  });
+  return realtimeWsOpenPromise;
 }
 
 function resizeFlowSplitFromPointer(clientY) {
@@ -4884,6 +6128,7 @@ function resizeFlowSplitFromPointer(clientY) {
 
 function startFlowSplitResize(event) {
   event.preventDefault();
+  if (state.linearPaneHidden) setLinearPaneHidden(false);
   document.body.classList.add("flow-resizing");
   resizeFlowSplitFromPointer(event.clientY);
 
@@ -4913,6 +6158,7 @@ function setShellOutputSplitSizeKeepingTerminalBottom(value) {
 
 function startShellOutputSplitResize(event) {
   event.preventDefault();
+  if (state.shellPaneHidden) setShellPaneHidden(false);
   document.body.classList.add("shell-output-resizing");
   resizeShellOutputSplitFromPointer(event.clientX);
 
@@ -4934,7 +6180,7 @@ els.settingsToggle.addEventListener("click", (event) => {
 
 els.themeToggle.addEventListener("click", (event) => {
   event.stopPropagation();
-  setTheme(state.theme === "dark" ? "light" : "dark");
+  toggleTheme();
 });
 
 els.settingsPane.addEventListener("click", () => {
@@ -4946,6 +6192,18 @@ els.settingsPane.addEventListener("keydown", (event) => {
   if (!state.settingsCollapsed || !["Enter", " "].includes(event.key)) return;
   event.preventDefault();
   setSettingsCollapsed(false);
+});
+
+els.ticketDrawer.addEventListener("click", (event) => {
+  if (!state.ticketDrawerHidden || event.target !== els.ticketDrawer) return;
+  setTicketDrawerHidden(false);
+});
+
+els.ticketDrawer.addEventListener("keydown", (event) => {
+  if (event.target !== els.ticketDrawer) return;
+  if (!state.ticketDrawerHidden || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  setTicketDrawerHidden(false);
 });
 
 els.settingsPane.addEventListener(
@@ -5007,32 +6265,56 @@ els.linearKeyForm.addEventListener("submit", async (event) => {
 
 els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));
 els.createLinearTicket.addEventListener("click", () => void createPinnedLinearTicket());
+els.searchLinearTickets.addEventListener("click", openTicketSearch);
+els.closeTicketSearch.addEventListener("click", closeTicketSearch);
+els.ticketSearchInput.addEventListener("input", () => {
+  state.ticketSearchQuery = els.ticketSearchInput.value;
+  renderTickets();
+});
+els.ticketSearchInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  closeTicketSearch();
+});
 els.ticketGrid.addEventListener("dragover", handleTicketGridDragOver);
 
 els.flowPane.querySelector(".flow-resizer").addEventListener("pointerdown", startFlowSplitResize);
+els.flowPane.querySelector(".flow-resizer").addEventListener("dblclick", toggleLinearPaneHidden);
 els.flowPane.querySelector(".flow-resizer").addEventListener("keydown", (event) => {
   if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
   event.preventDefault();
+  if (state.linearPaneHidden) setLinearPaneHidden(false);
   setFlowSplitSize(state.flowSplitSize + (event.key === "ArrowDown" ? 5 : -5));
 });
 
 els.flowPane.querySelector(".shell-output-resizer").addEventListener("pointerdown", startShellOutputSplitResize);
+els.flowPane.querySelector(".shell-output-resizer").addEventListener("dblclick", toggleShellPaneHidden);
 els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", (event) => {
   if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
   event.preventDefault();
+  if (state.shellPaneHidden) setShellPaneHidden(false);
   setShellOutputSplitSizeKeepingTerminalBottom(state.shellOutputSplitSize + (event.key === "ArrowLeft" ? 5 : -5));
 });
+els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
+els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
+els.flowPane.addEventListener("click", handleLinearDetailClick);
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
   if (terminalAtLatest(terminal)) resumeTerminalFollow();
-  const pendingFlowId = terminal._flowLogPending;
-  if (!pendingFlowId || !terminalAtLatest(terminal)) return;
-  terminal._flowLogPending = "";
-  renderLogs(pendingFlowId, { scrollToLatest: true });
+  if (!terminal._flowLogPending || !terminalAtLatest(terminal)) return;
+  flushDeferredTerminalLogRender(terminal, { scrollToLatest: true });
 });
 
 els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
+  const loadMore = event.target.closest(".terminal-load-more");
+  if (loadMore) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true });
+    return;
+  }
+
   const toggle = event.target.closest(".terminal-markdown-toggle");
   if (!toggle) return;
   event.preventDefault();
@@ -5089,6 +6371,7 @@ document.addEventListener("dragenter", (event) => {
   event.preventDefault();
   event.stopPropagation();
   state.agentImageDragDepth += 1;
+  focusPromptInputForImageDrag(event);
   setAgentImageDragActive(true);
 }, true);
 
@@ -5097,6 +6380,7 @@ document.addEventListener("dragover", (event) => {
   event.preventDefault();
   event.stopPropagation();
   event.dataTransfer.dropEffect = "copy";
+  focusPromptInputForImageDrag(event);
   setAgentImageDragActive(true);
 }, true);
 
@@ -5281,7 +6565,11 @@ async function submitPromptMessage() {
   if (!message && !state.pendingAgentImages.length) return;
   const flow = selectedFlow();
   if (flowAgentRunning(flow)) {
-    if (!promptQueuedForFlow(flow) && queuePromptMessage(input)) return;
+    if (flowAgentQueuedMessage(flow)) {
+      flashBlockedInput(input);
+      return;
+    }
+    if (!promptQueuedForFlow(flow) && (await queuePromptMessage(input))) return;
     flashBlockedInput(input);
     return;
   }
@@ -5293,12 +6581,16 @@ async function submitPromptMessage() {
     flashBlockedInput(input);
     return;
   }
-  const agentMessage = agentMessageWithImages(message || "Use the attached image context.");
+  const submittedImages = [...state.pendingAgentImages];
+  const agentMessage = agentMessageWithImages(message || "Use the attached image context.", submittedImages);
   rememberInputHistory(message, "prompt");
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  const initialFlow = selectedFlow();
   state.messageSubmitting = true;
+  state.messageSubmittingFlowId = initialFlow?.id || "";
   input.value = "";
+  state.pendingAgentImages = [];
   updateMessageInputMode();
   resizeMessageInput();
   saveActiveTicketInputState();
@@ -5310,7 +6602,8 @@ async function submitPromptMessage() {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
     submittedFlowId = flow.id;
-    scheduleAgentWorkingPoll(flow.id);
+    state.messageSubmittingFlowId = flow.id;
+    requestFlowSnapshot(flow.id);
     renderFlowPane();
     renderLogs(flow.id, { force: true, scrollToLatest: true });
     const data = await api(`/api/flows/${flow.id}/message`, {
@@ -5318,9 +6611,13 @@ async function submitPromptMessage() {
       body: JSON.stringify({ message: agentMessage }),
     });
     if (data.flow) upsertFlow(data.flow);
-    state.pendingAgentImages = [];
+  } catch (error) {
+    state.pendingAgentImages = [...submittedImages, ...state.pendingAgentImages];
+    throw error;
   } finally {
     state.messageSubmitting = false;
+    state.messageSubmittingFlowId = "";
+    scheduleQueuedPromptFlush();
     if (submittedFlowId) await loadLogs(submittedFlowId, { scrollToLatest: true });
     renderTickets();
     renderFlowPane();
@@ -5352,7 +6649,10 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", handleCommandK, true);
+document.addEventListener("keydown", handleCommandZ, true);
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
+document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
+window.addEventListener("focus", acknowledgeSelectedLinearIssueNotification);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden) {
