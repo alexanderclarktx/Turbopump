@@ -42,6 +42,14 @@ type Flow = {
   shellRuntimeStatus?: "running" | "interrupting" | "";
   agentCompacting?: boolean;
   agentQueuedMessage?: boolean;
+  queuedPrompt?: QueuedPrompt | null;
+};
+
+type QueuedPrompt = {
+  flowId: string;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type LogRow = {
@@ -204,6 +212,13 @@ db.exec(`
     updatedAt text not null
   );
 
+  create table if not exists queued_prompts (
+    flowId text primary key,
+    message text not null,
+    createdAt text not null,
+    updatedAt text not null
+  );
+
   create index if not exists logs_flow_id_id_idx on logs(flowId, id);
   create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);
   create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
@@ -296,6 +311,12 @@ const setShellOutputClearAfterLogIdStmt = db.query(`
   insert into shell_output_state (flowId, clearAfterLogId, updatedAt) values (?, ?, ?)
   on conflict(flowId) do update set clearAfterLogId = excluded.clearAfterLogId, updatedAt = excluded.updatedAt
 `);
+const queuedPromptByFlowIdStmt = db.query("select * from queued_prompts where flowId = ?");
+const setQueuedPromptStmt = db.query(`
+  insert into queued_prompts (flowId, message, createdAt, updatedAt) values (?, ?, ?, ?)
+  on conflict(flowId) do update set message = excluded.message, updatedAt = excluded.updatedAt
+`);
+const deleteQueuedPromptStmt = db.query("delete from queued_prompts where flowId = ?");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -553,6 +574,30 @@ function shellOutputClearAfterLogIds() {
   return new Map(rows.map((row) => [row.flowId, row.clearAfterLogId]));
 }
 
+function queuedPromptForFlow(flowId: string) {
+  return queuedPromptByFlowIdStmt.get(flowId) as QueuedPrompt | null;
+}
+
+function normalizeQueuedPromptMessage(value: unknown) {
+  const message = String(value ?? "").trim();
+  if (!message) throw new Error("Queued message cannot be blank.");
+  return message;
+}
+
+function setQueuedPrompt(flowId: string, message: string) {
+  const existing = queuedPromptForFlow(flowId);
+  const timestamp = now();
+  setQueuedPromptStmt.run(flowId, message, existing?.createdAt ?? timestamp, timestamp);
+  broadcast("flows", listClientFlows());
+}
+
+function clearQueuedPrompt(flowId: string, options: { broadcast?: boolean } = {}) {
+  const existing = queuedPromptForFlow(flowId);
+  deleteQueuedPromptStmt.run(flowId);
+  if (existing && options.broadcast !== false) broadcast("flows", listClientFlows());
+  return Boolean(existing);
+}
+
 function setShellOutputClearAfterLogId(flowId: string, clearAfterLogId: number) {
   const normalized = Number.isFinite(clearAfterLogId) ? Math.max(0, Math.trunc(clearAfterLogId)) : 0;
   setShellOutputClearAfterLogIdStmt.run(flowId, normalized, now());
@@ -590,6 +635,7 @@ function clientFlow(flow: Flow, clearAfterLogId = shellOutputClearAfterLogId(flo
   return {
     ...runtimeAdjustedFlow(flow),
     shellOutputClearAfterLogId: clearAfterLogId,
+    queuedPrompt: queuedPromptForFlow(flow.id),
   };
 }
 
@@ -714,6 +760,7 @@ function deleteFlowTraceData(flowId: string) {
   deletedFlowIds.add(flowId);
   deleteLogsByFlowIdStmt.run(flowId);
   deleteShellOutputStateByFlowIdStmt.run(flowId);
+  deleteQueuedPromptStmt.run(flowId);
   deleteSettingByKeyStmt.run(codexThreadSettingKey(flowId));
   deleteSettingByKeyStmt.run(codexActiveTurnSettingKey(flowId));
   deleteFlowByIdStmt.run(flowId);
@@ -2069,10 +2116,47 @@ async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMe
   }
 }
 
+async function startQueuedPromptIfReady(flowId: string) {
+  const flow = getFlow(flowId);
+  const queued = queuedPromptForFlow(flowId);
+  if (!flow || !queued) return false;
+  const runtime = agentProcesses.get(flowId);
+  if (runtime?.stopping || runtime?.compacting || runtime?.activeTurnId) return false;
+
+  clearQueuedPrompt(flowId, { broadcast: false });
+  try {
+    await startAgent(flow, queued.message);
+  } catch {
+    // startAgent records the failure on the flow.
+  }
+  broadcast("flows", listClientFlows());
+  return true;
+}
+
+async function steerQueuedPrompt(flow: Flow) {
+  const queued = queuedPromptForFlow(flow.id);
+  if (!queued) throw new Error("No queued message to steer.");
+  const runtime = agentProcesses.get(flow.id);
+  if (!runtime?.activeTurnId || runtime.compacting) throw new Error("No active agent turn to steer.");
+
+  clearQueuedPrompt(flow.id, { broadcast: false });
+  try {
+    await startAgent(flow, queued.message);
+  } catch (error) {
+    broadcast("flows", listClientFlows());
+    throw error;
+  }
+  broadcast("flows", listClientFlows());
+  return true;
+}
+
 async function startNextQueuedAgentMessage(runtime: RuntimeProcess) {
   if (runtime.stopping || runtime.compacting || runtime.activeTurnId) return;
   const queued = runtime.queuedAgentMessages?.shift();
-  if (!queued) return;
+  if (!queued) {
+    await startQueuedPromptIfReady(runtime.flowId);
+    return;
+  }
   const flow = getFlow(runtime.flowId);
   if (!flow) return;
   deleteQueuedUserLog(flow.id, queued.queuedLogId);
@@ -2798,7 +2882,7 @@ async function handleApi(request: Request, url: URL) {
       broadcast("flows", listClientFlows());
       broadcast("checkouts", listWorktrees());
     }
-    return json({ ok: true, ...result });
+    return json({ ok: true, ...result, flow: result.flow ? clientFlow(result.flow) : null });
   }
 
   if (url.pathname === "/api/flows" && request.method === "POST") {
@@ -2919,6 +3003,36 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "agent" && request.method === "DELETE") {
       await interruptAgent(id);
       return json({ ok: true });
+    }
+
+    if (parts[3] === "queued-prompt" && (request.method === "POST" || request.method === "PUT") && parts.length === 4) {
+      try {
+        const body = await readJson<{ message?: unknown }>(request);
+        setQueuedPrompt(id, normalizeQueuedPromptMessage(body.message));
+        await startQueuedPromptIfReady(id);
+        return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+      }
+    }
+
+    if (parts[3] === "queued-prompt" && request.method === "DELETE" && parts.length === 4) {
+      clearQueuedPrompt(id);
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
+    if (parts[3] === "queued-prompt" && parts[4] === "flush" && request.method === "POST") {
+      await startQueuedPromptIfReady(id);
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
+    if (parts[3] === "queued-prompt" && parts[4] === "steer" && request.method === "POST") {
+      try {
+        await steerQueuedPrompt(flow);
+        return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+      }
     }
 
     if (parts[3] === "message" && request.method === "POST") {

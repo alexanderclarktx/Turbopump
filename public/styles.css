@@ -706,6 +706,8 @@ body.theme-dark .pill.live {
 
 body.theme-dark .ticket-project,
 body.theme-dark .linear-meta > span,
+body.theme-dark .linear-status-pill,
+body.theme-dark .linear-status-option,
 body.theme-dark .linear-comments > header span,
 body.theme-dark .linear-description,
 body.theme-dark .linear-comment-body {
@@ -1737,16 +1739,15 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   position: absolute;
   right: 10px;
   bottom: 7px;
+  max-width: 82px;
   color: var(--accent);
   font-size: 11px;
   font-weight: 700;
   line-height: 1.1;
-  max-width: 82px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
-  pointer-events: none;
 }
 
 .ticket-card .ticket-title {
@@ -2204,18 +2205,103 @@ body.flow-resizing .flow-content {
   gap: 6px;
 }
 
-.linear-meta > span,
+.linear-meta > span:not(.linear-status-control),
+.linear-status-pill,
+.linear-status-option,
 .linear-comments > header span {
+  display: inline-flex;
+  align-items: center;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
   background: #f8fafc;
   padding: 2px 7px;
   font-size: 11px;
+  font-weight: 400;
   line-height: 1.4;
 }
 
-.linear-meta > span {
+.linear-status-control {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.linear-status-pill,
+.linear-status-option {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  min-height: 0;
+  max-width: 100%;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+body.theme-dark .linear-status-pill,
+body.theme-dark .linear-status-option {
+  background: #151a20;
+  color: var(--muted);
+}
+
+.linear-status-pill {
+  cursor: pointer;
+}
+
+.linear-status-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition:
+    max-width var(--motion-fast),
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.linear-status-control:hover .linear-status-options,
+.linear-status-control:focus-within .linear-status-options {
+  max-width: min(420px, 100vw);
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.linear-status-option {
+  cursor: pointer;
+  transform: translateX(calc((var(--linear-status-option-index, 0) + 1) * -3px));
+  transition:
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.linear-status-control:hover .linear-status-option,
+.linear-status-control:focus-within .linear-status-option {
+  transform: translateX(0);
+}
+
+.linear-status-pill:hover,
+.linear-status-option:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.linear-meta > span:not(.linear-status-control),
+.linear-status-pill,
+.linear-status-option {
   user-select: none;
   -webkit-user-select: none;
 }

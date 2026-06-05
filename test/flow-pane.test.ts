@@ -665,12 +665,19 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).toContain("function flashBlockedInput(input)");
     expect(app).toContain("queuedPrompt: null");
-    expect(app).toContain("function queuePromptMessage(input)");
+    expect(app).toContain("async function queuePromptMessage(input)");
+    expect(app).toContain("function queuedPromptForFlow(flow)");
     expect(app).toContain("async function submitQueuedPromptSteer()");
     expect(app).toContain("function handleQueuedPromptKeydown(event)");
+    expect(app).toContain('["a", "c"].includes(event.key.toLowerCase())');
+    expect(app.indexOf('["a", "c"].includes(event.key.toLowerCase())')).toBeLessThan(
+      app.indexOf('if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;'),
+    );
     expect(app).toContain('if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;');
     expect(app).toContain("function promptQueuedCanSteer(flow = selectedFlow())");
-    expect(app).toContain('queuedHint.textContent = queuedCanSteer ? "message queued — press S to steer instead" : "message queued";');
+    expect(app).toContain("const compactQueued = queued && flowAgentCompacting(flow);");
+    expect(app).toContain("queuedHint.hidden = !queued || compactQueued;");
+    expect(app).toContain('queuedHint.textContent = queuedCanSteer ? \'message queued — press "s" to steer\' : "message queued";');
     expect(app).toContain("promptQueuedCanSteer() &&");
     expect(app).toContain('event.key.toLowerCase() === "s" &&');
     expect(app).toContain("if (!event.repeat) void submitQueuedPromptSteer();");
@@ -678,11 +685,14 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('if (event.key === "Backspace" || event.key === "Escape") {\n    clearQueuedPrompt();\n    return true;\n  }');
     expect(app).toContain("function handleQueuedPromptBeforeInput(event)");
     expect(app).toContain("function flushQueuedPrompt()");
-    expect(app).toContain("const flow = state.flows.find((item) => item.id === queued?.flowId) || null;");
+    expect(app).toContain("for (const { queued, flow } of queuedPromptEntries())");
     expect(app).toContain("await submitQueuedPromptMessage(queued, flow);");
+    expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt');
+    expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/steer');
+    expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/flush');
     expect(app).toContain('const QUEUED_PROMPT_PREFIX_HTML = \'<span class="queued-prompt-spinner" aria-hidden="true"></span>\';');
     expect(app).toContain('if (queued && !prefix.querySelector(".queued-prompt-spinner")) {');
-    expect(app).toContain("queuedHint.hidden = !queued;");
+    expect(app).toContain("queuedHint.hidden = !queued || compactQueued;");
     expect(app).toContain("messageInput.disabled = false;");
     expect(app).toContain("commandInput.disabled = false;");
     expect(app).toContain('messageForm.setAttribute("aria-disabled", "false");');
@@ -818,8 +828,9 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('issue.priority ? `P${issue.priority}` : ""');
     expect(css).toContain(".linear-meta .linear-meta-priority {\n  display: inline-grid;");
     expect(css).toContain("min-width: 13px;\n  border: 0;\n  background: transparent;\n  padding: 0;");
-    expect(css).toContain(".linear-meta > span,\n.linear-comments > header span");
-    expect(css).toContain(".linear-meta > span {\n  user-select: none;\n  -webkit-user-select: none;\n}");
+    expect(css).toContain(".linear-meta > span:not(.linear-status-control),\n.linear-status-pill,\n.linear-status-option,\n.linear-comments > header span");
+    expect(css).toContain("display: inline-flex;\n  align-items: center;");
+    expect(css).toContain(".linear-meta > span:not(.linear-status-control),\n.linear-status-pill,\n.linear-status-option {\n  user-select: none;\n  -webkit-user-select: none;\n}");
     expect(css).not.toContain(".linear-meta span,\n.linear-comments > header span");
   });
 
@@ -851,13 +862,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('class="ticket-id"');
     expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.identifier)}</span>');
     expect(app).toContain("const statusName = issue.state?.name || context.ticket?.state?.name || \"\";");
-    expect(app).toContain(
-      '${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}\n        ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}',
-    );
+    expect(app).toContain("const statusControl = renderLinearStatusControl(issue, statusName);");
+    expect(app).toContain('${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}\n        ${statusControl}');
     expect(css).not.toContain(".ticket-status {");
     expect(app).not.toContain("ticket-linear-status");
     expect(css).not.toContain("ticket-linear-status");
-    expect(css).not.toContain(".linear-status-pill {\n  display: inline-flex;");
+    expect(css).not.toContain(".linear-meta > span,\n.linear-status-pill,\n.linear-status-option,\n.linear-comments > header span");
     expect(css).toContain("--ticket-card-title-y: 8px;");
     expect(css).toContain("padding: var(--ticket-card-title-y) 10px 7px;");
     expect(css).toContain("grid-template-columns: minmax(0, 1fr) auto;");
@@ -870,6 +880,26 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".ticket-card.in-flow .ticket-title {\n  padding-right: 32px;\n}");
     expect(css).toContain(".ticket-meta {\n  grid-column: 1 / -1;\n  grid-row: 3;");
     expect(css).toContain(".ticket-card > .ticket-meta {\n  align-self: stretch;\n  padding-right: 88px;\n}");
+  });
+
+  test("lets the Linear pane status pill edit issue status", () => {
+    expect(app).toContain('return ticket?.state?.name || "No status";');
+    expect(app).toContain('return ticket?.state?.id || "";');
+    expect(app).toContain("function linearStatusOptions(issue = null, fallbackStatus = null)");
+    expect(app).toContain("function renderLinearStatusControl(issue, statusName)");
+    expect(app).toContain('data-linear-status-pill="true"');
+    expect(app).toContain('data-linear-status-option="true"');
+    expect(app).toContain('class="linear-status-options"');
+    expect(app).toContain("void moveTicketToLinearStatus(issueId, { stateId, status });");
+    expect(app).toContain('els.flowPane.addEventListener("click", handleLinearDetailClick);');
+    expect(app).toContain("focusLinearTicketCard(issueId);");
+    expect(css).toContain(".linear-status-control:hover .linear-status-options");
+    expect(css).toContain(".linear-status-control:focus-within .linear-status-options");
+    expect(css).toContain(".linear-status-pill,\n.linear-status-option {");
+    expect(css).toContain(".linear-meta > span:not(.linear-status-control)");
+    expect(css).toContain("padding: 2px 7px;");
+    expect(css).toContain("body.theme-dark .linear-status-pill,\nbody.theme-dark .linear-status-option {\n  background: #151a20;\n  color: var(--muted);\n}");
+    expect(css).toContain("font-weight: 400;");
   });
 
   test("shows Linear ticket priority icon before the project at the bottom left", () => {
@@ -1176,6 +1206,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("async function updateLinearIssueStatus");
     expect(server).toContain("issueUpdate(id: $id, input: { stateId: $stateId })");
     expect(server).toContain('parts[4] === "status"');
+    expect(server).toContain("return json({ ok: true, ...result, flow: result.flow ? clientFlow(result.flow) : null });");
     expect(server).toContain("state { id name color type }");
   });
 
@@ -2446,6 +2477,14 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("queuedAgentMessages?: Array<{ message: string; queuedLogId: number }>");
     expect(server).toContain("compactionPromptLogId?: number;");
     expect(server).toContain("function startNextQueuedAgentMessage(runtime: RuntimeProcess)");
+    expect(server).toContain("create table if not exists queued_prompts");
+    expect(server).toContain("function queuedPromptForFlow(flowId: string)");
+    expect(server).toContain("function setQueuedPrompt(flowId: string, message: string)");
+    expect(server).toContain("async function startQueuedPromptIfReady(flowId: string)");
+    expect(server).toContain("async function steerQueuedPrompt(flow: Flow)");
+    expect(server).toContain('parts[3] === "queued-prompt"');
+    expect(server).toContain('parts[4] === "steer"');
+    expect(server).toContain('parts[4] === "flush"');
     expect(server).toContain("function deleteQueuedUserLog(flowId: string, id: number)");
     expect(server).toContain("function deleteQueuedAgentMessagePlaceholders(runtime: RuntimeProcess)");
     expect(server).toContain('log.source !== "user:queued"');
@@ -2516,15 +2555,22 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (focusMessageInputForKey(event)) return;");
   });
 
-  test("toggles the theme with Cmd+K", () => {
-    expect(html).toContain("<kbd>Cmd + K</kbd>");
+  test("toggles the theme with Cmd+Z", () => {
+    expect(html).toContain("<kbd>Cmd + Z</kbd>");
     expect(html).toContain("<dd>Toggle theme</dd>");
-    expect(app).toContain("function handleCommandK(event)");
-    expect(app).toContain('event.key.toLowerCase() !== "k"');
+    expect(app).toContain("function handleCommandZ(event)");
+    expect(app).toContain('event.key.toLowerCase() !== "z"');
     expect(app).toContain("event.preventDefault();");
     expect(app).toContain("event.stopImmediatePropagation();");
     expect(app).toContain("toggleTheme();");
-    expect(app).not.toContain('if (focusedInputPaneKind() === "shell") void submitShellCommand("clear");');
+    expect(app).toContain('document.addEventListener("keydown", handleCommandZ, true);');
+  });
+
+  test("clears the shell input pane with Cmd+K", () => {
+    expect(app).toContain("function handleCommandK(event)");
+    expect(app).toContain('event.key.toLowerCase() !== "k"');
+    expect(app).toContain('if (focusedInputPaneKind() !== "shell") return false;');
+    expect(app).toContain('if (!event.repeat) void submitShellCommand("clear");');
     expect(app).toContain('document.addEventListener("keydown", handleCommandK, true);');
   });
 

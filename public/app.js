@@ -309,11 +309,11 @@ const TICKET_DRAG_SCROLL_EDGE_PX = 72;
 const TICKET_DRAG_SCROLL_MAX_STEP_PX = 18;
 
 function linearStatusName(ticket) {
-  return ticket.state?.name || "No status";
+  return ticket?.state?.name || "No status";
 }
 
 function linearStatusId(ticket) {
-  return ticket.state?.id || "";
+  return ticket?.state?.id || "";
 }
 
 function linearPriorityLabel(priority) {
@@ -803,15 +803,17 @@ function updateMessageInputMode() {
   const input = promptInput();
   if (!input) return;
   const flow = selectedFlow();
-  const queued = promptQueuedForSelectedFlow();
+  const queuedPrompt = queuedPromptForFlow(flow);
+  const queued = Boolean(queuedPrompt);
   const queuedCanSteer = promptQueuedCanSteer(flow);
   const pane = els.flowPane.querySelector(".prompt-input-pane");
   const prefix = els.flowPane.querySelector(".prompt-input-prefix");
   const queuedHint = els.flowPane.querySelector(".queued-prompt-hint");
+  const compactQueued = queued && flowAgentCompacting(flow);
   pane?.classList.toggle("prompt-queued", queued);
   if (queuedHint) {
-    queuedHint.hidden = !queued;
-    queuedHint.textContent = queuedCanSteer ? "message queued — press S to steer instead" : "message queued";
+    queuedHint.hidden = !queued || compactQueued;
+    queuedHint.textContent = queuedCanSteer ? 'message queued — press "s" to steer' : "message queued";
   }
   if (prefix) {
     if (queued && !prefix.querySelector(".queued-prompt-spinner")) {
@@ -821,6 +823,10 @@ function updateMessageInputMode() {
     }
   }
   if (queued) {
+    if (input.value !== queuedPrompt.message) {
+      input.value = queuedPrompt.message;
+      resizeMessageInput();
+    }
     hideSlashMenu();
     return;
   }
@@ -875,8 +881,33 @@ function flowAgentQueuedMessage(flow) {
   return flowAgentCompacting(flow) && Boolean(flow?.agentQueuedMessage);
 }
 
+function queuedPromptForFlow(flow) {
+  if (!flow?.id) return null;
+  if (flow.queuedPrompt?.message) {
+    return {
+      flowId: flow.id,
+      message: flow.queuedPrompt.message,
+      createdAt: flow.queuedPrompt.createdAt || "",
+      updatedAt: flow.queuedPrompt.updatedAt || "",
+    };
+  }
+  return state.queuedPrompt?.flowId === flow.id ? state.queuedPrompt : null;
+}
+
+function queuedPromptEntries() {
+  const entries = [];
+  const seen = new Set();
+  for (const flow of state.flows) {
+    const queued = queuedPromptForFlow(flow);
+    if (!queued || seen.has(flow.id)) continue;
+    seen.add(flow.id);
+    entries.push({ queued, flow });
+  }
+  return entries;
+}
+
 function promptQueuedForFlow(flow) {
-  return Boolean(flow?.id && state.queuedPrompt?.flowId === flow.id);
+  return Boolean(queuedPromptForFlow(flow));
 }
 
 function promptQueuedForSelectedFlow() {
@@ -973,19 +1004,29 @@ function flashBlockedInput(input) {
   window.setTimeout(() => input.classList.remove("input-submit-blocked"), 420);
 }
 
-function clearQueuedPrompt() {
+function clearQueuedPrompt(options = {}) {
+  const flow = selectedFlow();
+  const queued = queuedPromptForFlow(flow) || state.queuedPrompt;
   state.queuedPrompt = null;
   updateMessageInputMode();
   saveActiveTicketInputState();
+  if (options.persist !== false && queued?.flowId) {
+    void api(`/api/flows/${encodeURIComponent(queued.flowId)}/queued-prompt`, { method: "DELETE" })
+      .then((data) => {
+        if (data.flow) upsertFlow(data.flow);
+      })
+      .catch(() => {});
+  }
 }
 
-function queuePromptMessage(input) {
+async function queuePromptMessage(input) {
   const flow = selectedFlow();
-  if (!flow?.id || state.queuedPrompt || !input) return false;
-  state.queuedPrompt = {
+  if (!flow?.id || promptQueuedForFlow(flow) || !input) return false;
+  const queued = {
     flowId: flow.id,
     message: input.value,
   };
+  state.queuedPrompt = queued;
   cancelHistorySearch();
   resetInputHistoryNavigation();
   updateMessageInputMode();
@@ -993,16 +1034,27 @@ function queuePromptMessage(input) {
   saveActiveTicketInputState();
   renderTickets();
   renderFlowPane();
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/queued-prompt`, {
+      method: "PUT",
+      body: JSON.stringify({ message: queued.message }),
+    });
+    if (state.queuedPrompt === queued) state.queuedPrompt = null;
+    if (data.flow) upsertFlow(data.flow);
+  } catch (error) {
+    if (state.queuedPrompt === queued) clearQueuedPrompt({ persist: false });
+    throw error;
+  }
   return true;
 }
 
 async function submitQueuedPromptSteer() {
-  const queued = state.queuedPrompt;
   const flow = selectedFlow();
+  const queued = queuedPromptForFlow(flow);
   const input = promptInput();
   const message = String(queued?.message || "").trim();
   if (!queued || !flow?.id || queued.flowId !== flow.id || !message) {
-    if (queued === state.queuedPrompt) clearQueuedPrompt();
+    if (queued === state.queuedPrompt) clearQueuedPrompt({ persist: false });
     return true;
   }
   if (!promptQueuedCanSteer(flow) || state.messageSubmitting) {
@@ -1023,10 +1075,7 @@ async function submitQueuedPromptSteer() {
   renderTickets();
   renderFlowPane();
   try {
-    const data = await api(`/api/flows/${flow.id}/message`, {
-      method: "POST",
-      body: JSON.stringify({ message }),
-    });
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/steer`, { method: "POST" });
     if (data.flow) upsertFlow(data.flow);
     await loadLogs(flow.id, { scrollToLatest: true });
   } finally {
@@ -1041,6 +1090,15 @@ async function submitQueuedPromptSteer() {
 
 function handleQueuedPromptKeydown(event) {
   if (!promptQueuedForSelectedFlow()) return false;
+  if (
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.isComposing &&
+    ["a", "c"].includes(event.key.toLowerCase())
+  ) {
+    return false;
+  }
   if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;
   if (
     promptQueuedCanSteer() &&
@@ -1077,7 +1135,7 @@ function handleQueuedPromptBeforeInput(event) {
 }
 
 function scheduleQueuedPromptFlush() {
-  if (!state.queuedPrompt || state.queuedPromptFlushTimer) return;
+  if (!queuedPromptEntries().length || state.queuedPromptFlushTimer) return;
   state.queuedPromptFlushTimer = window.setTimeout(() => {
     state.queuedPromptFlushTimer = 0;
     void flushQueuedPrompt();
@@ -1085,10 +1143,12 @@ function scheduleQueuedPromptFlush() {
 }
 
 async function flushQueuedPrompt() {
-  const queued = state.queuedPrompt;
-  const flow = state.flows.find((item) => item.id === queued?.flowId) || null;
-  if (!queued || !flow?.id || flowAgentRunning(flow) || state.messageSubmitting) return;
-  await submitQueuedPromptMessage(queued, flow);
+  if (state.messageSubmitting) return;
+  for (const { queued, flow } of queuedPromptEntries()) {
+    if (!queued || !flow?.id || flowAgentRunning(flow)) continue;
+    await submitQueuedPromptMessage(queued, flow);
+    return;
+  }
 }
 
 async function submitQueuedPromptMessage(queued, flow) {
@@ -1121,10 +1181,7 @@ async function submitQueuedPromptMessage(queued, flow) {
   }
   renderTickets();
   try {
-    const data = await api(`/api/flows/${flow.id}/message`, {
-      method: "POST",
-      body: JSON.stringify({ message }),
-    });
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/flush`, { method: "POST" });
     if (data.flow) upsertFlow(data.flow);
     await loadLogs(flow.id, selected ? { scrollToLatest: true } : {});
   } finally {
@@ -1228,12 +1285,21 @@ function handleAgentInterruptKeydown(event) {
   return true;
 }
 
-function handleCommandK(event) {
-  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "k") return false;
+function handleCommandZ(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "z") return false;
   event.preventDefault();
   event.stopImmediatePropagation();
   if (event.repeat) return true;
   toggleTheme();
+  return true;
+}
+
+function handleCommandK(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "k") return false;
+  if (focusedInputPaneKind() !== "shell") return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!event.repeat) void submitShellCommand("clear");
   return true;
 }
 
@@ -2094,7 +2160,7 @@ function clearFlowClientState(flowId) {
   state.shellOutputClearAfterLogId.delete(flowId);
   state.openTraceGroups.delete(flowId);
   state.shellInterruptingFlowIds.delete(flowId);
-  if (state.queuedPrompt?.flowId === flowId) clearQueuedPrompt();
+  if (state.queuedPrompt?.flowId === flowId) state.queuedPrompt = null;
   state.flowDiffs.delete(flowId);
   state.flowDiffLoadingIds.delete(flowId);
   for (const key of state.pendingFlowDiffRefreshes.keys()) {
@@ -3145,6 +3211,58 @@ function renderTicketStatusSeparator(group) {
   return separator;
 }
 
+function linearStatusOptions(issue = null, fallbackStatus = null) {
+  const byStateId = new Map();
+  const addStatus = (stateId, status) => {
+    if (!stateId || !status || byStateId.has(stateId)) return;
+    byStateId.set(stateId, {
+      stateId,
+      status,
+      key: linearStatusKey(status),
+    });
+  };
+  const addIssueStatus = (item) => {
+    addStatus(linearStatusId(item), linearStatusName(item));
+  };
+  state.linearTickets.forEach(addIssueStatus);
+  if (issue) addIssueStatus(issue);
+  if (fallbackStatus) addStatus(fallbackStatus.stateId, fallbackStatus.status);
+  return [...byStateId.values()].sort((a, b) => linearStatusRank(a.key) - linearStatusRank(b.key) || a.status.localeCompare(b.status));
+}
+
+function renderLinearStatusControl(issue, statusName) {
+  const issueId = issue.identifier || state.selectedLinearIssueId;
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  const currentStateId = linearStatusId(issue) || linearStatusId(ticket);
+  if (!issueId || !statusName) return "";
+  const options = linearStatusOptions(issue, { stateId: currentStateId, status: statusName }).filter((option) => option.stateId !== currentStateId);
+  const optionButtons = options
+    .map(
+      (option, index) =>
+        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${escapeHtml(option.status)}</button>`,
+    )
+    .join("");
+  return `<span class="linear-status-control">
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${escapeHtml(statusName)}</button>
+    ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
+  </span>`;
+}
+
+function handleLinearDetailClick(event) {
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest("[data-linear-status-option]");
+  if (!button || !els.flowPane.contains(button)) return;
+  event.preventDefault();
+  const issueId = button.dataset.issue || "";
+  const stateId = button.dataset.stateId || "";
+  const status = button.dataset.status || button.textContent || "";
+  if (!issueId || !stateId || !status) {
+    renderFlowPane();
+    return;
+  }
+  void moveTicketToLinearStatus(issueId, { stateId, status });
+}
+
 function isLinearIssuePinned(identifier) {
   return state.pinnedLinearIssues.has(identifier);
 }
@@ -3407,7 +3525,7 @@ async function moveTicketToLinearStatus(issueId, group) {
     syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
-    focusLinearTicketCard(issue.identifier);
+    focusLinearTicketCard(issueId);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {
     state.linearTickets = previousTickets;
@@ -3438,6 +3556,7 @@ async function createPinnedLinearTicket() {
     syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
+    focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {
     els.ticketState.textContent = error.message;
@@ -3840,6 +3959,7 @@ function renderLinearDetail(context, options = {}) {
   ].filter(Boolean);
   const priorityMeta = renderLinearPriorityIcon(issue.priority);
   const statusName = issue.state?.name || context.ticket?.state?.name || "";
+  const statusControl = renderLinearStatusControl(issue, statusName);
 
   container.innerHTML = `
     <section class="linear-issue">
@@ -3855,7 +3975,7 @@ function renderLinearDetail(context, options = {}) {
         ${priorityMeta ? `<span class="linear-meta-priority">${priorityMeta}</span>` : ""}
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
         ${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}
-        ${statusName ? `<span class="linear-status-pill">${escapeHtml(statusName)}</span>` : ""}
+        ${statusControl}
       </div>
       <div class="linear-description linear-markdown">${
         options.light ? escapeHtml(issue.description || "Loading issue details.") : renderLinearMarkdown(issue.description, "No description.")
@@ -6071,6 +6191,7 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", 
 });
 els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
+els.flowPane.addEventListener("click", handleLinearDetailClick);
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
@@ -6342,7 +6463,7 @@ async function submitPromptMessage() {
       flashBlockedInput(input);
       return;
     }
-    if (!promptQueuedForFlow(flow) && queuePromptMessage(input)) return;
+    if (!promptQueuedForFlow(flow) && (await queuePromptMessage(input))) return;
     flashBlockedInput(input);
     return;
   }
@@ -6422,6 +6543,7 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", handleCommandK, true);
+document.addEventListener("keydown", handleCommandZ, true);
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
 document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
 window.addEventListener("focus", acknowledgeSelectedLinearIssueNotification);
