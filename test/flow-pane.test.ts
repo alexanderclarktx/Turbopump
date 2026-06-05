@@ -482,6 +482,12 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("#refreshLinearTickets,\n#createLinearTicket,\n#searchLinearTickets,\n#closeTicketSearch,\n#resetAgentDeveloperInstructions {\n  border-color: transparent;\n  background: transparent;\n}");
     expect(css).toContain("#refreshLinearTickets,\n#createLinearTicket,\n#searchLinearTickets,\n#closeTicketSearch {\n  color: var(--muted);\n}");
     expect(css).toContain("#refreshLinearTickets:hover,\n#createLinearTicket:hover,\n#searchLinearTickets:hover,\n#closeTicketSearch:hover,\n#resetAgentDeveloperInstructions:hover");
+    expect(app).toContain("linearTicketsLoading: false");
+    expect(app).toContain("function updateRefreshLinearTicketsButton()");
+    expect(app).toContain('els.refreshLinearTickets.classList.toggle("is-loading", state.linearTicketsLoading);');
+    expect(app).toContain("if (state.linearTicketsLoading) return;");
+    expect(css).toContain("#refreshLinearTickets.is-loading svg {\n  animation: refresh-linear-tickets-spin 900ms linear infinite;");
+    expect(css).toContain("@keyframes refresh-linear-tickets-spin");
   });
 
   test("filters Linear tickets by title from the ticket drawer search pane", () => {
@@ -687,6 +693,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flushQueuedPrompt()");
     expect(app).toContain("for (const { queued, flow } of queuedPromptEntries())");
     expect(app).toContain("await submitQueuedPromptMessage(queued, flow);");
+    expect(app).toContain("function updateFlowQueuedPrompt(flowId, queuedPrompt)");
+    expect(app).toContain("updateFlowQueuedPrompt(flow.id, null);");
+    expect(app.indexOf("updateFlowQueuedPrompt(flow.id, null);")).toBeLessThan(
+      app.indexOf("renderFlowPane();\n    renderLogs(flow.id, { force: true, scrollToLatest: true });"),
+    );
     expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt');
     expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/steer');
     expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/flush');
@@ -822,20 +833,39 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain(".linear-state");
   });
 
-  test("renders Linear pane priority as the same bar icon used in tickets", () => {
-    expect(app).toContain("const priorityMeta = renderLinearPriorityIcon(issue.priority);");
-    expect(app).toContain('${priorityMeta ? `<span class="linear-meta-priority">${priorityMeta}</span>` : ""}');
+  test("renders Linear pane priority as an editable pill with the same bar icon used in tickets", () => {
+    expect(app).toContain("const priorityControl = renderLinearPriorityControl(issue);");
+    expect(app).toContain("${priorityControl}");
+    expect(app).toContain("function renderLinearPriorityControl(issue)");
+    expect(app).toContain('data-linear-priority-pill="true"');
+    expect(app).toContain('data-linear-priority-option="true"');
+    expect(app).toContain('title="${escapeAttribute(option.name)}" aria-label="${escapeAttribute(option.name)}"');
+    expect(app).toContain("renderLinearPriorityIcon(option.priority, { empty: true })");
+    expect(app).not.toContain('<span>${escapeHtml(option.name)}</span>');
+    expect(app).toContain("void moveTicketToLinearPriority(issueId, priority);");
+    expect(app).toContain("async function moveTicketToLinearPriority(issueId, priority)");
+    expect(server).toContain("async function updateLinearIssuePriority(identifier: string, issueId: string, priority: number)");
+    expect(server).toContain("issueUpdate(id: $id, input: { priority: $priority })");
+    expect(server).toContain('parts[4] === "priority" && request.method === "POST"');
     expect(app).not.toContain('issue.priority ? `P${issue.priority}` : ""');
-    expect(css).toContain(".linear-meta .linear-meta-priority {\n  display: inline-grid;");
-    expect(css).toContain("min-width: 13px;\n  border: 0;\n  background: transparent;\n  padding: 0;");
-    expect(css).toContain(".linear-meta > span:not(.linear-status-control),\n.linear-status-pill,\n.linear-status-option,\n.linear-comments > header span");
+    expect(css).toContain(".linear-priority-control:hover .linear-priority-options");
+    expect(css).toContain(".linear-priority-control:focus-within .linear-priority-options");
+    expect(css).toContain(".linear-priority-pill,\n.linear-priority-option");
+    expect(css).not.toContain(".linear-priority-pill .ticket-priority,\n.linear-priority-option .ticket-priority");
+    expect(css).toContain(".linear-meta > span:not(.linear-status-control):not(.linear-priority-control),\n.linear-status-pill,\n.linear-status-option,\n.linear-priority-pill,\n.linear-priority-option,\n.linear-comments > header span");
     expect(css).toContain("display: inline-flex;\n  align-items: center;");
-    expect(css).toContain(".linear-meta > span:not(.linear-status-control),\n.linear-status-pill,\n.linear-status-option {\n  user-select: none;\n  -webkit-user-select: none;\n}");
+    expect(css).toContain(".linear-meta > span:not(.linear-status-control):not(.linear-priority-control),\n.linear-status-pill,\n.linear-status-option,\n.linear-priority-pill,\n.linear-priority-option {\n  user-select: none;\n  -webkit-user-select: none;\n}");
     expect(css).not.toContain(".linear-meta span,\n.linear-comments > header span");
   });
 
   test("does not render the Linear team key as a redundant metadata pill", () => {
     expect(app).not.toContain("issue.team?.key || issue.team?.name");
+  });
+
+  test("does not show placeholder copy for empty Linear descriptions", () => {
+    expect(app).toContain('renderLinearMarkdown(issue.description, "")');
+    expect(app).not.toContain("No description.");
+    expect(app).not.toContain("Loading issue details.");
   });
 
   test("labels user agent messages with the Linear viewer name", () => {
@@ -857,13 +887,16 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("background-color var(--motion-fast)");
   });
 
-  test("shows ticket id on cards and Linear status at the end of the Flow pane metadata row", () => {
+  test("shows ticket id on cards and Linear status before priority in the Flow pane metadata row", () => {
     expect(app).toContain('class="ticket-meta"');
     expect(app).toContain('class="ticket-id"');
     expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.identifier)}</span>');
     expect(app).toContain("const statusName = issue.state?.name || context.ticket?.state?.name || \"\";");
     expect(app).toContain("const statusControl = renderLinearStatusControl(issue, statusName);");
-    expect(app).toContain('${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}\n        ${statusControl}');
+    expect(app).toContain('${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}\n        ${statusControl}\n        ${priorityControl}');
+    expect(app).not.toContain('const labels = issue.labels?.nodes || [];');
+    expect(app).not.toContain('issue.assignee?.name ? `Assignee: ${issue.assignee.name}` : "",');
+    expect(app).not.toContain('${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}');
     expect(css).not.toContain(".ticket-status {");
     expect(app).not.toContain("ticket-linear-status");
     expect(css).not.toContain("ticket-linear-status");
@@ -895,15 +928,15 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("focusLinearTicketCard(issueId);");
     expect(css).toContain(".linear-status-control:hover .linear-status-options");
     expect(css).toContain(".linear-status-control:focus-within .linear-status-options");
-    expect(css).toContain(".linear-status-pill,\n.linear-status-option {");
-    expect(css).toContain(".linear-meta > span:not(.linear-status-control)");
+    expect(css).toContain(".linear-status-pill,\n.linear-status-option,\n.linear-priority-pill,\n.linear-priority-option {");
+    expect(css).toContain(".linear-meta > span:not(.linear-status-control):not(.linear-priority-control)");
     expect(css).toContain("padding: 2px 7px;");
-    expect(css).toContain("body.theme-dark .linear-status-pill,\nbody.theme-dark .linear-status-option {\n  background: #151a20;\n  color: var(--muted);\n}");
+    expect(css).toContain("body.theme-dark .linear-status-pill,\nbody.theme-dark .linear-status-option,\nbody.theme-dark .linear-priority-pill,\nbody.theme-dark .linear-priority-option {\n  background: #151a20;\n  color: var(--muted);\n}");
     expect(css).toContain("font-weight: 400;");
   });
 
   test("shows Linear ticket priority icon before the project at the bottom left", () => {
-    expect(app).toContain("function renderLinearPriorityIcon(priority)");
+    expect(app).toContain("function renderLinearPriorityIcon(priority, options = {})");
     expect(app).toContain("function linearPriorityBarCount(priority)");
     expect(app).toContain("if (value === 1) return 3;");
     expect(app).toContain("if (value === 2) return 3;");
@@ -919,6 +952,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".ticket-priority {\n  display: inline-grid;");
     expect(css).toContain(".ticket-priority.urgent {\n  color: var(--danger);\n}");
     expect(css).toContain(".ticket-priority svg");
+    expect(css).toContain("fill: currentColor;\n  stroke: none;\n  stroke-width: 0;");
   });
 
   test("supports client-side pinned Linear tickets at the top of the drawer", () => {

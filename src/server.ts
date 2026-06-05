@@ -2523,6 +2523,43 @@ async function updateLinearIssueStatus(identifier: string, issueId: string, stat
   return { issue, flow: flow ? getFlow(flow.id) : null };
 }
 
+async function updateLinearIssuePriority(identifier: string, issueId: string, priority: number) {
+  if (!Number.isInteger(priority) || priority < 0 || priority > 4) throw new Error("Linear priority must be between 0 and 4.");
+  const data = await linearGraphql<{
+    issueUpdate?: {
+      success: boolean;
+      issue?: LinearIssue;
+    };
+  }>(
+    `
+      mutation UpdateIssuePriority($id: String!, $priority: Int!) {
+        issueUpdate(id: $id, input: { priority: $priority }) {
+          success
+          issue {
+            id
+            identifier
+            title
+            url
+            priority
+            estimate
+            createdAt
+            updatedAt
+            state { id name color type }
+            team { key name }
+            project { name }
+            labels { nodes { name color } }
+          }
+        }
+      }
+    `,
+    { id: issueId || identifier, priority },
+  );
+  const issue = data.issueUpdate?.issue;
+  if (!data.issueUpdate?.success || !issue) throw new Error("Linear did not update the issue priority.");
+  cacheLinearIssue(issue);
+  return { issue };
+}
+
 function linearWorkflowKey(name = "") {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -2883,6 +2920,12 @@ async function handleApi(request: Request, url: URL) {
       broadcast("checkouts", listWorktrees());
     }
     return json({ ok: true, ...result, flow: result.flow ? clientFlow(result.flow) : null });
+  }
+
+  if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && parts[4] === "priority" && request.method === "POST") {
+    const body = await readJson<{ issueId?: string; priority?: number }>(request);
+    const result = await updateLinearIssuePriority(decodeURIComponent(parts[3]), body.issueId || "", Number(body.priority));
+    return json({ ok: true, ...result });
   }
 
   if (url.pathname === "/api/flows" && request.method === "POST") {

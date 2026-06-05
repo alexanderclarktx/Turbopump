@@ -705,9 +705,11 @@ body.theme-dark .pill.live {
 }
 
 body.theme-dark .ticket-project,
-body.theme-dark .linear-meta > span,
+body.theme-dark .linear-meta > span:not(.linear-status-control):not(.linear-priority-control),
 body.theme-dark .linear-status-pill,
 body.theme-dark .linear-status-option,
+body.theme-dark .linear-priority-pill,
+body.theme-dark .linear-priority-option,
 body.theme-dark .linear-comments > header span,
 body.theme-dark .linear-description,
 body.theme-dark .linear-comment-body {
@@ -1819,6 +1821,8 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   width: 13px;
   height: 12px;
   fill: currentColor;
+  stroke: none;
+  stroke-width: 0;
 }
 
 .icon-button {
@@ -1857,6 +1861,17 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 #resetAgentDeveloperInstructions:hover {
   border-color: transparent;
   background: #e8edf3;
+}
+
+#refreshLinearTickets.is-loading svg {
+  animation: refresh-linear-tickets-spin 900ms linear infinite;
+  transform-origin: center;
+}
+
+@keyframes refresh-linear-tickets-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .flow-pane {
@@ -2205,9 +2220,11 @@ body.flow-resizing .flow-content {
   gap: 6px;
 }
 
-.linear-meta > span:not(.linear-status-control),
+.linear-meta > span:not(.linear-status-control):not(.linear-priority-control),
 .linear-status-pill,
 .linear-status-option,
+.linear-priority-pill,
+.linear-priority-option,
 .linear-comments > header span {
   display: inline-flex;
   align-items: center;
@@ -2221,7 +2238,8 @@ body.flow-resizing .flow-content {
   line-height: 1.4;
 }
 
-.linear-status-control {
+.linear-status-control,
+.linear-priority-control {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
@@ -2229,9 +2247,12 @@ body.flow-resizing .flow-content {
 }
 
 .linear-status-pill,
-.linear-status-option {
+.linear-status-option,
+.linear-priority-pill,
+.linear-priority-option {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: #f8fafc;
@@ -2247,16 +2268,20 @@ body.flow-resizing .flow-content {
 }
 
 body.theme-dark .linear-status-pill,
-body.theme-dark .linear-status-option {
+body.theme-dark .linear-status-option,
+body.theme-dark .linear-priority-pill,
+body.theme-dark .linear-priority-option {
   background: #151a20;
   color: var(--muted);
 }
 
-.linear-status-pill {
+.linear-status-pill,
+.linear-priority-pill {
   cursor: pointer;
 }
 
-.linear-status-options {
+.linear-status-options,
+.linear-priority-options {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2272,16 +2297,19 @@ body.theme-dark .linear-status-option {
 }
 
 .linear-status-control:hover .linear-status-options,
-.linear-status-control:focus-within .linear-status-options {
+.linear-status-control:focus-within .linear-status-options,
+.linear-priority-control:hover .linear-priority-options,
+.linear-priority-control:focus-within .linear-priority-options {
   max-width: min(420px, 100vw);
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
 }
 
-.linear-status-option {
+.linear-status-option,
+.linear-priority-option {
   cursor: pointer;
-  transform: translateX(calc((var(--linear-status-option-index, 0) + 1) * -3px));
+  transform: translateX(calc((var(--linear-status-option-index, var(--linear-priority-option-index, 0)) + 1) * -3px));
   transition:
     border-color var(--motion-fast),
     color var(--motion-fast),
@@ -2289,30 +2317,27 @@ body.theme-dark .linear-status-option {
 }
 
 .linear-status-control:hover .linear-status-option,
-.linear-status-control:focus-within .linear-status-option {
+.linear-status-control:focus-within .linear-status-option,
+.linear-priority-control:hover .linear-priority-option,
+.linear-priority-control:focus-within .linear-priority-option {
   transform: translateX(0);
 }
 
 .linear-status-pill:hover,
-.linear-status-option:hover {
+.linear-status-option:hover,
+.linear-priority-pill:hover,
+.linear-priority-option:hover {
   border-color: var(--line-strong);
   color: var(--ink);
 }
 
-.linear-meta > span:not(.linear-status-control),
+.linear-meta > span:not(.linear-status-control):not(.linear-priority-control),
 .linear-status-pill,
-.linear-status-option {
+.linear-status-option,
+.linear-priority-pill,
+.linear-priority-option {
   user-select: none;
   -webkit-user-select: none;
-}
-
-.linear-meta .linear-meta-priority {
-  display: inline-grid;
-  place-items: center;
-  min-width: 13px;
-  border: 0;
-  background: transparent;
-  padding: 0;
 }
 
 .linear-description,

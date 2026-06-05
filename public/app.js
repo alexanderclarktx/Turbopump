@@ -182,6 +182,7 @@ const state = {
   checkoutsLoading: false,
   linearTickets: [],
   linearTicketsLoaded: false,
+  linearTicketsLoading: false,
   linearViewer: null,
   linearViewerName: "",
   linearSignedIn: false,
@@ -307,6 +308,13 @@ const pendingWsRequests = new Map();
 const flowSnapshotRequestingIds = new Set();
 const TICKET_DRAG_SCROLL_EDGE_PX = 72;
 const TICKET_DRAG_SCROLL_MAX_STEP_PX = 18;
+const LINEAR_PRIORITY_OPTIONS = [
+  { priority: 1, name: "Urgent" },
+  { priority: 2, name: "High" },
+  { priority: 3, name: "Medium" },
+  { priority: 4, name: "Low" },
+  { priority: 0, name: "No priority" },
+];
 
 function linearStatusName(ticket) {
   return ticket?.state?.name || "No status";
@@ -316,12 +324,22 @@ function linearStatusId(ticket) {
   return ticket?.state?.id || "";
 }
 
-function linearPriorityLabel(priority) {
+function linearPriorityValue(priority) {
+  const value = Number(priority);
+  return Number.isInteger(value) && value >= 1 && value <= 4 ? value : 0;
+}
+
+function linearPriorityName(priority) {
+  return LINEAR_PRIORITY_OPTIONS.find((option) => option.priority === linearPriorityValue(priority))?.name || "No priority";
+}
+
+function linearPriorityLabel(priority, options = {}) {
   const value = Number(priority);
   if (value === 1) return "Urgent priority";
   if (value === 2) return "High priority";
   if (value === 3) return "Medium priority";
   if (value === 4) return "Low priority";
+  if (options.empty) return "No priority";
   return "";
 }
 
@@ -334,10 +352,10 @@ function linearPriorityBarCount(priority) {
   return 0;
 }
 
-function renderLinearPriorityIcon(priority) {
+function renderLinearPriorityIcon(priority, options = {}) {
   const barCount = linearPriorityBarCount(priority);
-  const label = linearPriorityLabel(priority);
-  if (!barCount || !label) return "";
+  const label = linearPriorityLabel(priority, options);
+  if ((!barCount && !options.empty) || !label) return "";
   const urgent = Number(priority) === 1;
   const bars = [
     { x: 2, y: 9, height: 4 },
@@ -407,6 +425,12 @@ function setTicketSearchOpen(open) {
   els.createLinearTicket.hidden = state.ticketSearchOpen;
   els.searchLinearTickets.hidden = state.ticketSearchOpen;
   els.ticketSearchPane.hidden = !state.ticketSearchOpen;
+}
+
+function updateRefreshLinearTicketsButton() {
+  els.refreshLinearTickets.disabled = state.linearTicketsLoading;
+  els.refreshLinearTickets.setAttribute("aria-busy", String(state.linearTicketsLoading));
+  els.refreshLinearTickets.classList.toggle("is-loading", state.linearTicketsLoading);
 }
 
 function openTicketSearch() {
@@ -1063,6 +1087,7 @@ async function submitQueuedPromptSteer() {
   }
 
   state.queuedPrompt = null;
+  updateFlowQueuedPrompt(flow.id, null);
   updateMessageInputMode();
   if (input && input.value === queued.message) {
     input.value = "";
@@ -1161,8 +1186,9 @@ async function submitQueuedPromptMessage(queued, flow) {
   const selected = flow.id === state.selectedFlowId;
   if (state.queuedPrompt === queued) {
     state.queuedPrompt = null;
-    updateMessageInputMode();
   }
+  updateFlowQueuedPrompt(flow.id, null);
+  updateMessageInputMode();
   if (selected) {
     const input = promptInput();
     if (input && input.value === queued.message) {
@@ -2909,6 +2935,15 @@ function upsertFlow(flow) {
   setFlows(next);
 }
 
+function updateFlowQueuedPrompt(flowId, queuedPrompt) {
+  if (!flowId) return;
+  const index = state.flows.findIndex((item) => item.id === flowId);
+  if (index === -1) return;
+  const next = [...state.flows];
+  next[index] = { ...next[index], queuedPrompt };
+  setFlows(next);
+}
+
 function flowUpdatedAtMs(flow) {
   const timestamp = Date.parse(flow?.updatedAt || "");
   return Number.isFinite(timestamp) ? timestamp : 0;
@@ -2996,6 +3031,9 @@ function updateLinearState(linear) {
 }
 
 async function loadLinearTickets(options = {}) {
+  if (state.linearTicketsLoading) return;
+  state.linearTicketsLoading = true;
+  updateRefreshLinearTicketsButton();
   try {
     els.ticketState.textContent = "Loading assigned tickets.";
     const data = await api("/api/linear/issues");
@@ -3025,6 +3063,9 @@ async function loadLinearTickets(options = {}) {
     els.ticketState.textContent = error.message;
     els.linearState.textContent = "Linear needs attention";
     els.linearState.classList.remove("live");
+  } finally {
+    state.linearTicketsLoading = false;
+    updateRefreshLinearTicketsButton();
   }
 }
 
@@ -3248,8 +3289,41 @@ function renderLinearStatusControl(issue, statusName) {
   </span>`;
 }
 
+function renderLinearPriorityControl(issue) {
+  const issueId = issue.identifier || state.selectedLinearIssueId;
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  const currentPriority = linearPriorityValue(issue.priority ?? ticket?.priority);
+  if (!issueId) return "";
+  const options = LINEAR_PRIORITY_OPTIONS.filter((option) => option.priority !== currentPriority);
+  const currentIcon = renderLinearPriorityIcon(currentPriority, { empty: true });
+  const currentName = linearPriorityName(currentPriority);
+  const optionButtons = options
+    .map((option, index) => {
+      const icon = renderLinearPriorityIcon(option.priority, { empty: true });
+      return `<button class="linear-priority-option" type="button" data-linear-priority-option="true" data-issue="${escapeAttribute(issueId)}" data-priority="${option.priority}" title="${escapeAttribute(option.name)}" aria-label="${escapeAttribute(option.name)}" style="--linear-priority-option-index: ${index};">${icon}</button>`;
+    })
+    .join("");
+  return `<span class="linear-priority-control">
+    <button class="linear-priority-pill" type="button" data-linear-priority-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear priority" aria-label="${escapeAttribute(currentName)}" aria-haspopup="true">${currentIcon}</button>
+    <span class="linear-priority-options" aria-label="Linear priority options">${optionButtons}</span>
+  </span>`;
+}
+
 function handleLinearDetailClick(event) {
   if (!(event.target instanceof Element)) return;
+  const priorityButton = event.target.closest("[data-linear-priority-option]");
+  if (priorityButton && els.flowPane.contains(priorityButton)) {
+    event.preventDefault();
+    const issueId = priorityButton.dataset.issue || "";
+    const priority = Number(priorityButton.dataset.priority);
+    if (!issueId || !Number.isInteger(priority)) {
+      renderFlowPane();
+      return;
+    }
+    void moveTicketToLinearPriority(issueId, priority);
+    return;
+  }
+
   const button = event.target.closest("[data-linear-status-option]");
   if (!button || !els.flowPane.contains(button)) return;
   event.preventDefault();
@@ -3523,6 +3597,43 @@ async function moveTicketToLinearStatus(issueId, group) {
     if (data.issue) replaceLinearIssue(data.issue);
     if (data.flow) upsertFlow(data.flow);
     syncLinearTicketsWithFlows();
+    renderTickets();
+    renderFlowPane();
+    focusLinearTicketCard(issueId);
+    els.ticketState.textContent = formatLastUpdated();
+  } catch (error) {
+    state.linearTickets = previousTickets;
+    if (previousDetail) state.linearDetails.set(issueId, previousDetail);
+    else state.linearDetails.delete(issueId);
+    renderTickets();
+    renderFlowPane();
+    els.ticketState.textContent = error.message;
+  }
+}
+
+async function moveTicketToLinearPriority(issueId, priority) {
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  const detailIssue = state.linearDetails.get(issueId)?.issue;
+  const issue = ticket || detailIssue;
+  const nextPriority = linearPriorityValue(priority);
+  if (!issue || linearPriorityValue(issue.priority) === nextPriority) return;
+
+  const previousTickets = state.linearTickets;
+  const previousDetail = state.linearDetails.get(issueId);
+  replaceLinearIssue({
+    ...issue,
+    priority: nextPriority,
+  });
+  renderTickets();
+  renderFlowPane();
+  els.ticketState.textContent = `Changing ${issueId} priority to ${linearPriorityName(nextPriority)}.`;
+
+  try {
+    const data = await api(`/api/linear/issues/${encodeURIComponent(issueId)}/priority`, {
+      method: "POST",
+      body: JSON.stringify({ issueId: issue.id, priority: nextPriority }),
+    });
+    if (data.issue) replaceLinearIssue(data.issue);
     renderTickets();
     renderFlowPane();
     focusLinearTicketCard(issueId);
@@ -3949,15 +4060,13 @@ function renderLinearDetail(context, options = {}) {
     url: context.issueUrl,
   };
   const loading = options.light || cached?.loading;
-  const labels = issue.labels?.nodes || [];
   const comments = options.light ? [] : issue.comments?.nodes || [];
   const commentTree = linearCommentTree(comments);
   const meta = [
     issue.project?.name,
-    issue.assignee?.name ? `Assignee: ${issue.assignee.name}` : "",
     issue.estimate ? `${issue.estimate} pts` : "",
   ].filter(Boolean);
-  const priorityMeta = renderLinearPriorityIcon(issue.priority);
+  const priorityControl = renderLinearPriorityControl(issue);
   const statusName = issue.state?.name || context.ticket?.state?.name || "";
   const statusControl = renderLinearStatusControl(issue, statusName);
 
@@ -3972,14 +4081,11 @@ function renderLinearDetail(context, options = {}) {
         </div>
       </div>
       <div class="linear-meta">
-        ${priorityMeta ? `<span class="linear-meta-priority">${priorityMeta}</span>` : ""}
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-        ${labels.map((label) => `<span>${escapeHtml(label.name)}</span>`).join("")}
         ${statusControl}
+        ${priorityControl}
       </div>
-      <div class="linear-description linear-markdown">${
-        options.light ? escapeHtml(issue.description || "Loading issue details.") : renderLinearMarkdown(issue.description, "No description.")
-      }</div>
+      <div class="linear-description linear-markdown">${options.light ? escapeHtml(issue.description || "") : renderLinearMarkdown(issue.description, "")}</div>
     </section>
     <section class="linear-comments">
       <header>
