@@ -302,6 +302,10 @@ body.tickets-collapsed .ticket-drawer > * {
   display: none;
 }
 
+body.tickets-collapsed .ticket-drawer-resizer {
+  display: none;
+}
+
 body.app-booting main,
 body.app-booting .ticket-drawer {
   transition: none;
@@ -710,6 +714,7 @@ body.theme-dark .linear-status-pill,
 body.theme-dark .linear-status-option,
 body.theme-dark .linear-priority-pill,
 body.theme-dark .linear-priority-option,
+body.theme-dark .github-ci-pill,
 body.theme-dark .linear-comments > header span,
 body.theme-dark .linear-description,
 body.theme-dark .linear-comment-body {
@@ -1295,6 +1300,7 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .ticket-drawer {
+  position: relative;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
@@ -1313,6 +1319,47 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
     padding var(--motion-pane),
     border-color var(--motion-pane),
     visibility 0ms linear 0ms;
+}
+
+.ticket-drawer-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.ticket-drawer-resizer::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  right: 3px;
+  bottom: 14px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color var(--motion-fast);
+}
+
+.ticket-drawer-resizer:hover::before,
+.ticket-drawer-resizer:focus-visible::before,
+body.ticket-drawer-resizing .ticket-drawer-resizer::before {
+  background: var(--line-strong);
+}
+
+body.ticket-drawer-resizing {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+body.ticket-drawer-resizing main {
+  transition: none;
 }
 
 .ticket-drawer-header {
@@ -1726,6 +1773,68 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   pointer-events: none;
 }
 
+.ticket-flow-start {
+  appearance: none;
+  right: 8px;
+  top: var(--ticket-card-title-y);
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0;
+  line-height: 0;
+  opacity: 0;
+  transform: scale(0.92);
+  transition:
+    color var(--motion-fast),
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+body.theme-dark .ticket-flow-start,
+body.theme-dark .ticket-flow-start:hover,
+body.theme-dark .ticket-flow-start:focus-visible {
+  background: transparent;
+}
+
+.ticket-flow-start-icon {
+  width: 18px;
+  height: 18px;
+  overflow: visible;
+}
+
+.ticket-flow-start-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke-width var(--motion-fast);
+}
+
+.ticket-flow-start:hover .ticket-flow-start-icon path,
+.ticket-flow-start:focus-visible .ticket-flow-start-icon path {
+  stroke-width: 5.5;
+}
+
+.ticket-card.can-start-agent:hover .ticket-flow-start,
+.ticket-card.can-start-agent:focus-within .ticket-flow-start {
+  pointer-events: auto;
+  opacity: 1;
+  transform: scale(1);
+}
+
+.ticket-flow-start:active {
+  transform: scale(0.88);
+}
+
 .ticket-card.shell-command-active .ticket-flow-corner::after {
   content: "";
   position: absolute;
@@ -1766,6 +1875,10 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .ticket-card.in-flow .ticket-title {
+  padding-right: 32px;
+}
+
+.ticket-card.can-start-agent .ticket-title {
   padding-right: 32px;
 }
 
@@ -2104,6 +2217,10 @@ body.shell-output-resizing {
   user-select: none;
 }
 
+body.shell-output-resizing .terminal-panel {
+  transition: none;
+}
+
 .agent-disabled-message {
   display: none;
   place-self: center;
@@ -2225,6 +2342,7 @@ body.flow-resizing .flow-content {
 .linear-status-option,
 .linear-priority-pill,
 .linear-priority-option,
+.github-ci-pill,
 .linear-comments > header span {
   display: inline-flex;
   align-items: center;
@@ -2249,7 +2367,8 @@ body.flow-resizing .flow-content {
 .linear-status-pill,
 .linear-status-option,
 .linear-priority-pill,
-.linear-priority-option {
+.linear-priority-option,
+.github-ci-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2270,7 +2389,8 @@ body.flow-resizing .flow-content {
 body.theme-dark .linear-status-pill,
 body.theme-dark .linear-status-option,
 body.theme-dark .linear-priority-pill,
-body.theme-dark .linear-priority-option {
+body.theme-dark .linear-priority-option,
+body.theme-dark .github-ci-pill {
   background: #151a20;
   color: var(--muted);
 }
@@ -2278,6 +2398,42 @@ body.theme-dark .linear-priority-option {
 .linear-status-pill,
 .linear-priority-pill {
   cursor: pointer;
+}
+
+.github-ci-pill {
+  color: #24292f;
+  text-decoration: none;
+}
+
+.github-ci-pill svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+}
+
+.github-ci-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #d0d7de;
+}
+
+.github-ci-pill-success .github-ci-dot {
+  background: #2da44e;
+}
+
+.github-ci-pill-pending .github-ci-dot,
+.github-ci-pill-unknown .github-ci-dot {
+  background: #d97706;
+}
+
+body.theme-dark .github-ci-pill-pending .github-ci-dot,
+body.theme-dark .github-ci-pill-unknown .github-ci-dot {
+  background: #fbbf24;
+}
+
+.github-ci-pill-failure .github-ci-dot {
+  background: #cf222e;
 }
 
 .linear-status-options,
@@ -2326,7 +2482,8 @@ body.theme-dark .linear-priority-option {
 .linear-status-pill:hover,
 .linear-status-option:hover,
 .linear-priority-pill:hover,
-.linear-priority-option:hover {
+.linear-priority-option:hover,
+.github-ci-pill:hover {
   border-color: var(--line-strong);
   color: var(--ink);
 }
@@ -2335,7 +2492,8 @@ body.theme-dark .linear-priority-option {
 .linear-status-pill,
 .linear-status-option,
 .linear-priority-pill,
-.linear-priority-option {
+.linear-priority-option,
+.github-ci-pill {
   user-select: none;
   -webkit-user-select: none;
 }
