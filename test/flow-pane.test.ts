@@ -1017,7 +1017,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("const nodes = [renderPinnedTicketGroup(pinnedTickets)];");
     expect(app).toContain('section.className = "ticket-status-group pinned-ticket-group";');
     expect(app).toContain("section.addEventListener(\"drop\", handlePinnedTicketDrop);");
-    expect(app).toContain("function setLinearIssuePinned(identifier, pinned)");
+    expect(app).toContain("function setLinearIssuePinned(identifier, pinned, options = {})");
+    expect(app).toContain('if (pinned && options.position === "top") {');
+    expect(app).toContain("state.pinnedLinearIssues = new Set([identifier, ...[...state.pinnedLinearIssues].filter((issueId) => issueId !== identifier)]);");
     expect(app).toContain("function ticketCanMoveToPinned(issueId)");
     expect(app).toContain("if (isLinearIssuePinned(issueId)) {");
     expect(app).not.toContain('class="ticket-pin"');
@@ -1081,7 +1083,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('startAgentButton?.addEventListener("click"');
     expect(app).toContain("event.stopPropagation();");
     expect(app).toContain("async function startTicketAgentSession(ticket)");
-    expect(app).toContain("setLinearIssuePinned(ticket.identifier, true);");
+    expect(app).toContain('setLinearIssuePinned(ticket.identifier, true, { position: "top" });');
     expect(app).toContain("await openTicketInFlowPane(ticket);");
     expect(app).toContain('input.value = "get started on this. open a pr if you have a changeset";');
     expect(app).toContain("await submitPromptMessage();");

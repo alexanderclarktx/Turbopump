@@ -3525,8 +3525,10 @@ function moveLinearIssueToPinnedPosition(identifier, index) {
   renderTickets();
 }
 
-function setLinearIssuePinned(identifier, pinned) {
-  if (pinned) state.pinnedLinearIssues.add(identifier);
+function setLinearIssuePinned(identifier, pinned, options = {}) {
+  if (pinned && options.position === "top") {
+    state.pinnedLinearIssues = new Set([identifier, ...[...state.pinnedLinearIssues].filter((issueId) => issueId !== identifier)]);
+  } else if (pinned) state.pinnedLinearIssues.add(identifier);
   else state.pinnedLinearIssues.delete(identifier);
   persistPinnedLinearIssues();
   renderTickets();
@@ -4089,7 +4091,7 @@ async function openTicketInFlowPane(ticket) {
 
 async function startTicketAgentSession(ticket) {
   if (!ticket?.identifier) return;
-  setLinearIssuePinned(ticket.identifier, true);
+  setLinearIssuePinned(ticket.identifier, true, { position: "top" });
   await openTicketInFlowPane(ticket);
   const input = promptInput();
   input.value = "get started on this. open a pr if you have a changeset";
