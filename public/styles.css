@@ -1835,6 +1835,14 @@ body.theme-dark .ticket-flow-start:focus-visible {
   transform: scale(0.88);
 }
 
+.ticket-flow-creating {
+  color: var(--muted);
+}
+
+.ticket-card.creating-flow .ticket-flow-creating {
+  opacity: 1;
+}
+
 .ticket-card.shell-command-active .ticket-flow-corner::after {
   content: "";
   position: absolute;
@@ -2433,7 +2441,7 @@ body.theme-dark .github-ci-pill-unknown .github-ci-dot {
 }
 
 .github-ci-pill-failure .github-ci-dot {
-  background: #cf222e;
+  background: #ef4444;
 }
 
 .linear-status-options,
@@ -2680,11 +2688,66 @@ body.theme-dark .terminal-entry-body a {
   margin: 6px 0;
   border: 1px solid var(--line);
   border-radius: 6px;
+  position: relative;
   background: transparent;
-  padding: 10px 12px;
+  padding: 10px 40px 10px 12px;
   color: #27313d;
-  overflow: auto;
-  white-space: pre;
+  overflow: visible;
+  white-space: normal;
+}
+
+.linear-markdown .markdown-code-copy,
+.terminal-entry-body .markdown-code-copy {
+  position: absolute;
+  top: var(--markdown-code-copy-top, 6px);
+  right: 6px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  margin: 0;
+  padding: 0;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.linear-markdown .markdown-code-copy svg,
+.terminal-entry-body .markdown-code-copy svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  fill: none;
+}
+
+.linear-markdown .markdown-code-block:hover .markdown-code-copy,
+.linear-markdown .markdown-code-copy:focus-visible,
+.terminal-entry-body .markdown-code-block:hover .markdown-code-copy,
+.terminal-entry-body .markdown-code-copy:focus-visible {
+  opacity: 1;
+}
+
+.linear-markdown .markdown-code-copy:hover,
+.linear-markdown .markdown-code-copy:focus-visible,
+.terminal-entry-body .markdown-code-copy:hover,
+.terminal-entry-body .markdown-code-copy:focus-visible {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent);
 }
 
 .linear-markdown .markdown-code-block:first-child,
@@ -2700,13 +2763,14 @@ body.theme-dark .terminal-entry-body a {
 .linear-markdown .markdown-code-block code,
 .terminal-entry-body .markdown-code-block code {
   display: block;
+  overflow-x: auto;
   border: 0;
   border-radius: 0;
   background: transparent;
   padding: 0;
   font-size: 12px;
   line-height: 1.5;
-  white-space: inherit;
+  white-space: pre;
 }
 
 .linear-markdown .token.comment,
@@ -2982,6 +3046,13 @@ body.theme-dark .terminal-entry-body a {
   line-height: 1.55;
 }
 
+.flow-creating-message {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
 .terminal-entry {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -3103,6 +3174,10 @@ body.theme-dark .terminal-entry-body a {
   min-width: 0;
   white-space: inherit;
   overflow-wrap: inherit;
+}
+
+.terminal-entry-body-content:has(.markdown-code-copy) {
+  overflow: visible;
 }
 
 .shell-output-pane .terminal-entry-body-content {
@@ -3796,6 +3871,23 @@ body.shell-pane-hidden .shell-command-panel {
 }
 
 @keyframes queued-prompt-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.flow-create-spinner {
+  box-sizing: border-box;
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: flow-create-spinner 900ms linear infinite;
+}
+
+@keyframes flow-create-spinner {
   to {
     transform: rotate(360deg);
   }

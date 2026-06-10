@@ -229,6 +229,12 @@ db.exec(`
     updatedAt text not null
   );
 
+  create table if not exists linear_issues (
+    identifier text primary key,
+    issueJson text not null,
+    updatedAt text not null
+  );
+
   create index if not exists logs_flow_id_id_idx on logs(flowId, id);
   create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);
   create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
@@ -334,6 +340,13 @@ const setQueuedPromptStmt = db.query(`
   on conflict(flowId) do update set message = excluded.message, updatedAt = excluded.updatedAt
 `);
 const deleteQueuedPromptStmt = db.query("delete from queued_prompts where flowId = ?");
+const upsertLinearIssueStmt = db.query(`
+  insert into linear_issues (identifier, issueJson, updatedAt) values (?, ?, ?)
+  on conflict(identifier) do update set issueJson = excluded.issueJson, updatedAt = excluded.updatedAt
+`);
+const deleteLinearIssueStmt = db.query("delete from linear_issues where identifier = ?");
+const linearIssueByIdentifierStmt = db.query("select issueJson from linear_issues where identifier = ?");
+const allLinearIssuesStmt = db.query("select issueJson from linear_issues order by updatedAt desc");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -1212,15 +1225,30 @@ function parseLinearIssue(input: string) {
 
 function cacheLinearIssue(issue: LinearIssue | null | undefined) {
   if (!issue?.identifier) return;
+  const identifier = issue.identifier.toUpperCase();
   if (isDeletedLinearIssue(issue)) {
-    linearIssueCache.delete(issue.identifier.toUpperCase());
+    linearIssueCache.delete(identifier);
+    deleteLinearIssueStmt.run(identifier);
     return;
   }
-  linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+  linearIssueCache.set(identifier, issue);
+  upsertLinearIssueStmt.run(identifier, JSON.stringify(issue), issue.updatedAt || now());
 }
 
 function cachedLinearIssue(identifier: string) {
-  return linearIssueCache.get(identifier.toUpperCase()) ?? null;
+  const issueId = identifier.toUpperCase();
+  const cached = linearIssueCache.get(issueId);
+  if (cached) return cached;
+  const row = linearIssueByIdentifierStmt.get(issueId) as { issueJson: string } | null;
+  if (!row) return null;
+  try {
+    const issue = JSON.parse(row.issueJson) as LinearIssue;
+    if (!issue?.identifier) return null;
+    linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+    return issue;
+  } catch {
+    return null;
+  }
 }
 
 function linearAuthHeader(apiKey = getSetting("linearApiKey")) {
@@ -2809,12 +2837,6 @@ async function createBlankInEngLinearIssue() {
   return { issue, viewer: { id: data.viewer.id, name: data.viewer.name } };
 }
 
-function isDoneLinearIssue(issue: LinearIssue) {
-  const stateName = issue.state?.name.trim().toLowerCase();
-  const stateType = issue.state?.type?.trim().toLowerCase();
-  return stateName === "done" || stateType === "completed";
-}
-
 function isDeletedLinearIssue(issue: LinearIssue) {
   return Boolean(issue.archivedAt);
 }
@@ -2823,48 +2845,14 @@ function isLinearIssueNotFoundError(error: unknown) {
   return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
 
-async function listAssignedLinearIssues(apiKey?: string) {
-  const data = await linearGraphql<{
-    viewer: {
-      id: string;
-      name: string;
-      assignedIssues: {
-        nodes: LinearIssue[];
-      };
-    };
-  }>(`
-    query AssignedToMe {
-      viewer {
-        id
-        name
-        assignedIssues(first: 100) {
-          nodes {
-            id
-            identifier
-            title
-            url
-            archivedAt
-            priority
-            estimate
-            createdAt
-            updatedAt
-            state { id name color type }
-            team { key name }
-            project { name }
-            labels { nodes { name color } }
-          }
-        }
-      }
-    }
-  `, {}, apiKey);
-  for (const issue of data.viewer.assignedIssues.nodes) cacheLinearIssue(issue);
+function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false) {
   const flowsByIssue = new Map(listFlows().map((flow) => [flow.linearIssueId, flow]));
   return {
-    viewer: { id: data.viewer.id, name: data.viewer.name },
-    issues: data.viewer.assignedIssues.nodes.flatMap((issue) => {
+    viewer,
+    cached,
+    issues: issues.flatMap((issue) => {
       const flow = flowsByIssue.get(issue.identifier);
       if (isDeletedLinearIssue(issue)) return [];
-      if (isDoneLinearIssue(issue) && !flow) return [];
       return [
         {
           ...issue,
@@ -2873,6 +2861,90 @@ async function listAssignedLinearIssues(apiKey?: string) {
       ];
     }),
   };
+}
+
+function cachedLinearIssuesFromDb() {
+  const issues: LinearIssue[] = [];
+  for (const row of allLinearIssuesStmt.all() as { issueJson: string }[]) {
+    try {
+      const issue = JSON.parse(row.issueJson) as LinearIssue;
+      if (!issue?.identifier || isDeletedLinearIssue(issue)) continue;
+      linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+      issues.push(issue);
+    } catch {
+      continue;
+    }
+  }
+  return issues;
+}
+
+function cachedAssignedLinearIssuesPayload() {
+  return assignedLinearIssuesPayload(
+    { id: "", name: getSetting("linearViewerName") || "Cached Linear" },
+    cachedLinearIssuesFromDb(),
+    true,
+  );
+}
+
+function hasCachedAssignedLinearIssues() {
+  return Boolean((allLinearIssuesStmt.get() as { issueJson: string } | null)?.issueJson);
+}
+
+async function listAssignedLinearIssues(apiKey?: string) {
+  let data: {
+    viewer: {
+      id: string;
+      name: string;
+      assignedIssues: {
+        nodes: LinearIssue[];
+      };
+    };
+  };
+  try {
+    data = await linearGraphql<{
+      viewer: {
+        id: string;
+        name: string;
+        assignedIssues: {
+          nodes: LinearIssue[];
+        };
+      };
+    }>(`
+      query AssignedToMe {
+        viewer {
+          id
+          name
+          assignedIssues(first: 100) {
+            nodes {
+              id
+              identifier
+              title
+              url
+              archivedAt
+              priority
+              estimate
+              createdAt
+              updatedAt
+              state { id name color type }
+              team { key name }
+              project { name }
+              labels { nodes { name color } }
+            }
+          }
+        }
+      }
+    `, {}, apiKey);
+  } catch (error) {
+    if (!apiKey && hasCachedAssignedLinearIssues()) {
+      if (error instanceof LinearUnavailableError) logLinearUnavailable(error);
+      else console.warn(error instanceof Error ? error.message : String(error));
+      return cachedAssignedLinearIssuesPayload();
+    }
+    throw error;
+  }
+  for (const issue of data.viewer.assignedIssues.nodes) cacheLinearIssue(issue);
+  const viewer = { id: data.viewer.id, name: data.viewer.name };
+  return assignedLinearIssuesPayload(viewer, data.viewer.assignedIssues.nodes);
 }
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
@@ -3275,7 +3347,7 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/linear/issues" && request.method === "GET") {
     const assigned = await listAssignedLinearIssues();
-    setSetting("linearViewerName", assigned.viewer.name);
+    if (!assigned.cached) setSetting("linearViewerName", assigned.viewer.name);
     return json(assigned);
   }
 

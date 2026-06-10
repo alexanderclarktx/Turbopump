@@ -29,6 +29,8 @@ const TERMINAL_TRACE_INITIAL_RENDER_COUNT = 18;
 const TERMINAL_TRACE_RENDER_BATCH_SIZE = 48;
 const TERMINAL_TRACE_OPEN_DURATION_MS = 90;
 const TERMINAL_TRACE_CLOSE_DURATION_MS = 80;
+const MARKDOWN_CODE_COPY_OFFSET = 6;
+const MARKDOWN_CODE_COPY_SIZE = 24;
 const TICKET_DRAWER_MIN_SIZE = 280;
 const TICKET_DRAWER_MAX_SIZE = 320;
 const TICKET_START_AGENT_FLAME_PATH =
@@ -249,6 +251,7 @@ const state = {
   slashCommandIndex: 0,
   messageSubmitting: false,
   messageSubmittingFlowId: "",
+  creatingFlowIssueIds: new Set(),
   queuedPrompt: null,
   queuedPromptFlushTimer: 0,
   shellSubmitting: false,
@@ -667,22 +670,32 @@ function restoreTicketInputState(issueId) {
   renderHistorySearchIndicator();
 }
 
-function clearQueuedPromptDraftState(flow, message = "") {
-  const flowId = flow?.id || "";
-  const issueId = flow?.linearIssueId || linearIssueIdForFlowId(flowId);
-  if (state.queuedPrompt?.flowId === flowId) state.queuedPrompt = null;
-  if (flowId) updateFlowQueuedPrompt(flowId, null);
-  if (issueId) {
-    const inputState = ticketInputState(issueId);
-    if (!message || inputState.promptValue === message) inputState.promptValue = "";
-  }
-  if (issueId && state.activeInputIssueId === issueId) {
+function queuedPromptDraftMatches(value, message = "") {
+  if (!message) return true;
+  return value === message || value.trim() === message.trim();
+}
+
+function clearPromptDraftForIssue(issueId, message = "") {
+  if (!issueId) return;
+  const inputState = ticketInputState(issueId);
+  if (queuedPromptDraftMatches(inputState.promptValue, message)) inputState.promptValue = "";
+  if (state.activeInputIssueId === issueId) {
     const input = promptInput();
-    if (input && (!message || input.value === message)) {
+    if (input && queuedPromptDraftMatches(input.value, message)) {
       input.value = "";
       resizeMessageInput();
     }
   }
+}
+
+function clearQueuedPromptDraftState(flow, message = "") {
+  const flowId = flow?.id || "";
+  const issueId = flow?.linearIssueId || linearIssueIdForFlowId(flowId);
+  if (state.queuedPrompt?.flowId === flowId) state.queuedPrompt = null;
+  if (issueId) {
+    clearPromptDraftForIssue(issueId, message);
+  }
+  if (flowId) updateFlowQueuedPrompt(flowId, null);
 }
 
 function syncTicketInputState(issueId) {
@@ -1115,6 +1128,7 @@ function clearQueuedPrompt(options = {}) {
   const flow = selectedFlow();
   const queued = queuedPromptForFlow(flow) || state.queuedPrompt;
   state.queuedPrompt = null;
+  if (queued?.flowId) updateFlowQueuedPrompt(queued.flowId, null, { preserveQueuedPromptDraft: true });
   updateMessageInputMode();
   saveActiveTicketInputState();
   if (options.persist !== false && queued?.flowId) {
@@ -1198,7 +1212,7 @@ function handleQueuedPromptKeydown(event) {
     !event.ctrlKey &&
     !event.altKey &&
     !event.isComposing &&
-    ["a", "c"].includes(event.key.toLowerCase())
+    ["a", "c", "r"].includes(event.key.toLowerCase())
   ) {
     return false;
   }
@@ -1222,7 +1236,11 @@ function handleQueuedPromptKeydown(event) {
   }
   if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
   event.preventDefault();
-  if (event.key === "Backspace" || event.key === "Escape") {
+  if (event.key === "Escape") {
+    if (!event.repeat) clearQueuedPrompt();
+    return true;
+  }
+  if (event.key === "Backspace") {
     clearQueuedPrompt();
     return true;
   }
@@ -2252,8 +2270,9 @@ function render() {
   renderFlowPane();
 }
 
-function setFlows(flows) {
+function setFlows(flows, options = {}) {
   const nextFlows = flows || [];
+  if (!options.preserveQueuedPromptDraft) syncClearedQueuedPromptDrafts(state.flows, nextFlows);
   const nextIds = new Set(nextFlows.map((flow) => flow.id));
   for (const flow of state.flows) {
     if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
@@ -2263,6 +2282,22 @@ function setFlows(flows) {
   syncLinearTicketsWithFlows();
   scheduleQueuedPromptFlush();
   scheduleTicketLogPrefetch();
+}
+
+function queuedPromptMessage(flow) {
+  return String(flow?.queuedPrompt?.message || "");
+}
+
+function syncClearedQueuedPromptDrafts(previousFlows, nextFlows) {
+  const nextById = new Map((nextFlows || []).map((flow) => [flow.id, flow]));
+  for (const previousFlow of previousFlows || []) {
+    const message = queuedPromptMessage(previousFlow);
+    if (!message) continue;
+    const nextFlow = nextById.get(previousFlow.id);
+    if (queuedPromptMessage(nextFlow)) continue;
+    if (state.queuedPrompt?.flowId === previousFlow.id) state.queuedPrompt = null;
+    clearPromptDraftForIssue(previousFlow.linearIssueId || linearIssueIdForFlowId(previousFlow.id), message);
+  }
 }
 
 function clearFlowClientState(flowId) {
@@ -3054,13 +3089,13 @@ function upsertFlow(flow) {
   setFlows(next);
 }
 
-function updateFlowQueuedPrompt(flowId, queuedPrompt) {
+function updateFlowQueuedPrompt(flowId, queuedPrompt, options = {}) {
   if (!flowId) return;
   const index = state.flows.findIndex((item) => item.id === flowId);
   if (index === -1) return;
   const next = [...state.flows];
   next[index] = { ...next[index], queuedPrompt };
-  setFlows(next);
+  setFlows(next, options);
 }
 
 function flowUpdatedAtMs(flow) {
@@ -3167,19 +3202,19 @@ async function loadLinearTickets(options = {}) {
     state.logPrefetchedFlowCount = 0;
     if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
-    els.ticketState.textContent = formatLastUpdated();
-    els.linearState.textContent = `Linear connected: ${data.viewer.name}`;
-    els.linearState.classList.add("live");
+    els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
+    els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
+    els.linearState.classList.toggle("live", !data.cached);
     if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
     renderTickets();
     renderFlowPane();
     scheduleTicketLogPrefetch();
   } catch (error) {
-    state.linearTickets = [];
     state.linearTicketsLoaded = true;
+    syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
-    els.ticketState.textContent = error.message;
+    els.ticketState.textContent = state.linearTickets.length ? `Showing cached tickets. ${error.message}` : error.message;
     els.linearState.textContent = "Linear needs attention";
     els.linearState.classList.remove("live");
   } finally {
@@ -3430,6 +3465,14 @@ function renderLinearPriorityControl(issue) {
 
 function handleLinearDetailClick(event) {
   if (!(event.target instanceof Element)) return;
+  const copyButton = event.target.closest("[data-code-copy]");
+  if (copyButton && els.flowPane.contains(copyButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    void copyMarkdownCodeBlock(copyButton);
+    return;
+  }
+
   const priorityButton = event.target.closest("[data-linear-priority-option]");
   if (priorityButton && els.flowPane.contains(priorityButton)) {
     event.preventDefault();
@@ -3806,6 +3849,10 @@ function ticketAgentWorking(ticket) {
   );
 }
 
+function ticketFlowCreating(ticket) {
+  return Boolean(ticket?.identifier && state.creatingFlowIssueIds.has(ticket.identifier));
+}
+
 function ticketShellRunning(ticket) {
   return flowShellLive(flowForTicket(ticket));
 }
@@ -3815,6 +3862,7 @@ function updateTicketCardState(card) {
   const active = card.dataset.issue === state.selectedLinearIssueId;
   card.classList.toggle("active", active);
   card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+  card.classList.toggle("creating-flow", ticketFlowCreating(ticket));
   card.classList.toggle("shell-command-active", ticketShellRunning(ticket));
   card.classList.toggle("agent-turn-notified", !active && state.notifiedLinearIssueIds.has(card.dataset.issue));
   card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
@@ -3887,9 +3935,11 @@ function animateTicketSwitch() {
 
 function renderTicketCard(ticket) {
   const card = document.createElement("article");
+  const creatingFlow = ticketFlowCreating(ticket);
   card.className = "ticket-card";
   card.classList.toggle("in-flow", Boolean(ticket.flowId));
-  card.classList.toggle("can-start-agent", !ticket.flowId);
+  card.classList.toggle("can-start-agent", !ticket.flowId && !creatingFlow);
+  card.classList.toggle("creating-flow", creatingFlow);
   card.tabIndex = 0;
   card.role = "button";
   card.draggable = true;
@@ -3905,7 +3955,9 @@ function renderTicketCard(ticket) {
     ${
       ticket.flowId
         ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow" title="In flow"></div>`
-        : renderTicketStartAgentButton(ticket)
+        : creatingFlow
+          ? renderTicketCreatingFlowIndicator(ticket)
+          : renderTicketStartAgentButton(ticket)
     }
   `;
   updateTicketCardState(card);
@@ -3952,6 +4004,12 @@ function renderTicketStartAgentButton(ticket) {
       </path>
     </svg>
   </button>`;
+}
+
+function renderTicketCreatingFlowIndicator(ticket) {
+  return `<div class="ticket-flow-corner ticket-flow-creating" role="status" aria-label="Creating flow for ${escapeAttribute(ticket.identifier)}">
+    <span class="flow-create-spinner" aria-hidden="true"></span>
+  </div>`;
 }
 
 function updateTicketStartAgentAnimation(button) {
@@ -4098,7 +4156,11 @@ function renderFlowPane(options = {}) {
     terminal._flowLogFlowId = "";
     terminal._flowLogSignature = "";
     terminal._flowLogRenderedKeys = null;
-    terminal.textContent = "No agent session yet.";
+    if (ticketFlowCreating(ticket)) {
+      terminal.innerHTML = '<div class="flow-creating-message" role="status"><span class="flow-create-spinner" aria-hidden="true"></span><span>Creating worktree.</span></div>';
+    } else {
+      terminal.textContent = "No agent session yet.";
+    }
   }
   if (!options.light) void loadLinearDetail(issueId);
   scheduleQueuedPromptFlush();
@@ -4276,6 +4338,7 @@ function renderLinearDetail(context, options = {}) {
       }
     </section>
   `;
+  updateMarkdownCodeCopyPositions(container);
 }
 
 async function loadLinearDetail(identifier) {
@@ -4308,9 +4371,14 @@ async function loadLinearDetail(identifier) {
 }
 
 async function createFlowFromTicket(ticket, options = {}) {
-  let data;
+  const issueId = ticket?.identifier || "";
+  if (issueId) {
+    state.creatingFlowIssueIds.add(issueId);
+    renderTickets();
+    if (issueId === state.selectedLinearIssueId) renderFlowPane();
+  }
   try {
-    data = await api("/api/flows", {
+    const data = await api("/api/flows", {
       method: "POST",
       body: JSON.stringify({
         issue: ticket.identifier,
@@ -4320,17 +4388,23 @@ async function createFlowFromTicket(ticket, options = {}) {
         state: ticket.state || null,
       }),
     });
+    upsertFlow(data.flow);
+    render();
+    await loadLogs(data.flow.id);
+    if (options.select !== false) await selectFlow(data.flow.id);
+    return data.flow;
   } catch (error) {
     if (isGitCloneError(error)) {
       toast(error.message, { kind: "error" });
     }
     throw error;
+  } finally {
+    if (issueId) {
+      state.creatingFlowIssueIds.delete(issueId);
+      renderTickets();
+      if (issueId === state.selectedLinearIssueId) renderFlowPane();
+    }
   }
-  upsertFlow(data.flow);
-  render();
-  await loadLogs(data.flow.id);
-  if (options.select !== false) await selectFlow(data.flow.id);
-  return data.flow;
 }
 
 async function ensureSelectedFlow() {
@@ -4849,6 +4923,28 @@ function latestTerminalContentGroup(groups) {
   return null;
 }
 
+function terminalContentGroups(groups, result = []) {
+  for (const group of groups || []) {
+    if (group.source === "agent:trace-group") terminalContentGroups(group.children || [], result);
+    else result.push(group);
+  }
+  return result;
+}
+
+function markPendingTerminalTurnGroups(groups, flow) {
+  if (!flowAgentRunning(flow) || state.messageSubmittingFlowId === flow?.id) return groups;
+  const contentGroups = terminalContentGroups(groups);
+  let lastUserIndex = -1;
+  for (let index = 0; index < contentGroups.length; index += 1) {
+    if (isUserLogSource(contentGroups[index].source)) lastUserIndex = index;
+  }
+  if (lastUserIndex < 0) return groups;
+  for (let index = lastUserIndex + 1; index < contentGroups.length; index += 1) {
+    if (isLiveAgentTextSource(contentGroups[index].source)) contentGroups[index].turnPending = true;
+  }
+  return groups;
+}
+
 function markLiveTerminalGroup(groups, flow) {
   if (!flowAgentRunning(flow) || state.messageSubmittingFlowId === flow?.id) return groups;
   const group = latestTerminalContentGroup(groups);
@@ -4952,7 +5048,10 @@ function terminalGroups(logs, flow) {
     appendTerminalGroup(groups, log, { forceNew: forceTerminalGroupBoundary });
     forceTerminalGroupBoundary = false;
   }
-  return markLiveTerminalGroup(mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups)), flow);
+  const visibleGroups = mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups));
+  markPendingTerminalTurnGroups(visibleGroups, flow);
+  markLiveTerminalGroup(visibleGroups, flow);
+  return visibleGroups;
 }
 
 function agentPaneLogs(logs, flow) {
@@ -5208,13 +5307,18 @@ function renderTerminalAttachedImages(images) {
   return `<div class="terminal-attached-images">${images.map((image) => renderAgentImageChip(image)).join("")}</div>`;
 }
 
-function renderTerminalMarkdownContent(message) {
+function renderTerminalMarkdownContent(message, options = {}) {
   const parsed = splitTerminalAttachedImages(message);
-  return `${renderLinearMarkdown(parsed.message, "", { images: false, links: true, compactBlankLines: true })}${renderTerminalAttachedImages(parsed.images)}`;
+  return `${renderLinearMarkdown(parsed.message, "", {
+    images: false,
+    links: true,
+    compactBlankLines: true,
+    copyCode: options.copyCode !== false,
+  })}${renderTerminalAttachedImages(parsed.images)}`;
 }
 
-function renderTerminalMarkdownOutput(message) {
-  return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message)}</div>`;
+function renderTerminalMarkdownOutput(message, options = {}) {
+  return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message, options)}</div>`;
 }
 
 function renderTerminalStreamingTextOutput(message) {
@@ -5222,6 +5326,7 @@ function renderTerminalStreamingTextOutput(message) {
     images: false,
     links: true,
     compactBlankLines: true,
+    copyCode: false,
   })}</div>`;
 }
 
@@ -5443,6 +5548,7 @@ function toggleTerminalMarkdownOutput(button) {
 
 function highlightCodeBlocks(root) {
   window.Prism?.highlightAllUnder?.(root);
+  updateMarkdownCodeCopyPositions(root);
 }
 
 async function copyTextToClipboard(text) {
@@ -5469,6 +5575,48 @@ async function copyAgentBranchName(branchName) {
   } catch {
     toast("Could not copy branch", { kind: "error" });
   }
+}
+
+async function copyMarkdownCodeBlock(button) {
+  const code = button.closest(".markdown-code-block")?.querySelector("code")?.textContent || "";
+  if (!code) return;
+  try {
+    await copyTextToClipboard(code);
+  } catch {
+    toast("Could not copy code", { kind: "error" });
+  }
+}
+
+function updateMarkdownCodeCopyPositions(root = els.flowPane) {
+  for (const block of root.querySelectorAll?.(".markdown-code-block") || []) {
+    const button = block.querySelector(".markdown-code-copy");
+    if (!button) continue;
+    const blockRect = block.getBoundingClientRect();
+    const clipTop = markdownCodeBlockClipTop(block);
+    const rawTop = Math.max(blockRect.top, clipTop) - blockRect.top + MARKDOWN_CODE_COPY_OFFSET;
+    const maxTop = Math.max(MARKDOWN_CODE_COPY_OFFSET, blockRect.height - MARKDOWN_CODE_COPY_SIZE - MARKDOWN_CODE_COPY_OFFSET);
+    const top = Math.min(Math.max(MARKDOWN_CODE_COPY_OFFSET, rawTop), maxTop);
+    button.style.setProperty("--markdown-code-copy-top", `${top}px`);
+  }
+}
+
+function markdownCodeBlockClipTop(block) {
+  let clipTop = 0;
+  for (let node = block.parentElement; node && node !== document.body; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (!/(auto|scroll|hidden|clip)/.test(`${style.overflow}${style.overflowY}`)) continue;
+    clipTop = Math.max(clipTop, node.getBoundingClientRect().top);
+  }
+  return clipTop;
+}
+
+let markdownCodeCopyPositionFrame = 0;
+function scheduleMarkdownCodeCopyPositionUpdate(root = els.flowPane) {
+  if (markdownCodeCopyPositionFrame) return;
+  markdownCodeCopyPositionFrame = requestAnimationFrame(() => {
+    markdownCodeCopyPositionFrame = 0;
+    updateMarkdownCodeCopyPositions(root);
+  });
 }
 
 function terminalMessageMaxLines(root) {
@@ -5574,7 +5722,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
   label.textContent = meta.label;
 
   let markdownToggle = null;
-  if (!group.liveStreaming && usesTerminalMarkdownToggle(group.source)) {
+  if (!group.liveStreaming && !group.turnPending && usesTerminalMarkdownToggle(group.source)) {
     markdownToggle = document.createElement("button");
     markdownToggle.type = "button";
     markdownToggle.className = "terminal-markdown-toggle";
@@ -5604,7 +5752,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
       body.innerHTML = renderTerminalStreamingTextOutput(message);
       highlightCodeBlocks(body);
     } else {
-      body.innerHTML = renderTerminalMarkdownOutput(message);
+      body.innerHTML = renderTerminalMarkdownOutput(message, { copyCode: !group.turnPending });
       highlightCodeBlocks(body);
     }
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
@@ -6571,6 +6719,8 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", 
 els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 els.flowPane.addEventListener("click", handleLinearDetailClick);
+els.flowPane.addEventListener("scroll", () => scheduleMarkdownCodeCopyPositionUpdate(), { capture: true, passive: true });
+window.addEventListener("resize", () => scheduleMarkdownCodeCopyPositionUpdate(), { passive: true });
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
