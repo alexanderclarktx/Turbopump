@@ -1861,6 +1861,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flashBlockedInput(input)");
     expect(app).toContain("async function uploadAgentImages(files)");
     expect(app).toContain("function eventHasDraggedFiles(event)");
+    expect(app).toContain("function pastedImageFiles(event)");
+    expect(app).toContain('event.clipboardData?.files');
+    expect(app).toContain('event.clipboardData?.items');
     expect(app).toContain("function eventTargetsPromptInputPane(event)");
     expect(app).toContain('event.target?.closest?.(".prompt-input-pane")');
     expect(app).toContain("function focusPromptInputForImageDrag(event)");
@@ -1873,6 +1876,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('const agentMessage = agentMessageWithImages(message || "Use the attached image context.", submittedImages);');
     expect(app).toContain("state.pendingAgentImages = [];");
     expect(app).toContain("state.pendingAgentImages = [...submittedImages, ...state.pendingAgentImages];");
+    expect(app).toContain('promptInput().addEventListener("paste"');
+    expect(app).toContain("const files = pastedImageFiles(event);");
+    expect(app).toContain("if (!files.length) return;\n  event.preventDefault();\n  void uploadAgentImages(files);");
     expect(app).toContain('document.addEventListener("drop"');
     expect(app).toContain("focusPromptInputForImageDrag(event);\n  setAgentImageDragActive(true);");
     expect(css).not.toContain(".agent-image-drop-overlay");
@@ -2740,6 +2746,8 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("create table if not exists queued_prompts");
     expect(server).toContain("function queuedPromptForFlow(flowId: string)");
     expect(server).toContain("function setQueuedPrompt(flowId: string, message: string)");
+    expect(server).toContain("const message = String(value ?? \"\");");
+    expect(server).toContain("if (!message.trim()) throw new Error(\"Queued message cannot be blank.\");");
     expect(server).toContain("async function startQueuedPromptIfReady(flowId: string)");
     expect(server).toContain("async function steerQueuedPrompt(flow: Flow)");
     expect(server).toContain("function isCompactSlashCommand(message: string)");

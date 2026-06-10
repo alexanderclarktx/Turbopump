@@ -617,8 +617,8 @@ function queuedPromptForFlow(flowId: string) {
 }
 
 function normalizeQueuedPromptMessage(value: unknown) {
-  const message = String(value ?? "").trim();
-  if (!message) throw new Error("Queued message cannot be blank.");
+  const message = String(value ?? "");
+  if (!message.trim()) throw new Error("Queued message cannot be blank.");
   return message;
 }
 

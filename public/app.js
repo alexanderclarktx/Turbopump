@@ -4214,6 +4214,15 @@ function droppedImageFiles(event) {
     .filter(Boolean);
 }
 
+function pastedImageFiles(event) {
+  const files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (files.length) return files;
+  return [...(event.clipboardData?.items || [])]
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
 function eventHasDraggedFiles(event) {
   const types = [...(event.dataTransfer?.types || [])];
   if (types.includes("Files")) return true;
@@ -6776,6 +6785,13 @@ promptInput().addEventListener("input", () => {
 
 promptInput().addEventListener("beforeinput", (event) => {
   handleQueuedPromptBeforeInput(event);
+});
+
+promptInput().addEventListener("paste", (event) => {
+  const files = pastedImageFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  void uploadAgentImages(files);
 });
 
 shellInput().addEventListener("input", () => {
