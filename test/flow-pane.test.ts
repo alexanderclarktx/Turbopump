@@ -6,8 +6,8 @@ const css = await Bun.file("public/styles.css").text();
 const server = await Bun.file("src/server.ts").text();
 const packageJson = await Bun.file("package.json").json();
 const markdown = await Bun.file("public/linear-markdown.js").text();
-const readyStatusIcon = await Bun.file("public/status-icons/ready.svg").text();
-const completedStatusIcon = await Bun.file("public/status-icons/completed.svg").text();
+const linearStartedStatusIcon = await Bun.file("public/linear-status-icons/started.svg").text();
+const linearDoneStatusIcon = await Bun.file("public/linear-status-icons/done.svg").text();
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
@@ -411,7 +411,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("checkoutLoadFrame = requestAnimationFrame");
     expect(app).toContain("state.checkoutsLoading = true;");
     expect(app).toContain("function renderLinearStatusIcon(status)");
-    expect(app).toContain('<img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />');
+    expect(app).toContain('if (key === "in-progress" || key === "in-eng" || key === "working" || key === "started") return "started";');
+    expect(app).toContain('<span class="linear-status-icon-glyph" aria-hidden="true"></span>');
     expect(app).toContain('["Linear", renderLinearStatusIcon(checkout.linearStatus)]');
     expect(app).not.toContain('["Phase", checkout.flowPhase || "No flow"]');
     expect(app).toContain("function deleteCheckout(name)");
@@ -425,11 +426,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('if (message.event === "checkouts")');
     expect(css).toContain(".checkout-list");
     expect(css).toContain(".linear-status-icon");
-    expect(css).toContain(".linear-status-icon img");
-    expect(readyStatusIcon).toContain('<circle cx="10" cy="10" r="8" fill="#f2c200" />');
-    expect(readyStatusIcon).toContain('<circle cx="10" cy="10" r="5.4" fill="#ffffff" />');
-    expect(completedStatusIcon).toContain('<circle cx="10" cy="10" r="8" fill="#2563eb" />');
-    expect(completedStatusIcon).toContain('stroke="#ffffff"');
+    expect(css).toContain(".linear-status-icon-glyph");
+    expect(css).toContain('url("/linear-status-icons/started.svg")');
+    expect(css).toContain('url("/linear-status-icons/done.svg")');
+    expect(linearStartedStatusIcon).toContain("M8 1a7 7 0 1 1 0 14");
+    expect(linearDoneStatusIcon).toContain("M8 1a7 7 0 1 0 0 14");
     expect(css).toContain(".checkout-card:hover .checkout-delete");
     expect(css).toContain(".checkout-spinner");
     expect(css).toContain("@keyframes checkout-spinner");
@@ -974,6 +975,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('return ticket?.state?.id || "";');
     expect(app).toContain("function linearStatusOptions(issue = null, fallbackStatus = null)");
     expect(app).toContain("function renderLinearStatusControl(issue, statusName)");
+    expect(app).toContain("function renderLinearStatusPillContent(status)");
+    expect(app).toContain('<span>${escapeHtml(label)}</span><span class="linear-status-icon linear-status-icon-${kind}" aria-hidden="true">');
+    expect(app).toContain("${renderLinearStatusPillContent(option.status)}</button>");
+    expect(app).toContain("${renderLinearStatusPillContent(statusName)}</button>");
     expect(app).toContain('data-linear-status-pill="true"');
     expect(app).toContain('data-linear-status-option="true"');
     expect(app).toContain('class="linear-status-options"');
@@ -982,14 +987,16 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("focusLinearTicketCard(issueId);");
     expect(css).toContain(".linear-status-control:hover .linear-status-options");
     expect(css).toContain(".linear-status-control:focus-within .linear-status-options");
+    expect(css).toContain(".linear-status-control {\n  margin: -6px -10px;\n  padding: 6px 10px;\n}");
     expect(css).toContain(".linear-status-pill,\n.linear-status-option,\n.linear-priority-pill,\n.linear-priority-option,\n.github-ci-pill {");
     expect(css).toContain(".linear-meta > span:not(.linear-status-control):not(.linear-priority-control)");
     expect(css).toContain("padding: 2px 7px;");
     expect(css).toContain("body.theme-dark .linear-status-pill,\nbody.theme-dark .linear-status-option,\nbody.theme-dark .linear-priority-pill,\nbody.theme-dark .linear-priority-option,\nbody.theme-dark .github-ci-pill {\n  background: #151a20;\n  color: var(--muted);\n}");
     expect(css).toContain("font-weight: 400;");
+    expect(css).toContain(".linear-status-pill .linear-status-icon,\n.linear-status-option .linear-status-icon");
   });
 
-  test("shows Linear ticket priority icon before the project at the bottom left", () => {
+  test("shows Linear ticket status and priority icons before the project at the bottom left", () => {
     expect(app).toContain("function renderLinearPriorityIcon(priority, options = {})");
     expect(app).toContain("function linearPriorityBarCount(priority)");
     expect(app).toContain("if (value === 1) return 3;");
@@ -997,12 +1004,16 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("const urgent = Number(priority) === 1;");
     expect(app).toContain('<span class="ticket-priority${urgent ? " urgent" : ""}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">');
     expect(app).toContain('<svg viewBox="0 0 16 14" aria-hidden="true" focusable="false">');
+    expect(app).toContain("${renderLinearStatusIcon(linearStatusName(ticket))}\n      ${renderLinearPriorityIcon(ticket.priority)}");
     expect(app).toContain("${renderLinearPriorityIcon(ticket.priority)}");
     expect(app).not.toContain('const priorityName = ticket.priority ? `P${ticket.priority}` : "";');
     expect(app).not.toContain('<span class="ticket-priority">${escapeHtml(priorityName)}</span>');
-    expect(app.indexOf('class="ticket-priority"')).toBeLessThan(app.indexOf('class="ticket-project"'));
+    expect(app.indexOf("${renderLinearStatusIcon(linearStatusName(ticket))}")).toBeLessThan(app.indexOf("${renderLinearPriorityIcon(ticket.priority)}"));
+    expect(app.indexOf("${renderLinearPriorityIcon(ticket.priority)}")).toBeLessThan(app.indexOf('class="ticket-project"'));
     expect(css).toContain(".ticket-meta {\n  grid-column: 1 / -1;\n  grid-row: 3;\n  display: flex;");
     expect(css).toContain("justify-content: flex-start;");
+    expect(css).toContain(".ticket-meta .linear-status-icon {\n  width: 13px;");
+    expect(css).toContain(".ticket-meta .linear-status-icon-glyph {\n  width: 13px;");
     expect(css).toContain(".ticket-priority {\n  display: inline-grid;");
     expect(css).toContain(".ticket-priority.urgent {\n  color: var(--danger);\n}");
     expect(css).toContain(".ticket-priority svg");
@@ -1704,7 +1715,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("setInterval(() => void loadGithub");
     expect(css).toContain(".github-ci-pill-success .github-ci-dot");
     expect(css).toContain(".github-ci-pill-pending .github-ci-dot");
-    expect(css).toContain(".github-ci-pill-unknown .github-ci-dot {\n  background: #d97706;\n}");
+    expect(css).toContain(".github-ci-pill-unknown .github-ci-dot {\n  background: #fbbf24;\n}");
     expect(css).toContain("body.theme-dark .github-ci-pill-pending .github-ci-dot,\nbody.theme-dark .github-ci-pill-unknown .github-ci-dot {\n  background: #fbbf24;\n}");
     expect(css).toContain(".github-ci-pill-failure .github-ci-dot {\n  background: #ef4444;\n}");
   });
@@ -1872,9 +1883,15 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flow.id)}/context-images`,');
     expect(app).toContain("function agentMessageWithImages(message, images = state.pendingAgentImages)");
     expect(app).toContain('const name = image.name ? `${image.name}: ` : "";');
+    expect(app).toContain("const queuedImages = [...state.pendingAgentImages];");
+    expect(app).toContain(
+      'const queuedMessage = agentMessageWithImages(\n    input.value.trim() || (queuedImages.length ? "Use the attached image context." : ""),\n    queuedImages,\n  );',
+    );
+    expect(app).toContain("message: queuedMessage,");
     expect(app).toContain("const submittedImages = [...state.pendingAgentImages];");
     expect(app).toContain('const agentMessage = agentMessageWithImages(message || "Use the attached image context.", submittedImages);');
     expect(app).toContain("state.pendingAgentImages = [];");
+    expect(app).toContain("state.pendingAgentImages = [...queuedImages, ...state.pendingAgentImages];");
     expect(app).toContain("state.pendingAgentImages = [...submittedImages, ...state.pendingAgentImages];");
     expect(app).toContain('promptInput().addEventListener("paste"');
     expect(app).toContain("const files = pastedImageFiles(event);");

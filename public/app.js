@@ -438,12 +438,12 @@ function renderGithubCiPill(flow) {
 
 function linearStatusIconKind(status) {
   const key = linearStatusKey(status);
-  if (key === "canceled" || key === "cancelled") return "canceled";
-  if (key === "done" || key === "completed") return "completed";
-  if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "reviewing";
-  if (key === "in-eng" || key === "working" || key === "started") return "started";
-  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "ready";
-  return "unstarted";
+  if (key === "triage") return "triage";
+  if (key === "done" || key === "completed") return "done";
+  if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "review";
+  if (key === "in-progress" || key === "in-eng" || key === "working" || key === "started") return "started";
+  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "backlog";
+  return "todo";
 }
 
 function renderLinearStatusIcon(status) {
@@ -451,9 +451,17 @@ function renderLinearStatusIcon(status) {
   const kind = linearStatusIconKind(label);
   return `
     <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
-      <img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />
+      <span class="linear-status-icon-glyph" aria-hidden="true"></span>
     </span>
   `;
+}
+
+function renderLinearStatusPillContent(status) {
+  const label = status || "No status";
+  const kind = linearStatusIconKind(label);
+  return `<span>${escapeHtml(label)}</span><span class="linear-status-icon linear-status-icon-${kind}" aria-hidden="true">
+    <span class="linear-status-icon-glyph" aria-hidden="true"></span>
+  </span>`;
 }
 
 function linearStatusKey(status) {
@@ -1143,11 +1151,18 @@ function clearQueuedPrompt(options = {}) {
 async function queuePromptMessage(input) {
   const flow = selectedFlow();
   if (!flow?.id || promptQueuedForFlow(flow) || !input) return false;
+  const queuedImages = [...state.pendingAgentImages];
+  const queuedMessage = agentMessageWithImages(
+    input.value.trim() || (queuedImages.length ? "Use the attached image context." : ""),
+    queuedImages,
+  );
+  if (!queuedMessage.trim()) return false;
   const queued = {
     flowId: flow.id,
-    message: input.value,
+    message: queuedMessage,
   };
   state.queuedPrompt = queued;
+  state.pendingAgentImages = [];
   cancelHistorySearch();
   resetInputHistoryNavigation();
   updateMessageInputMode();
@@ -1163,6 +1178,7 @@ async function queuePromptMessage(input) {
     if (state.queuedPrompt === queued) state.queuedPrompt = null;
     if (data.flow) upsertFlow(data.flow);
   } catch (error) {
+    state.pendingAgentImages = [...queuedImages, ...state.pendingAgentImages];
     if (state.queuedPrompt === queued) clearQueuedPrompt({ persist: false });
     throw error;
   }
@@ -3434,11 +3450,11 @@ function renderLinearStatusControl(issue, statusName) {
   const optionButtons = options
     .map(
       (option, index) =>
-        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${escapeHtml(option.status)}</button>`,
+        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${renderLinearStatusPillContent(option.status)}</button>`,
     )
     .join("");
   return `<span class="linear-status-control">
-    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${escapeHtml(statusName)}</button>
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName)}</button>
     ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
   </span>`;
 }
@@ -3951,6 +3967,7 @@ function renderTicketCard(ticket) {
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
+      ${renderLinearStatusIcon(linearStatusName(ticket))}
       ${renderLinearPriorityIcon(ticket.priority)}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>

@@ -1227,10 +1227,54 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   vertical-align: -4px;
 }
 
-.linear-status-icon img {
+.linear-status-icon-glyph {
+  display: block;
   width: 18px;
   height: 18px;
-  display: block;
+  background: currentColor;
+  mask: var(--linear-status-icon-url) center / contain no-repeat;
+  -webkit-mask: var(--linear-status-icon-url) center / contain no-repeat;
+}
+
+.linear-status-icon-backlog {
+  --linear-status-icon-url: url("/linear-status-icons/backlog.svg");
+}
+
+.linear-status-icon-done {
+  --linear-status-icon-url: url("/linear-status-icons/done.svg");
+  color: var(--accent);
+}
+
+.linear-status-icon-review {
+  --linear-status-icon-url: url("/linear-status-icons/review.svg");
+  color: #44c45a;
+}
+
+.linear-status-icon-started {
+  --linear-status-icon-url: url("/linear-status-icons/started.svg");
+  color: #d4a600;
+}
+
+.linear-status-icon-todo {
+  --linear-status-icon-url: url("/linear-status-icons/todo.svg");
+}
+
+.linear-status-icon-triage {
+  --linear-status-icon-url: url("/linear-status-icons/triage.svg");
+  color: var(--accent);
+}
+
+.linear-status-pill .linear-status-icon,
+.linear-status-option .linear-status-icon {
+  width: 13px;
+  height: 13px;
+  vertical-align: 0;
+}
+
+.linear-status-pill .linear-status-icon-glyph,
+.linear-status-option .linear-status-icon-glyph {
+  width: 13px;
+  height: 13px;
 }
 
 .checkout-delete {
@@ -1946,6 +1990,18 @@ body.theme-dark .ticket-flow-start:focus-visible {
   stroke-width: 0;
 }
 
+.ticket-meta .linear-status-icon {
+  width: 13px;
+  min-width: 13px;
+  height: 13px;
+  vertical-align: 0;
+}
+
+.ticket-meta .linear-status-icon-glyph {
+  width: 13px;
+  height: 13px;
+}
+
 .icon-button {
   display: inline-grid;
   place-items: center;
@@ -2372,6 +2428,11 @@ body.flow-resizing .flow-content {
   gap: 6px;
 }
 
+.linear-status-control {
+  margin: -6px -10px;
+  padding: 6px 10px;
+}
+
 .linear-status-pill,
 .linear-status-option,
 .linear-priority-pill,
@@ -2432,7 +2493,7 @@ body.theme-dark .github-ci-pill {
 
 .github-ci-pill-pending .github-ci-dot,
 .github-ci-pill-unknown .github-ci-dot {
-  background: #d97706;
+  background: #fbbf24;
 }
 
 body.theme-dark .github-ci-pill-pending .github-ci-dot,
