@@ -141,8 +141,11 @@ describe("renderLinearMarkdown", () => {
   test("renders Markdown tables", () => {
     const html = renderLinearMarkdown("confirmed\n| before | after |\n| -- | -- |\n| one | **two** |");
 
-    expect(html).toContain("confirmed<table>");
-    expect(html).toContain("<thead><tr><th>before</th><th>after</th></tr></thead>");
+    expect(html).toContain('confirmed<table class="markdown-resizable-table">');
+    expect(html).toContain('<colgroup><col data-markdown-column-index="0"><col data-markdown-column-index="1"></colgroup>');
+    expect(html).toContain(
+      '<thead><tr><th data-markdown-column-index="0"><span class="markdown-table-header-content">before</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column" title="Resize column"></button></th><th data-markdown-column-index="1"><span class="markdown-table-header-content">after</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column" title="Resize column"></button></th></tr></thead>',
+    );
     expect(html).toContain("<tbody><tr><td>one</td><td><strong>two</strong></td></tr></tbody>");
     expect(html).not.toContain("| before | after |");
     expect(html).not.toContain("| -- | -- |");
@@ -152,7 +155,7 @@ describe("renderLinearMarkdown", () => {
     const url = "https://uploads.linear.app/workspace/file/before.png";
     const html = renderLinearMarkdown(`| before | after |\n| -- | -- |\n| ![Before](${url}) | done |`);
 
-    expect(html).toContain("<table>");
+    expect(html).toContain('<table class="markdown-resizable-table">');
     expect(html).toContain("<td><figure class=\"linear-image\">");
     expect(html).toContain(`src="/api/linear/attachment?url=${encodeURIComponent(url)}"`);
     expect(html).toContain("<td>done</td>");
@@ -207,10 +210,27 @@ describe("renderLinearMarkdown", () => {
   test("renders fenced code blocks while escaping HTML", () => {
     const html = renderLinearMarkdown("```ts\nconst apple = `<red>`;\n```");
 
-    expect(html).toContain('<pre class="markdown-code-block language-typescript" data-language="typescript"><code class="language-typescript">');
+    expect(html).toContain('<pre class="markdown-code-block language-typescript" data-language="typescript">');
+    expect(html).toContain('class="markdown-code-copy"');
+    expect(html).toContain('data-code-copy="true"');
+    expect(html).toContain('aria-label="Copy code"');
+    expect(html).toContain("<svg ");
+    expect(html).toContain('<rect x="6.25" y="2.25" width="7.25" height="7.25" rx="1.4"/>');
+    expect(html).toContain('<rect x="2.5" y="6" width="7.25" height="7.25" rx="1.4"/>');
+    expect(html).not.toContain(">Copy code</button>");
+    expect(html).toContain('<code class="language-typescript">');
     expect(html).toContain("const apple = `&lt;red&gt;`;");
     expect(html).toContain("</code></pre>");
     expect(html).not.toContain("<red>");
+  });
+
+  test("can render fenced code blocks without copy controls", () => {
+    const html = renderLinearMarkdown("```ts\nconst apple = 1;\n```", "", { copyCode: false });
+
+    expect(html).toContain('<pre class="markdown-code-block language-typescript" data-language="typescript">');
+    expect(html).not.toContain('class="markdown-code-copy"');
+    expect(html).not.toContain('data-code-copy="true"');
+    expect(html).toContain('<code class="language-typescript">const apple = 1;</code></pre>');
   });
 
   test("renders fenced code blocks with common info strings", () => {
@@ -218,9 +238,11 @@ describe("renderLinearMarkdown", () => {
       "```text\nError calling Ando MCP tool ...\n```\n\n```json\n{\"error\":{\"code\":-32003}}\n```",
     );
 
-    expect(html).toContain('<pre class="markdown-code-block"><code>');
+    expect(html).toContain('<pre class="markdown-code-block"><button class="markdown-code-copy"');
+    expect(html).toContain("<code>Error calling Ando MCP tool ...");
     expect(html).toContain("Error calling Ando MCP tool ...");
-    expect(html).toContain('<pre class="markdown-code-block language-json" data-language="json"><code class="language-json">');
+    expect(html).toContain('<pre class="markdown-code-block language-json" data-language="json"><button class="markdown-code-copy"');
+    expect(html).toContain('<code class="language-json">');
     expect(html).toContain('{"error":{"code":-32003}}');
     expect(html).not.toContain("```text");
     expect(html).not.toContain("```json");
@@ -231,7 +253,8 @@ describe("renderLinearMarkdown", () => {
       "1. initialize\n2. notifications/initialized\n3. tools/call\n4. DELETE session in finally\nIf tools/call gets 400, execute wraps it as:\n```text\nError calling Ando MCP tool ...\n```\n\nThe wrapper can retry.",
     );
 
-    expect(html).toContain('<li>DELETE session in finally<br>If tools/call gets 400, execute wraps it as:<pre class="markdown-code-block"><code>Error calling Ando MCP tool ...</code></pre></li>');
+    expect(html).toContain('<li>DELETE session in finally<br>If tools/call gets 400, execute wraps it as:<pre class="markdown-code-block"><button class="markdown-code-copy"');
+    expect(html).toContain("<code>Error calling Ando MCP tool ...</code></pre></li>");
     expect(html).toContain("</ol>The wrapper can retry.");
     expect(html).not.toContain("```text");
   });

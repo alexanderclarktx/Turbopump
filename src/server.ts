@@ -26,6 +26,10 @@ type Flow = {
   checkoutPath: string;
   branchName: string;
   prUrl: string;
+  githubCiStatus: GithubCiState;
+  githubCiCheckedAt: string;
+  githubCiTargetUrl: string;
+  githubCiDescription: string;
   baseSha: string;
   agentStatus: string;
   agentModel: string;
@@ -104,6 +108,8 @@ type LinearWorkflowState = {
   type?: string;
   team?: { id: string; key: string; name: string } | null;
 };
+
+type GithubCiState = "success" | "pending" | "failure" | "unknown";
 
 const rootDir = process.cwd();
 const agentHeartbeatSweepIntervalMs = 5000;
@@ -186,6 +192,10 @@ db.exec(`
     checkoutPath text not null,
     branchName text not null,
     prUrl text not null default '',
+    githubCiStatus text not null default 'unknown',
+    githubCiCheckedAt text not null default '',
+    githubCiTargetUrl text not null default '',
+    githubCiDescription text not null default '',
     baseSha text not null default '',
     agentStatus text not null default 'idle',
     agentModel text not null default '',
@@ -219,6 +229,12 @@ db.exec(`
     updatedAt text not null
   );
 
+  create table if not exists linear_issues (
+    identifier text primary key,
+    issueJson text not null,
+    updatedAt text not null
+  );
+
   create index if not exists logs_flow_id_id_idx on logs(flowId, id);
   create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);
   create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
@@ -230,6 +246,10 @@ tryMigration("alter table flows add column agentServiceTier text not null defaul
 tryMigration("alter table flows add column agentContextTokensUsed integer not null default 0");
 tryMigration("alter table flows add column agentContextWindow integer not null default 0");
 tryMigration("alter table flows add column prUrl text not null default ''");
+tryMigration("alter table flows add column githubCiStatus text not null default 'unknown'");
+tryMigration("alter table flows add column githubCiCheckedAt text not null default ''");
+tryMigration("alter table flows add column githubCiTargetUrl text not null default ''");
+tryMigration("alter table flows add column githubCiDescription text not null default ''");
 tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWindow > 0 and agentContextTokensUsed > agentContextWindow");
 
 const clients = new Set<ServerWebSocket>();
@@ -238,6 +258,8 @@ const agentRuntimeRecoveries = new Map<string, Promise<RuntimeProcess | null>>()
 const shellProcesses = new Map<string, RuntimeProcess>();
 const linearIssueCache = new Map<string, LinearIssue>();
 const deletedFlowIds = new Set<string>();
+let selectedGithubCiFlowId = "";
+let githubCiPolling = false;
 let warmedRepoPulling = false;
 let serveProcess: RuntimeProcess | null = null;
 
@@ -250,6 +272,7 @@ type RuntimeProcess = {
   stdoutBuffer?: string;
   threadId?: string;
   activeTurnId?: string;
+  activeTurnTraceAfterLogId?: number;
   compacting?: boolean;
   compactingStartedAt?: number;
   compactionPromptLogId?: number;
@@ -317,6 +340,13 @@ const setQueuedPromptStmt = db.query(`
   on conflict(flowId) do update set message = excluded.message, updatedAt = excluded.updatedAt
 `);
 const deleteQueuedPromptStmt = db.query("delete from queued_prompts where flowId = ?");
+const upsertLinearIssueStmt = db.query(`
+  insert into linear_issues (identifier, issueJson, updatedAt) values (?, ?, ?)
+  on conflict(identifier) do update set issueJson = excluded.issueJson, updatedAt = excluded.updatedAt
+`);
+const deleteLinearIssueStmt = db.query("delete from linear_issues where identifier = ?");
+const linearIssueByIdentifierStmt = db.query("select issueJson from linear_issues where identifier = ?");
+const allLinearIssuesStmt = db.query("select issueJson from linear_issues order by updatedAt desc");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -504,6 +534,14 @@ async function handleWsRequest(ws: ServerWebSocket, rawMessage: string | Buffer)
       return;
     }
 
+    if (request.method === "selected-github-flow") {
+      const flowId = String(params.flowId || "");
+      if (flowId) wsFlowId({ flowId });
+      setSelectedGithubCiFlow(flowId);
+      sendWsResponse(ws, request.id, { ok: true });
+      return;
+    }
+
     throw new Error(`Unsupported WebSocket method: ${request.method}`);
   } catch (error) {
     sendWsError(ws, request.id, error);
@@ -579,8 +617,8 @@ function queuedPromptForFlow(flowId: string) {
 }
 
 function normalizeQueuedPromptMessage(value: unknown) {
-  const message = String(value ?? "").trim();
-  if (!message) throw new Error("Queued message cannot be blank.");
+  const message = String(value ?? "");
+  if (!message.trim()) throw new Error("Queued message cannot be blank.");
   return message;
 }
 
@@ -823,9 +861,98 @@ function normalizePrUrl(value: unknown) {
 
 function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow> {
   const fields: Partial<Flow> = {};
-  if ("prUrl" in body) fields.prUrl = normalizePrUrl(body.prUrl);
+  if ("prUrl" in body) {
+    fields.prUrl = normalizePrUrl(body.prUrl);
+    fields.githubCiStatus = "unknown";
+    fields.githubCiCheckedAt = "";
+    fields.githubCiTargetUrl = "";
+    fields.githubCiDescription = "";
+  }
   return fields;
 }
+
+function combineGithubCiStates(states: GithubCiState[]): GithubCiState {
+  if (states.includes("failure")) return "failure";
+  if (states.includes("pending")) return "pending";
+  if (states.includes("success")) return "success";
+  return "unknown";
+}
+
+function githubRollupState(check: { status?: string | null; conclusion?: string | null; state?: string | null }): GithubCiState {
+  const status = String(check.status || "").toLowerCase();
+  const conclusion = String(check.conclusion || "").toLowerCase();
+  const state = String(check.state || "").toLowerCase();
+  if (status && status !== "completed") return "pending";
+  if (state === "pending" || state === "expected") return "pending";
+  if (state === "failure" || state === "error") return "failure";
+  if (state === "success") return "success";
+  if (conclusion === "success" || conclusion === "neutral" || conclusion === "skipped") return "success";
+  if (conclusion === "failure" || conclusion === "cancelled" || conclusion === "timed_out" || conclusion === "action_required" || conclusion === "startup_failure") return "failure";
+  return "unknown";
+}
+
+async function getGithubCiStatus(flow: Flow) {
+  try {
+    const pr = JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,url"], flow)) as {
+      headRefOid?: string;
+      url?: string;
+      statusCheckRollup?: Array<{
+        status?: string | null;
+        conclusion?: string | null;
+        state?: string | null;
+        detailsUrl?: string | null;
+        targetUrl?: string | null;
+      }>;
+    };
+    const checks = pr.statusCheckRollup || [];
+    const states = checks.map(githubRollupState);
+    const state = combineGithubCiStates(states);
+    return {
+      state,
+      prUrl: flow.prUrl,
+      sha: pr.headRefOid || "",
+      description: state === "unknown" ? "No CI status found." : `GitHub CI ${state}.`,
+      targetUrl: checks.find((item) => item.detailsUrl || item.targetUrl)?.detailsUrl || checks.find((item) => item.targetUrl)?.targetUrl || pr.url || flow.prUrl,
+      checkedAt: now(),
+    };
+  } catch (error) {
+    return {
+      state: "unknown" as GithubCiState,
+      prUrl: flow.prUrl,
+      description: error instanceof Error ? error.message : String(error),
+      checkedAt: now(),
+    };
+  }
+}
+
+function setSelectedGithubCiFlow(flowId: string) {
+  if (selectedGithubCiFlowId === flowId) return;
+  selectedGithubCiFlowId = flowId;
+  void pollSelectedGithubCiStatus();
+}
+
+async function pollSelectedGithubCiStatus() {
+  if (githubCiPolling) return;
+  const flowId = selectedGithubCiFlowId;
+  const flow = flowId ? getFlow(flowId) : null;
+  if (!flow?.prUrl) return;
+  githubCiPolling = true;
+  try {
+    const ci = await getGithubCiStatus(flow);
+    const current = getFlow(flowId);
+    if (!current || current.prUrl !== flow.prUrl || selectedGithubCiFlowId !== flowId) return;
+    updateFlow(flowId, {
+      githubCiStatus: ci.state,
+      githubCiCheckedAt: ci.checkedAt || now(),
+      githubCiTargetUrl: ci.targetUrl || flow.prUrl,
+      githubCiDescription: ci.description || "",
+    });
+  } finally {
+    githubCiPolling = false;
+  }
+}
+
+setInterval(() => void pollSelectedGithubCiStatus(), 5000);
 
 function updateFlow(id: string, fields: Partial<Flow>) {
   const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
@@ -948,6 +1075,7 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   if (nowMs - lastSeenAt <= agentRuntimeStaleMs) return flow;
 
   runtime.activeTurnId = undefined;
+  runtime.activeTurnTraceAfterLogId = undefined;
   insertLog(flow.id, "agent:error", `agent heartbeat timed out after ${Math.round(agentRuntimeStaleMs / 1000)}s\n`);
   updateFlow(flow.id, { agentStatus: "failed" });
   return getFlow(flow.id) ?? flow;
@@ -1062,6 +1190,28 @@ function runGit(args: string[], cwd = rootDir) {
   return stdout;
 }
 
+async function runGh(args: string[], flow?: Flow) {
+  const proc = Bun.spawn({
+    cmd: ["gh", ...args],
+    cwd: flow?.checkoutPath || rootDir,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: flow ? runtimeEnv(flow) : runtimeEnv(),
+  });
+  const [stdoutText, stderrText, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  const stdout = stdoutText.trim();
+  const stderr = stderrText.trim();
+  if (exitCode !== 0) {
+    const output = stderr || stdout;
+    throw new Error(output ? `gh ${args[0] ?? ""} failed: ${output}` : `gh ${args[0] ?? ""} failed`);
+  }
+  return stdout;
+}
+
 function parseLinearIssue(input: string) {
   const trimmed = input.trim();
   const urlMatch = trimmed.match(/linear\.app\/[^/]+\/issue\/([A-Z]+-\d+)/i);
@@ -1075,15 +1225,30 @@ function parseLinearIssue(input: string) {
 
 function cacheLinearIssue(issue: LinearIssue | null | undefined) {
   if (!issue?.identifier) return;
+  const identifier = issue.identifier.toUpperCase();
   if (isDeletedLinearIssue(issue)) {
-    linearIssueCache.delete(issue.identifier.toUpperCase());
+    linearIssueCache.delete(identifier);
+    deleteLinearIssueStmt.run(identifier);
     return;
   }
-  linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+  linearIssueCache.set(identifier, issue);
+  upsertLinearIssueStmt.run(identifier, JSON.stringify(issue), issue.updatedAt || now());
 }
 
 function cachedLinearIssue(identifier: string) {
-  return linearIssueCache.get(identifier.toUpperCase()) ?? null;
+  const issueId = identifier.toUpperCase();
+  const cached = linearIssueCache.get(issueId);
+  if (cached) return cached;
+  const row = linearIssueByIdentifierStmt.get(issueId) as { issueJson: string } | null;
+  if (!row) return null;
+  try {
+    const issue = JSON.parse(row.issueJson) as LinearIssue;
+    if (!issue?.identifier) return null;
+    linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+    return issue;
+  } catch {
+    return null;
+  }
 }
 
 function linearAuthHeader(apiKey = getSetting("linearApiKey")) {
@@ -1679,6 +1844,14 @@ function createCompletedTurnTraceGroup(flowId: string, beforeId: number) {
   createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);
 }
 
+function createCompletedTurnTraceGroupAfterLog(flowId: string, afterId: number | undefined, beforeId: number) {
+  if (afterId) {
+    createTraceGroupBetweenLogs(flowId, afterId, beforeId);
+    return;
+  }
+  createCompletedTurnTraceGroup(flowId, beforeId);
+}
+
 function worktreeBranchUpdate(flowId: string): Partial<Flow> {
   const existing = getFlow(flowId);
   if (!existing?.checkoutPath) return {};
@@ -1702,6 +1875,7 @@ function updateRuntimeThreadFromParams(runtime: RuntimeProcess, params: Record<s
 function finishCodexCompaction(runtime: RuntimeProcess, params: Record<string, unknown>) {
   updateRuntimeThreadFromParams(runtime, params);
   runtime.activeTurnId = undefined;
+  runtime.activeTurnTraceAfterLogId = undefined;
   runtime.compacting = false;
   runtime.compactingStartedAt = undefined;
   const compactionPromptLogId = runtime.compactionPromptLogId;
@@ -1732,12 +1906,14 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     const turn = params.turn as { id?: string; status?: string; error?: { message?: string } | null } | undefined;
     if (!turn?.id || turn.id === runtime.activeTurnId) runtime.activeTurnId = undefined;
     if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
+    const activeTurnTraceAfterLogId = runtime.activeTurnTraceAfterLogId;
+    if (!runtime.activeTurnId) runtime.activeTurnTraceAfterLogId = undefined;
     if (runtime.compacting && turn?.status !== "failed") {
       finishCodexCompaction(runtime, params);
       return;
     }
     const turnStatusLogId = insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
-    createCompletedTurnTraceGroup(runtime.flowId, turnStatusLogId + 1);
+    createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);
     if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     if (runtime.compacting) {
       runtime.compacting = false;
@@ -1983,7 +2159,7 @@ async function startCodexAppServer(flow: Flow) {
   }
 }
 
-async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: string) {
+async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: string, userLogId = 0) {
   if (!runtime.threadId) throw new Error("Codex thread is not ready.");
   runtime.lastSeenAt = Date.now();
   if (runtime.activeTurnId) {
@@ -1997,6 +2173,7 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
     } catch (error) {
       if (!isNoActiveTurnSteerError(error)) throw error;
       runtime.activeTurnId = undefined;
+      runtime.activeTurnTraceAfterLogId = undefined;
       setActiveTurnId(runtime.flowId);
       insertLog(runtime.flowId, "agent:status", "stale active turn cleared before starting a new turn");
     }
@@ -2005,6 +2182,7 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
     turn?: { id?: string };
   };
   runtime.activeTurnId = response.turn?.id;
+  runtime.activeTurnTraceAfterLogId = userLogId || undefined;
   setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
 }
 
@@ -2013,6 +2191,10 @@ function parseSlashCommand(message: string) {
   if (!trimmed.startsWith("/")) return null;
   const [command] = trimmed.split(/\s+/, 1);
   return command.toLowerCase();
+}
+
+function isCompactSlashCommand(message: string) {
+  return parseSlashCommand(message) === "/compact";
 }
 
 function slashCommandArgs(message: string) {
@@ -2049,6 +2231,7 @@ async function ensureCodexRuntime(flow: Flow) {
 
 async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   if (runtime.activeTurnId) throw new Error("Cannot clear while a Codex turn is running.");
+  runtime.activeTurnTraceAfterLogId = undefined;
   runtime.compacting = false;
   runtime.compactingStartedAt = undefined;
   runtime.compactionPromptLogId = undefined;
@@ -2063,6 +2246,7 @@ async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
   runtime.threadId = thread.id;
   runtime.activeTurnId = undefined;
+  runtime.activeTurnTraceAfterLogId = undefined;
   setActiveTurnId(flow.id);
   setSetting(codexThreadSettingKey(flow.id), thread.id);
   updateFlow(flow.id, {
@@ -2107,7 +2291,7 @@ async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMe
       runtime = await startCodexAppServer(updated);
       createdRuntime = true;
     }
-    await sendAgentTurn(runtime, updated, agentMessage);
+    await sendAgentTurn(runtime, updated, agentMessage, userLogId);
   } catch (error) {
     if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
     updateFlow(flow.id, { agentStatus: "failed" });
@@ -2136,6 +2320,7 @@ async function startQueuedPromptIfReady(flowId: string) {
 async function steerQueuedPrompt(flow: Flow) {
   const queued = queuedPromptForFlow(flow.id);
   if (!queued) throw new Error("No queued message to steer.");
+  if (isCompactSlashCommand(queued.message)) throw new Error("Queued /compact cannot be steered.");
   const runtime = agentProcesses.get(flow.id);
   if (!runtime?.activeTurnId || runtime.compacting) throw new Error("No active agent turn to steer.");
 
@@ -2243,7 +2428,7 @@ async function startAgent(flow: Flow, userMessage = "") {
       createdRuntime = true;
     }
     if (!message) return;
-    await sendAgentTurn(runtime, updated, userMessage);
+    await sendAgentTurn(runtime, updated, userMessage, userLogId);
   } catch (error) {
     if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
     updateFlow(flow.id, { agentStatus: "failed" });
@@ -2329,6 +2514,7 @@ async function interruptAgent(flowId: string) {
     return;
   }
   if (!runtime.threadId || !runtime.activeTurnId) {
+    runtime.activeTurnTraceAfterLogId = undefined;
     setActiveTurnId(flowId);
     updateFlow(flowId, { agentStatus: "idle" });
     return;
@@ -2344,6 +2530,7 @@ async function interruptAgent(flowId: string) {
   } catch (error) {
     if (!isNoActiveTurnInterruptError(error)) throw error;
     runtime.activeTurnId = undefined;
+    runtime.activeTurnTraceAfterLogId = undefined;
     setActiveTurnId(flowId);
     insertLog(flowId, "agent:status", "interrupt ignored: no active turn");
     updateFlow(flowId, { agentStatus: "idle" });
@@ -2650,12 +2837,6 @@ async function createBlankInEngLinearIssue() {
   return { issue, viewer: { id: data.viewer.id, name: data.viewer.name } };
 }
 
-function isDoneLinearIssue(issue: LinearIssue) {
-  const stateName = issue.state?.name.trim().toLowerCase();
-  const stateType = issue.state?.type?.trim().toLowerCase();
-  return stateName === "done" || stateType === "completed";
-}
-
 function isDeletedLinearIssue(issue: LinearIssue) {
   return Boolean(issue.archivedAt);
 }
@@ -2664,48 +2845,14 @@ function isLinearIssueNotFoundError(error: unknown) {
   return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
 
-async function listAssignedLinearIssues(apiKey?: string) {
-  const data = await linearGraphql<{
-    viewer: {
-      id: string;
-      name: string;
-      assignedIssues: {
-        nodes: LinearIssue[];
-      };
-    };
-  }>(`
-    query AssignedToMe {
-      viewer {
-        id
-        name
-        assignedIssues(first: 100) {
-          nodes {
-            id
-            identifier
-            title
-            url
-            archivedAt
-            priority
-            estimate
-            createdAt
-            updatedAt
-            state { id name color type }
-            team { key name }
-            project { name }
-            labels { nodes { name color } }
-          }
-        }
-      }
-    }
-  `, {}, apiKey);
-  for (const issue of data.viewer.assignedIssues.nodes) cacheLinearIssue(issue);
+function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false) {
   const flowsByIssue = new Map(listFlows().map((flow) => [flow.linearIssueId, flow]));
   return {
-    viewer: { id: data.viewer.id, name: data.viewer.name },
-    issues: data.viewer.assignedIssues.nodes.flatMap((issue) => {
+    viewer,
+    cached,
+    issues: issues.flatMap((issue) => {
       const flow = flowsByIssue.get(issue.identifier);
       if (isDeletedLinearIssue(issue)) return [];
-      if (isDoneLinearIssue(issue) && !flow) return [];
       return [
         {
           ...issue,
@@ -2714,6 +2861,90 @@ async function listAssignedLinearIssues(apiKey?: string) {
       ];
     }),
   };
+}
+
+function cachedLinearIssuesFromDb() {
+  const issues: LinearIssue[] = [];
+  for (const row of allLinearIssuesStmt.all() as { issueJson: string }[]) {
+    try {
+      const issue = JSON.parse(row.issueJson) as LinearIssue;
+      if (!issue?.identifier || isDeletedLinearIssue(issue)) continue;
+      linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+      issues.push(issue);
+    } catch {
+      continue;
+    }
+  }
+  return issues;
+}
+
+function cachedAssignedLinearIssuesPayload() {
+  return assignedLinearIssuesPayload(
+    { id: "", name: getSetting("linearViewerName") || "Cached Linear" },
+    cachedLinearIssuesFromDb(),
+    true,
+  );
+}
+
+function hasCachedAssignedLinearIssues() {
+  return Boolean((allLinearIssuesStmt.get() as { issueJson: string } | null)?.issueJson);
+}
+
+async function listAssignedLinearIssues(apiKey?: string) {
+  let data: {
+    viewer: {
+      id: string;
+      name: string;
+      assignedIssues: {
+        nodes: LinearIssue[];
+      };
+    };
+  };
+  try {
+    data = await linearGraphql<{
+      viewer: {
+        id: string;
+        name: string;
+        assignedIssues: {
+          nodes: LinearIssue[];
+        };
+      };
+    }>(`
+      query AssignedToMe {
+        viewer {
+          id
+          name
+          assignedIssues(first: 100) {
+            nodes {
+              id
+              identifier
+              title
+              url
+              archivedAt
+              priority
+              estimate
+              createdAt
+              updatedAt
+              state { id name color type }
+              team { key name }
+              project { name }
+              labels { nodes { name color } }
+            }
+          }
+        }
+      }
+    `, {}, apiKey);
+  } catch (error) {
+    if (!apiKey && hasCachedAssignedLinearIssues()) {
+      if (error instanceof LinearUnavailableError) logLinearUnavailable(error);
+      else console.warn(error instanceof Error ? error.message : String(error));
+      return cachedAssignedLinearIssuesPayload();
+    }
+    throw error;
+  }
+  for (const issue of data.viewer.assignedIssues.nodes) cacheLinearIssue(issue);
+  const viewer = { id: data.viewer.id, name: data.viewer.name };
+  return assignedLinearIssuesPayload(viewer, data.viewer.assignedIssues.nodes);
 }
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
@@ -3028,6 +3259,7 @@ async function handleApi(request: Request, url: URL) {
       updateFlow(id, fields);
       if (fields.prUrl !== undefined) {
         insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
+        if (selectedGithubCiFlowId === id) void pollSelectedGithubCiStatus();
       }
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
@@ -3115,7 +3347,7 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/linear/issues" && request.method === "GET") {
     const assigned = await listAssignedLinearIssues();
-    setSetting("linearViewerName", assigned.viewer.name);
+    if (!assigned.cached) setSetting("linearViewerName", assigned.viewer.name);
     return json(assigned);
   }
 
@@ -3180,6 +3412,7 @@ Bun.serve({
     },
     close(ws) {
       clients.delete(ws as unknown as ServerWebSocket);
+      if (!clients.size) setSelectedGithubCiFlow("");
     },
   },
 });

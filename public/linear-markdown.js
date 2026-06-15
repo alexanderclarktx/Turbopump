@@ -1,5 +1,5 @@
 export function renderLinearMarkdown(value, fallback = "", options = {}) {
-  const { images = true, links = true, compactBlankLines = false } = options;
+  const { images = true, links = true, compactBlankLines = false, copyCode = true } = options;
   const text = String(value || fallback);
   if (!text) return "";
 
@@ -10,7 +10,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
     const line = lines[index];
     const fence = matchCodeFenceStart(line);
     if (fence) {
-      const parsed = renderCodeFence(lines, index, fence);
+      const parsed = renderCodeFence(lines, index, fence, { copyCode });
       blocks.push(parsed.html);
       index = parsed.index;
       continue;
@@ -87,7 +87,8 @@ function matchCodeFenceEnd(line) {
   return /^\s*(?:`{3,}|~{3,})\s*$/.test(String(line || ""));
 }
 
-function renderCodeFence(lines, startIndex, fence = matchCodeFenceStart(lines[startIndex])) {
+function renderCodeFence(lines, startIndex, fence = matchCodeFenceStart(lines[startIndex]), options = {}) {
+  const { copyCode = true } = options;
   const codeLines = [];
   let index = startIndex + 1;
   while (index < lines.length && !matchCodeFenceEnd(lines[index])) {
@@ -98,8 +99,11 @@ function renderCodeFence(lines, startIndex, fence = matchCodeFenceStart(lines[st
   const prismLanguage = prismLanguageName(fence?.language || "");
   const language = prismLanguage ? ` data-language="${escapeAttribute(prismLanguage)}"` : "";
   const className = prismLanguage ? ` class="language-${escapeAttribute(prismLanguage)}"` : "";
+  const copyButton = copyCode
+    ? '<button class="markdown-code-copy" type="button" data-code-copy="true" aria-label="Copy code" title="Copy code"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="6.25" y="2.25" width="7.25" height="7.25" rx="1.4"/><rect x="2.5" y="6" width="7.25" height="7.25" rx="1.4"/></svg></button>'
+    : "";
   return {
-    html: `<pre class="markdown-code-block${prismLanguage ? ` language-${escapeAttribute(prismLanguage)}` : ""}"${language}><code${className}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+    html: `<pre class="markdown-code-block${prismLanguage ? ` language-${escapeAttribute(prismLanguage)}` : ""}"${language}>${copyButton}<code${className}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
     index,
   };
 }
@@ -146,7 +150,7 @@ function renderTable(lines, startIndex, options) {
   }
 
   const headerHtml = header
-    .map((cell, cellIndex) => renderTableCell("th", cell, alignments[cellIndex], options))
+    .map((cell, cellIndex) => renderTableCell("th", cell, alignments[cellIndex], options, cellIndex))
     .join("");
   const bodyHtml = rows
     .map((row) => {
@@ -156,16 +160,21 @@ function renderTable(lines, startIndex, options) {
       return `<tr>${cells.join("")}</tr>`;
     })
     .join("");
+  const columnHtml = alignments.map((_, cellIndex) => `<col data-markdown-column-index="${cellIndex}">`).join("");
 
   return {
-    html: `<table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
+    html: `<table class="markdown-resizable-table"><colgroup>${columnHtml}</colgroup><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
     index,
   };
 }
 
-function renderTableCell(tag, value, alignment, options) {
+function renderTableCell(tag, value, alignment, options, cellIndex = -1) {
   const align = alignment ? ` style="text-align: ${alignment}"` : "";
-  return `<${tag}${align}>${renderInlineMarkdown(value.trim(), options)}</${tag}>`;
+  const content = renderInlineMarkdown(value.trim(), options);
+  if (tag === "th") {
+    return `<th${align} data-markdown-column-index="${cellIndex}"><span class="markdown-table-header-content">${content}</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column" title="Resize column"></button></th>`;
+  }
+  return `<${tag}${align}>${content}</${tag}>`;
 }
 
 function parseTableRow(line) {
@@ -231,7 +240,7 @@ function renderList(lines, startIndex, indent, ordered, options, startNumber = 1
       const fence = matchCodeFenceStart(line);
 
       if (fence) {
-        const parsed = renderCodeFence(lines, index, fence);
+        const parsed = renderCodeFence(lines, index, fence, options);
         parts.push(parsed.html);
         index = parsed.index;
         continue;

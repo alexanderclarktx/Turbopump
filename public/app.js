@@ -5,6 +5,7 @@ const COLLAPSED_SETTINGS_SECTIONS_KEY = "flow.collapsedSettingsSections";
 const PINNED_LINEAR_ISSUES_KEY = "flow.pinnedLinearIssues";
 const NOTIFIED_LINEAR_ISSUES_KEY = "flow.notifiedLinearIssueIds";
 const FLOW_SPLIT_SIZE_KEY = "flow.topPaneSize";
+const TICKET_DRAWER_SIZE_KEY = "flow.ticketDrawerSize";
 const LINEAR_PANE_HIDDEN_KEY = "flow.linearPaneHidden";
 const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
 const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
@@ -16,10 +17,11 @@ const DEFAULT_TOAST_DURATION_MS = 3200;
 const ERROR_TOAST_DURATION_MS = 8000;
 const DEFAULT_FAVICON_HREF = "/favicon.svg";
 const DEFAULT_COLLAPSED_LINEAR_STATUSES = ["backlog", "canceled"];
-const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "triage", "ready-for-eng", "backlog", "canceled"];
+const LINEAR_STATUS_ORDER = ["in-review", "in-eng", "ready-for-eng", "triage", "backlog", "canceled"];
 const LOG_PREFETCH_DELAY_MS = 750;
 const LOG_PREFETCH_BATCH_SIZE = 1;
 const LOG_PREFETCH_MAX_FLOW_COUNT = 3;
+const GITHUB_CI_RECENT_MS = 30 * 60 * 1000;
 const LOG_PAGE_SIZE = 200;
 const AGENT_TRACE_INITIAL_TURN_COUNT = 6;
 const AGENT_TRACE_TURN_PAGE_SIZE = 6;
@@ -27,6 +29,19 @@ const TERMINAL_TRACE_INITIAL_RENDER_COUNT = 18;
 const TERMINAL_TRACE_RENDER_BATCH_SIZE = 48;
 const TERMINAL_TRACE_OPEN_DURATION_MS = 90;
 const TERMINAL_TRACE_CLOSE_DURATION_MS = 80;
+const MARKDOWN_CODE_COPY_OFFSET = 6;
+const MARKDOWN_CODE_COPY_SIZE = 24;
+const MARKDOWN_TABLE_MIN_COLUMN_WIDTH = 72;
+const TICKET_DRAWER_MIN_SIZE = 280;
+const TICKET_DRAWER_MAX_SIZE = 320;
+const TICKET_START_AGENT_FLAME_PATH =
+  "M33 4C37 14 29 20 29 28C29 23 26 19 22 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 39 23 33 4Z";
+const TICKET_START_AGENT_FLAME_ANIMATION_VALUES = [
+  TICKET_START_AGENT_FLAME_PATH,
+  "M30 4C35 14 27 20 29 28C28 23 25 19 20 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 36 23 30 4Z",
+  "M36 4C39 14 31 20 29 28C30 23 27 19 24 16C23 27 13 31 13 45C13 55 21 62 32 62S51 55 51 44C51 30 42 23 36 4Z",
+  TICKET_START_AGENT_FLAME_PATH,
+].join(";");
 const QUEUED_PROMPT_PREFIX_HTML = '<span class="queued-prompt-spinner" aria-hidden="true"></span>';
 const SLASH_COMMANDS = [
   { name: "/clear", description: "Start a fresh Codex thread for this flow" },
@@ -134,6 +149,11 @@ function initialFlowSplitSize() {
   return clampFlowSplitSize(Number.isFinite(value) ? value : 50);
 }
 
+function initialTicketDrawerSize() {
+  const value = Number(localStorage.getItem(TICKET_DRAWER_SIZE_KEY) || TICKET_DRAWER_MAX_SIZE);
+  return clampTicketDrawerSize(Number.isFinite(value) ? value : TICKET_DRAWER_MAX_SIZE);
+}
+
 function initialTheme() {
   const stored = localStorage.getItem(THEME_KEY);
   if (stored === "dark" || stored === "light") return stored;
@@ -160,6 +180,10 @@ function emptyTicketInputState() {
 
 function clampFlowSplitSize(value) {
   return Math.min(100, Math.max(0, value));
+}
+
+function clampTicketDrawerSize(value) {
+  return Math.min(TICKET_DRAWER_MAX_SIZE, Math.max(TICKET_DRAWER_MIN_SIZE, value));
 }
 
 function clampShellOutputSplitSize(value) {
@@ -213,6 +237,7 @@ const state = {
   shellOutputClearAfterLogId: new Map(),
   openTraceGroups: new Map(),
   settingsCollapsed: true,
+  ticketDrawerSize: initialTicketDrawerSize(),
   theme: initialTheme(),
   collapsedSettingsSections: initialCollapsedSettingsSections(),
   collapsedLinearStatuses: initialCollapsedLinearStatuses(),
@@ -227,6 +252,7 @@ const state = {
   slashCommandIndex: 0,
   messageSubmitting: false,
   messageSubmittingFlowId: "",
+  creatingFlowIssueIds: new Set(),
   queuedPrompt: null,
   queuedPromptFlushTimer: 0,
   shellSubmitting: false,
@@ -258,13 +284,16 @@ const state = {
   deletingCheckoutNames: new Set(),
   deletingOutputLogIds: new Set(),
   creatingLinearTicket: false,
+  githubCiSelectedFlowId: "",
 };
 
 const els = {
+  main: document.querySelector("main"),
   settingsPane: document.querySelector("#settingsPane"),
   settingsContent: document.querySelector(".settings-content"),
   settingsToggle: document.querySelector("#settingsToggle"),
   ticketDrawer: document.querySelector(".ticket-drawer"),
+  ticketDrawerResizer: document.querySelector(".ticket-drawer-resizer"),
   themeToggle: document.querySelector("#themeToggle"),
   repoUrl: document.querySelector("#repoUrl"),
   serveCommand: document.querySelector("#serveCommand"),
@@ -376,14 +405,46 @@ function renderLinearPriorityIcon(priority, options = {}) {
   `;
 }
 
+function githubCiStatus(flow) {
+  const status = String(flow?.githubCiStatus || "unknown").toLowerCase();
+  if (status === "success" || status === "pending" || status === "failure") return status;
+  return "unknown";
+}
+
+function githubCiLabel(status) {
+  if (status === "success") return "GitHub CI passing";
+  if (status === "failure") return "GitHub CI failing";
+  if (status === "pending") return "GitHub CI pending";
+  return "GitHub CI status unknown";
+}
+
+function githubCiStatusRecent(flow) {
+  const checkedAt = Date.parse(flow?.githubCiCheckedAt || "");
+  return Number.isFinite(checkedAt) && Date.now() - checkedAt <= GITHUB_CI_RECENT_MS;
+}
+
+function renderGithubCiPill(flow) {
+  if (!flow?.prUrl) return "";
+  const status = githubCiStatus(flow);
+  const knownRecent = status !== "unknown" && githubCiStatusRecent(flow);
+  const label = knownRecent ? githubCiLabel(status) : "GitHub CI status unknown";
+  const title = flow.githubCiDescription || label;
+  return `<a class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}" href="${escapeAttribute(flow.prUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(title)}">
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.88-1.17-.88-1.17-.73-.5.05-.49.05-.49.8.06 1.22.82 1.22.82.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.58 7.58 0 0 1 8 3.89c.68 0 1.36.09 2 .27 1.52-1.03 2.19-.82 2.19-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.17c0 .21.14.46.55.38A8 8 0 0 0 8 0Z" />
+    </svg>
+    ${knownRecent ? '<span class="github-ci-dot" aria-hidden="true"></span>' : ""}
+  </a>`;
+}
+
 function linearStatusIconKind(status) {
   const key = linearStatusKey(status);
-  if (key === "canceled" || key === "cancelled") return "canceled";
-  if (key === "done" || key === "completed") return "completed";
-  if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "reviewing";
-  if (key === "in-eng" || key === "working" || key === "started") return "started";
-  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "ready";
-  return "unstarted";
+  if (key === "triage") return "triage";
+  if (key === "done" || key === "completed") return "done";
+  if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "review";
+  if (key === "in-progress" || key === "in-eng" || key === "working" || key === "started") return "started";
+  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "backlog";
+  return "todo";
 }
 
 function renderLinearStatusIcon(status) {
@@ -391,9 +452,17 @@ function renderLinearStatusIcon(status) {
   const kind = linearStatusIconKind(label);
   return `
     <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
-      <img src="/status-icons/${kind}.svg" alt="" aria-hidden="true" />
+      <span class="linear-status-icon-glyph" aria-hidden="true"></span>
     </span>
   `;
+}
+
+function renderLinearStatusPillContent(status) {
+  const label = status || "No status";
+  const kind = linearStatusIconKind(label);
+  return `<span>${escapeHtml(label)}</span><span class="linear-status-icon linear-status-icon-${kind}" aria-hidden="true">
+    <span class="linear-status-icon-glyph" aria-hidden="true"></span>
+  </span>`;
 }
 
 function linearStatusKey(status) {
@@ -608,6 +677,34 @@ function restoreTicketInputState(issueId) {
   updateMessageInputMode();
   resizeMessageInput();
   renderHistorySearchIndicator();
+}
+
+function queuedPromptDraftMatches(value, message = "") {
+  if (!message) return true;
+  return value === message || value.trim() === message.trim();
+}
+
+function clearPromptDraftForIssue(issueId, message = "") {
+  if (!issueId) return;
+  const inputState = ticketInputState(issueId);
+  if (queuedPromptDraftMatches(inputState.promptValue, message)) inputState.promptValue = "";
+  if (state.activeInputIssueId === issueId) {
+    const input = promptInput();
+    if (input && queuedPromptDraftMatches(input.value, message)) {
+      input.value = "";
+      resizeMessageInput();
+    }
+  }
+}
+
+function clearQueuedPromptDraftState(flow, message = "") {
+  const flowId = flow?.id || "";
+  const issueId = flow?.linearIssueId || linearIssueIdForFlowId(flowId);
+  if (state.queuedPrompt?.flowId === flowId) state.queuedPrompt = null;
+  if (issueId) {
+    clearPromptDraftForIssue(issueId, message);
+  }
+  if (flowId) updateFlowQueuedPrompt(flowId, null);
 }
 
 function syncTicketInputState(issueId) {
@@ -938,8 +1035,16 @@ function promptQueuedForSelectedFlow() {
   return promptQueuedForFlow(selectedFlow());
 }
 
+function queuedPromptIsCompact(queued) {
+  const trimmed = String(queued?.message || "").trim();
+  if (!trimmed.startsWith("/")) return false;
+  const [command] = trimmed.split(/\s+/, 1);
+  return command.toLowerCase() === "/compact";
+}
+
 function promptQueuedCanSteer(flow = selectedFlow()) {
-  return promptQueuedForFlow(flow) && flowAgentRunning(flow) && !flowAgentCompacting(flow);
+  const queued = queuedPromptForFlow(flow);
+  return Boolean(queued && !queuedPromptIsCompact(queued) && flowAgentRunning(flow) && !flowAgentCompacting(flow));
 }
 
 function flowShellRunning(flow) {
@@ -1032,6 +1137,7 @@ function clearQueuedPrompt(options = {}) {
   const flow = selectedFlow();
   const queued = queuedPromptForFlow(flow) || state.queuedPrompt;
   state.queuedPrompt = null;
+  if (queued?.flowId) updateFlowQueuedPrompt(queued.flowId, null, { preserveQueuedPromptDraft: true });
   updateMessageInputMode();
   saveActiveTicketInputState();
   if (options.persist !== false && queued?.flowId) {
@@ -1046,11 +1152,18 @@ function clearQueuedPrompt(options = {}) {
 async function queuePromptMessage(input) {
   const flow = selectedFlow();
   if (!flow?.id || promptQueuedForFlow(flow) || !input) return false;
+  const queuedImages = [...state.pendingAgentImages];
+  const queuedMessage = agentMessageWithImages(
+    input.value.trim() || (queuedImages.length ? "Use the attached image context." : ""),
+    queuedImages,
+  );
+  if (!queuedMessage.trim()) return false;
   const queued = {
     flowId: flow.id,
-    message: input.value,
+    message: queuedMessage,
   };
   state.queuedPrompt = queued;
+  state.pendingAgentImages = [];
   cancelHistorySearch();
   resetInputHistoryNavigation();
   updateMessageInputMode();
@@ -1066,6 +1179,7 @@ async function queuePromptMessage(input) {
     if (state.queuedPrompt === queued) state.queuedPrompt = null;
     if (data.flow) upsertFlow(data.flow);
   } catch (error) {
+    state.pendingAgentImages = [...queuedImages, ...state.pendingAgentImages];
     if (state.queuedPrompt === queued) clearQueuedPrompt({ persist: false });
     throw error;
   }
@@ -1086,14 +1200,9 @@ async function submitQueuedPromptSteer() {
     return true;
   }
 
-  state.queuedPrompt = null;
-  updateFlowQueuedPrompt(flow.id, null);
+  clearQueuedPromptDraftState(flow, queued.message);
   updateMessageInputMode();
-  if (input && input.value === queued.message) {
-    input.value = "";
-    resizeMessageInput();
-    saveActiveTicketInputState();
-  }
+  saveActiveTicketInputState();
   state.messageSubmitting = true;
   state.messageSubmittingFlowId = flow.id;
   requestFlowSnapshot(flow.id);
@@ -1120,7 +1229,7 @@ function handleQueuedPromptKeydown(event) {
     !event.ctrlKey &&
     !event.altKey &&
     !event.isComposing &&
-    ["a", "c"].includes(event.key.toLowerCase())
+    ["a", "c", "r"].includes(event.key.toLowerCase())
   ) {
     return false;
   }
@@ -1144,7 +1253,11 @@ function handleQueuedPromptKeydown(event) {
   }
   if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
   event.preventDefault();
-  if (event.key === "Backspace" || event.key === "Escape") {
+  if (event.key === "Escape") {
+    if (!event.repeat) clearQueuedPrompt();
+    return true;
+  }
+  if (event.key === "Backspace") {
     clearQueuedPrompt();
     return true;
   }
@@ -1184,18 +1297,10 @@ async function submitQueuedPromptMessage(queued, flow) {
   }
 
   const selected = flow.id === state.selectedFlowId;
-  if (state.queuedPrompt === queued) {
-    state.queuedPrompt = null;
-  }
-  updateFlowQueuedPrompt(flow.id, null);
+  clearQueuedPromptDraftState(flow, queued.message);
   updateMessageInputMode();
   if (selected) {
-    const input = promptInput();
-    if (input && input.value === queued.message) {
-      input.value = "";
-      resizeMessageInput();
-      saveActiveTicketInputState();
-    }
+    saveActiveTicketInputState();
     state.messageSubmitting = true;
     state.messageSubmittingFlowId = flow.id;
     requestFlowSnapshot(flow.id);
@@ -1859,11 +1964,25 @@ function setTicketDrawerHidden(hidden) {
   els.ticketDrawer.setAttribute("aria-label", hidden ? "Expand tickets" : "Tickets");
   if (hidden) els.ticketDrawer.setAttribute("tabindex", "0");
   else els.ticketDrawer.removeAttribute("tabindex");
+  applyTicketDrawerSize();
   applyFlowSplitSize();
 }
 
 function toggleTicketDrawerHidden() {
   setTicketDrawerHidden(!state.ticketDrawerHidden);
+}
+
+function applyTicketDrawerSize() {
+  const applied = state.ticketDrawerHidden ? 12 : clampTicketDrawerSize(state.ticketDrawerSize);
+  els.main.style.setProperty("--ticket-drawer-size", `${applied}px`);
+  els.ticketDrawerResizer.setAttribute("aria-valuenow", String(Math.round(clampTicketDrawerSize(state.ticketDrawerSize))));
+  return applied;
+}
+
+function setTicketDrawerSize(value) {
+  state.ticketDrawerSize = clampTicketDrawerSize(value);
+  applyTicketDrawerSize();
+  localStorage.setItem(TICKET_DRAWER_SIZE_KEY, String(state.ticketDrawerSize));
 }
 
 function setLinearPaneHidden(hidden) {
@@ -2086,12 +2205,26 @@ function shellOutputSplitBounds(panel, rect) {
   };
 }
 
+function constrainedShellOutputSplitSize(value, bounds) {
+  return Math.min(bounds.max, Math.max(bounds.min, clampShellOutputSplitSize(value)));
+}
+
+function writeShellOutputSplitSize(panel, resizer, applied, bounds) {
+  if (bounds) {
+    resizer.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
+    resizer.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+  }
+  resizer.setAttribute("aria-valuenow", String(Math.round(applied)));
+  panel.style.setProperty("--shell-pane-size", `${applied}%`);
+  return applied;
+}
+
 function appliedShellOutputSplitSize() {
   const panel = els.flowPane.querySelector(".terminal-panel");
   const rect = panel.getBoundingClientRect();
   if (!rect.width) return state.shellOutputSplitSize;
   const bounds = shellOutputSplitBounds(panel, rect);
-  return Math.min(bounds.max, Math.max(bounds.min, state.shellOutputSplitSize));
+  return constrainedShellOutputSplitSize(state.shellOutputSplitSize, bounds);
 }
 
 function applyShellOutputSplitSize() {
@@ -2099,14 +2232,11 @@ function applyShellOutputSplitSize() {
   const rect = panel.getBoundingClientRect();
   const applied = appliedShellOutputSplitSize();
   const resizer = panel.querySelector(".shell-output-resizer");
+  let bounds = null;
   if (rect.width) {
-    const bounds = shellOutputSplitBounds(panel, rect);
-    resizer.setAttribute("aria-valuemin", String(Math.round(bounds.min)));
-    resizer.setAttribute("aria-valuemax", String(Math.round(bounds.max)));
+    bounds = shellOutputSplitBounds(panel, rect);
   }
-  resizer.setAttribute("aria-valuenow", String(Math.round(applied)));
-  panel.style.setProperty("--shell-pane-size", `${applied}%`);
-  return applied;
+  return writeShellOutputSplitSize(panel, resizer, applied, bounds);
 }
 
 function setShellOutputSplitSize(value) {
@@ -2121,6 +2251,7 @@ async function bootstrap() {
   void updateBrowserTabNotification();
   renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
+  setTicketDrawerSize(state.ticketDrawerSize);
   setTicketDrawerHidden(state.ticketDrawerHidden);
   setFlowSplitSize(state.flowSplitSize);
   setShellOutputSplitSize(state.shellOutputSplitSize);
@@ -2156,8 +2287,9 @@ function render() {
   renderFlowPane();
 }
 
-function setFlows(flows) {
+function setFlows(flows, options = {}) {
   const nextFlows = flows || [];
+  if (!options.preserveQueuedPromptDraft) syncClearedQueuedPromptDrafts(state.flows, nextFlows);
   const nextIds = new Set(nextFlows.map((flow) => flow.id));
   for (const flow of state.flows) {
     if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
@@ -2167,6 +2299,22 @@ function setFlows(flows) {
   syncLinearTicketsWithFlows();
   scheduleQueuedPromptFlush();
   scheduleTicketLogPrefetch();
+}
+
+function queuedPromptMessage(flow) {
+  return String(flow?.queuedPrompt?.message || "");
+}
+
+function syncClearedQueuedPromptDrafts(previousFlows, nextFlows) {
+  const nextById = new Map((nextFlows || []).map((flow) => [flow.id, flow]));
+  for (const previousFlow of previousFlows || []) {
+    const message = queuedPromptMessage(previousFlow);
+    if (!message) continue;
+    const nextFlow = nextById.get(previousFlow.id);
+    if (queuedPromptMessage(nextFlow)) continue;
+    if (state.queuedPrompt?.flowId === previousFlow.id) state.queuedPrompt = null;
+    clearPromptDraftForIssue(previousFlow.linearIssueId || linearIssueIdForFlowId(previousFlow.id), message);
+  }
 }
 
 function clearFlowClientState(flowId) {
@@ -2201,6 +2349,7 @@ function clearFlowClientState(flowId) {
     state.selectedFlowId = "";
     localStorage.removeItem("flow.selectedFlowId");
   }
+  if (state.githubCiSelectedFlowId === flowId) state.githubCiSelectedFlowId = "";
 }
 
 function syncShellOutputClearState(flows) {
@@ -2221,6 +2370,28 @@ function runtimeOnlyFlowChanges(previousFlows, nextFlows) {
     "agentRuntimeKind",
     "agentRuntimeStatus",
     "shellRuntimeStatus",
+    "updatedAt",
+  ]);
+  if ((previousFlows || []).length !== (nextFlows || []).length) return false;
+  const previousById = new Map((previousFlows || []).map((flow) => [flow.id, flow]));
+  for (const next of nextFlows || []) {
+    const previous = previousById.get(next.id);
+    if (!previous) return false;
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+    for (const key of keys) {
+      if (ignoredKeys.has(key)) continue;
+      if (previous[key] !== next[key]) return false;
+    }
+  }
+  return true;
+}
+
+function githubCiOnlyFlowChanges(previousFlows, nextFlows) {
+  const ignoredKeys = new Set([
+    "githubCiStatus",
+    "githubCiCheckedAt",
+    "githubCiTargetUrl",
+    "githubCiDescription",
     "updatedAt",
   ]);
   if ((previousFlows || []).length !== (nextFlows || []).length) return false;
@@ -2935,13 +3106,13 @@ function upsertFlow(flow) {
   setFlows(next);
 }
 
-function updateFlowQueuedPrompt(flowId, queuedPrompt) {
+function updateFlowQueuedPrompt(flowId, queuedPrompt, options = {}) {
   if (!flowId) return;
   const index = state.flows.findIndex((item) => item.id === flowId);
   if (index === -1) return;
   const next = [...state.flows];
   next[index] = { ...next[index], queuedPrompt };
-  setFlows(next);
+  setFlows(next, options);
 }
 
 function flowUpdatedAtMs(flow) {
@@ -3048,19 +3219,19 @@ async function loadLinearTickets(options = {}) {
     state.logPrefetchedFlowCount = 0;
     if (options.refreshDetails) state.linearDetails.clear();
     syncLinearTicketsWithFlows();
-    els.ticketState.textContent = formatLastUpdated();
-    els.linearState.textContent = `Linear connected: ${data.viewer.name}`;
-    els.linearState.classList.add("live");
+    els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
+    els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
+    els.linearState.classList.toggle("live", !data.cached);
     if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
     renderTickets();
     renderFlowPane();
     scheduleTicketLogPrefetch();
   } catch (error) {
-    state.linearTickets = [];
     state.linearTicketsLoaded = true;
+    syncLinearTicketsWithFlows();
     renderTickets();
     renderFlowPane();
-    els.ticketState.textContent = error.message;
+    els.ticketState.textContent = state.linearTickets.length ? `Showing cached tickets. ${error.message}` : error.message;
     els.linearState.textContent = "Linear needs attention";
     els.linearState.classList.remove("live");
   } finally {
@@ -3280,11 +3451,11 @@ function renderLinearStatusControl(issue, statusName) {
   const optionButtons = options
     .map(
       (option, index) =>
-        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${escapeHtml(option.status)}</button>`,
+        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${renderLinearStatusPillContent(option.status)}</button>`,
     )
     .join("");
   return `<span class="linear-status-control">
-    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${escapeHtml(statusName)}</button>
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName)}</button>
     ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
   </span>`;
 }
@@ -3311,6 +3482,14 @@ function renderLinearPriorityControl(issue) {
 
 function handleLinearDetailClick(event) {
   if (!(event.target instanceof Element)) return;
+  const copyButton = event.target.closest("[data-code-copy]");
+  if (copyButton && els.flowPane.contains(copyButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    void copyMarkdownCodeBlock(copyButton);
+    return;
+  }
+
   const priorityButton = event.target.closest("[data-linear-priority-option]");
   if (priorityButton && els.flowPane.contains(priorityButton)) {
     event.preventDefault();
@@ -3363,8 +3542,10 @@ function moveLinearIssueToPinnedPosition(identifier, index) {
   renderTickets();
 }
 
-function setLinearIssuePinned(identifier, pinned) {
-  if (pinned) state.pinnedLinearIssues.add(identifier);
+function setLinearIssuePinned(identifier, pinned, options = {}) {
+  if (pinned && options.position === "top") {
+    state.pinnedLinearIssues = new Set([identifier, ...[...state.pinnedLinearIssues].filter((issueId) => issueId !== identifier)]);
+  } else if (pinned) state.pinnedLinearIssues.add(identifier);
   else state.pinnedLinearIssues.delete(identifier);
   persistPinnedLinearIssues();
   renderTickets();
@@ -3659,13 +3840,11 @@ async function createPinnedLinearTicket() {
     const issue = data.issue;
     if (!issue?.identifier) throw new Error("Linear did not return the created issue.");
     upsertLinearIssue(issue);
-    state.pinnedLinearIssues.add(issue.identifier);
-    persistPinnedLinearIssues();
     state.selectedLinearIssueId = issue.identifier;
     localStorage.setItem("flow.selectedLinearIssueId", issue.identifier);
     state.linearDetails.set(issue.identifier, { loading: false, issue });
     syncLinearTicketsWithFlows();
-    renderTickets();
+    setLinearIssuePinned(issue.identifier, true, { position: "top" });
     renderFlowPane();
     focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
@@ -3687,6 +3866,10 @@ function ticketAgentWorking(ticket) {
   );
 }
 
+function ticketFlowCreating(ticket) {
+  return Boolean(ticket?.identifier && state.creatingFlowIssueIds.has(ticket.identifier));
+}
+
 function ticketShellRunning(ticket) {
   return flowShellLive(flowForTicket(ticket));
 }
@@ -3696,6 +3879,7 @@ function updateTicketCardState(card) {
   const active = card.dataset.issue === state.selectedLinearIssueId;
   card.classList.toggle("active", active);
   card.classList.toggle("agent-turn-active", ticketAgentWorking(ticket));
+  card.classList.toggle("creating-flow", ticketFlowCreating(ticket));
   card.classList.toggle("shell-command-active", ticketShellRunning(ticket));
   card.classList.toggle("agent-turn-notified", !active && state.notifiedLinearIssueIds.has(card.dataset.issue));
   card.classList.toggle("pinned", isLinearIssuePinned(card.dataset.issue));
@@ -3768,8 +3952,11 @@ function animateTicketSwitch() {
 
 function renderTicketCard(ticket) {
   const card = document.createElement("article");
+  const creatingFlow = ticketFlowCreating(ticket);
   card.className = "ticket-card";
   card.classList.toggle("in-flow", Boolean(ticket.flowId));
+  card.classList.toggle("can-start-agent", !ticket.flowId && !creatingFlow);
+  card.classList.toggle("creating-flow", creatingFlow);
   card.tabIndex = 0;
   card.role = "button";
   card.draggable = true;
@@ -3779,16 +3966,29 @@ function renderTicketCard(ticket) {
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
+      ${renderLinearStatusIcon(linearStatusName(ticket))}
       ${renderLinearPriorityIcon(ticket.priority)}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>
     ${
       ticket.flowId
         ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow" title="In flow"></div>`
-        : ""
+        : creatingFlow
+          ? renderTicketCreatingFlowIndicator(ticket)
+          : renderTicketStartAgentButton(ticket)
     }
   `;
   updateTicketCardState(card);
+  const startAgentButton = card.querySelector("[data-ticket-start-agent]");
+  startAgentButton?.addEventListener("mouseenter", () => updateTicketStartAgentAnimation(startAgentButton));
+  startAgentButton?.addEventListener("mouseleave", () => updateTicketStartAgentAnimation(startAgentButton));
+  startAgentButton?.addEventListener("focus", () => updateTicketStartAgentAnimation(startAgentButton));
+  startAgentButton?.addEventListener("blur", () => updateTicketStartAgentAnimation(startAgentButton));
+  startAgentButton?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void startTicketAgentSession(ticket);
+  });
   card.addEventListener("dragstart", (event) => {
     state.draggingLinearIssueId = ticket.identifier;
     state.suppressTicketClick = true;
@@ -3814,6 +4014,36 @@ function renderTicketCard(ticket) {
   return card;
 }
 
+function renderTicketStartAgentButton(ticket) {
+  return `<button class="ticket-flow-corner ticket-flow-start" type="button" data-ticket-start-agent="true" data-issue="${escapeAttribute(ticket.identifier)}" aria-label="Start agent session">
+    <svg class="ticket-flow-start-icon" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+      <path d="${TICKET_START_AGENT_FLAME_PATH}">
+        <animate class="ticket-flow-start-shape" attributeName="d" values="${TICKET_START_AGENT_FLAME_ANIMATION_VALUES}" dur="1.8s" repeatCount="indefinite" begin="indefinite" />
+      </path>
+    </svg>
+  </button>`;
+}
+
+function renderTicketCreatingFlowIndicator(ticket) {
+  return `<div class="ticket-flow-corner ticket-flow-creating" role="status" aria-label="Creating flow for ${escapeAttribute(ticket.identifier)}">
+    <span class="flow-create-spinner" aria-hidden="true"></span>
+  </div>`;
+}
+
+function updateTicketStartAgentAnimation(button) {
+  const animation = button.querySelector(".ticket-flow-start-shape");
+  const path = button.querySelector(".ticket-flow-start-icon path");
+  const active = button.matches(":hover, :focus-visible");
+  if (button.dataset.animationActive === String(active)) return;
+  button.dataset.animationActive = String(active);
+  if (active) {
+    animation?.beginElement?.();
+    return;
+  }
+  animation?.endElement?.();
+  path?.setAttribute("d", TICKET_START_AGENT_FLAME_PATH);
+}
+
 function selectedFlow() {
   return state.flows.find((flow) => flow.id === state.selectedFlowId) || flowForLinearIssue(state.selectedLinearIssueId);
 }
@@ -3830,6 +4060,13 @@ function flowForLinearIssue(identifier) {
 function flowForTicket(ticket) {
   if (!ticket) return null;
   return (ticket.flowId ? state.flows.find((flow) => flow.id === ticket.flowId) : null) || flowForLinearIssue(ticket.identifier);
+}
+
+function syncSelectedGithubCiFlow(flow) {
+  const flowId = flow?.prUrl ? flow.id : "";
+  if (state.githubCiSelectedFlowId === flowId) return;
+  state.githubCiSelectedFlowId = flowId;
+  void wsRequest("selected-github-flow", { flowId }).catch(() => {});
 }
 
 async function selectFlow(id) {
@@ -3868,6 +4105,17 @@ async function openTicketInFlowPane(ticket) {
   scheduleSelectedFlowPaneRender(ticket.identifier, flow?.id || "");
 }
 
+async function startTicketAgentSession(ticket) {
+  if (!ticket?.identifier) return;
+  setLinearIssuePinned(ticket.identifier, true, { position: "top" });
+  await openTicketInFlowPane(ticket);
+  const input = promptInput();
+  input.value = "get started on this. open a pr if you have a changeset";
+  resizeMessageInput();
+  saveActiveTicketInputState();
+  await submitPromptMessage();
+}
+
 function renderFlowPane(options = {}) {
   const selectedFlowById = state.flows.find((item) => item.id === state.selectedFlowId) || null;
   if (!selectedFlowById && state.selectedFlowId) {
@@ -3879,6 +4127,7 @@ function renderFlowPane(options = {}) {
     state.selectedFlowId = flow.id;
     localStorage.setItem("flow.selectedFlowId", flow.id);
   }
+  syncSelectedGithubCiFlow(flow);
   const ticket = selectedTicket();
   if (!flow && !ticket && state.selectedLinearIssueId && state.linearTicketsLoaded) {
     state.selectedLinearIssueId = "";
@@ -3925,7 +4174,11 @@ function renderFlowPane(options = {}) {
     terminal._flowLogFlowId = "";
     terminal._flowLogSignature = "";
     terminal._flowLogRenderedKeys = null;
-    terminal.textContent = "No agent session yet.";
+    if (ticketFlowCreating(ticket)) {
+      terminal.innerHTML = '<div class="flow-creating-message" role="status"><span class="flow-create-spinner" aria-hidden="true"></span><span>Creating worktree.</span></div>';
+    } else {
+      terminal.textContent = "No agent session yet.";
+    }
   }
   if (!options.light) void loadLinearDetail(issueId);
   scheduleQueuedPromptFlush();
@@ -3972,6 +4225,15 @@ function droppedImageFiles(event) {
   const files = [...(event.dataTransfer?.files || [])].filter((file) => file.type.startsWith("image/"));
   if (files.length) return files;
   return [...(event.dataTransfer?.items || [])]
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
+function pastedImageFiles(event) {
+  const files = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith("image/"));
+  if (files.length) return files;
+  return [...(event.clipboardData?.items || [])]
     .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
     .map((item) => item.getAsFile())
     .filter(Boolean);
@@ -4069,6 +4331,7 @@ function renderLinearDetail(context, options = {}) {
   const priorityControl = renderLinearPriorityControl(issue);
   const statusName = issue.state?.name || context.ticket?.state?.name || "";
   const statusControl = renderLinearStatusControl(issue, statusName);
+  const githubCiPill = renderGithubCiPill(context.flow);
 
   container.innerHTML = `
     <section class="linear-issue">
@@ -4084,6 +4347,7 @@ function renderLinearDetail(context, options = {}) {
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
         ${statusControl}
         ${priorityControl}
+        ${githubCiPill}
       </div>
       <div class="linear-description linear-markdown">${options.light ? escapeHtml(issue.description || "") : renderLinearMarkdown(issue.description, "")}</div>
     </section>
@@ -4101,6 +4365,7 @@ function renderLinearDetail(context, options = {}) {
       }
     </section>
   `;
+  updateMarkdownCodeCopyPositions(container);
 }
 
 async function loadLinearDetail(identifier) {
@@ -4133,9 +4398,14 @@ async function loadLinearDetail(identifier) {
 }
 
 async function createFlowFromTicket(ticket, options = {}) {
-  let data;
+  const issueId = ticket?.identifier || "";
+  if (issueId) {
+    state.creatingFlowIssueIds.add(issueId);
+    renderTickets();
+    if (issueId === state.selectedLinearIssueId) renderFlowPane();
+  }
   try {
-    data = await api("/api/flows", {
+    const data = await api("/api/flows", {
       method: "POST",
       body: JSON.stringify({
         issue: ticket.identifier,
@@ -4145,17 +4415,23 @@ async function createFlowFromTicket(ticket, options = {}) {
         state: ticket.state || null,
       }),
     });
+    upsertFlow(data.flow);
+    render();
+    await loadLogs(data.flow.id);
+    if (options.select !== false) await selectFlow(data.flow.id);
+    return data.flow;
   } catch (error) {
     if (isGitCloneError(error)) {
       toast(error.message, { kind: "error" });
     }
     throw error;
+  } finally {
+    if (issueId) {
+      state.creatingFlowIssueIds.delete(issueId);
+      renderTickets();
+      if (issueId === state.selectedLinearIssueId) renderFlowPane();
+    }
   }
-  upsertFlow(data.flow);
-  render();
-  await loadLogs(data.flow.id);
-  if (options.select !== false) await selectFlow(data.flow.id);
-  return data.flow;
 }
 
 async function ensureSelectedFlow() {
@@ -4579,6 +4855,12 @@ function finalResponseStartIdForTrace(range, rangeLogs) {
   return rangeLogs[finalResponseStartIndex].id;
 }
 
+function traceRangeShouldIncludeUserLogs(range, rangeLogs) {
+  if (range.kind === "compact") return true;
+  if (range.kind === "shell") return false;
+  return rangeLogs.some((log) => isUserLogSource(log.source)) && rangeLogs.some((log) => isAgentTurnEndedLog(log));
+}
+
 function sanitizeTraceRanges(logs, ranges) {
   const result = [];
   const seen = new Set();
@@ -4586,6 +4868,11 @@ function sanitizeTraceRanges(logs, ranges) {
   for (const range of ranges) {
     const rangeLogs = logs.filter((log) => log.id > range.afterId && log.id < range.beforeId && !isTraceGroupSource(log.source));
     const beforeId = finalResponseStartIdForTrace(range, rangeLogs);
+    const includeUserLogs = traceRangeShouldIncludeUserLogs(range, rangeLogs);
+    if (includeUserLogs) {
+      addSanitizedTraceRange(result, seen, logs, { ...range, includeUserLogs }, range.afterId, beforeId, countRange);
+      continue;
+    }
     let segmentAfterId = range.afterId;
     for (const log of rangeLogs) {
       if (log.id >= beforeId) break;
@@ -4661,6 +4948,28 @@ function latestTerminalContentGroup(groups) {
     return group;
   }
   return null;
+}
+
+function terminalContentGroups(groups, result = []) {
+  for (const group of groups || []) {
+    if (group.source === "agent:trace-group") terminalContentGroups(group.children || [], result);
+    else result.push(group);
+  }
+  return result;
+}
+
+function markPendingTerminalTurnGroups(groups, flow) {
+  if (!flowAgentRunning(flow) || state.messageSubmittingFlowId === flow?.id) return groups;
+  const contentGroups = terminalContentGroups(groups);
+  let lastUserIndex = -1;
+  for (let index = 0; index < contentGroups.length; index += 1) {
+    if (isUserLogSource(contentGroups[index].source)) lastUserIndex = index;
+  }
+  if (lastUserIndex < 0) return groups;
+  for (let index = lastUserIndex + 1; index < contentGroups.length; index += 1) {
+    if (isLiveAgentTextSource(contentGroups[index].source)) contentGroups[index].turnPending = true;
+  }
+  return groups;
 }
 
 function markLiveTerminalGroup(groups, flow) {
@@ -4739,7 +5048,7 @@ function terminalGroups(logs, flow) {
     const traceRange =
       currentTraceRange && logId > currentTraceRange.afterId && logId < currentTraceRange.beforeId ? currentTraceRange : null;
     if (isHiddenTerminalLog(log)) continue;
-    if (traceRange && !isUserLogSource(log.source)) {
+    if (traceRange && (!isUserLogSource(log.source) || traceRange.includeUserLogs)) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
         traceGroup = {
@@ -4766,7 +5075,10 @@ function terminalGroups(logs, flow) {
     appendTerminalGroup(groups, log, { forceNew: forceTerminalGroupBoundary });
     forceTerminalGroupBoundary = false;
   }
-  return markLiveTerminalGroup(mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups)), flow);
+  const visibleGroups = mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups));
+  markPendingTerminalTurnGroups(visibleGroups, flow);
+  markLiveTerminalGroup(visibleGroups, flow);
+  return visibleGroups;
 }
 
 function agentPaneLogs(logs, flow) {
@@ -5022,13 +5334,18 @@ function renderTerminalAttachedImages(images) {
   return `<div class="terminal-attached-images">${images.map((image) => renderAgentImageChip(image)).join("")}</div>`;
 }
 
-function renderTerminalMarkdownContent(message) {
+function renderTerminalMarkdownContent(message, options = {}) {
   const parsed = splitTerminalAttachedImages(message);
-  return `${renderLinearMarkdown(parsed.message, "", { images: false, links: true, compactBlankLines: true })}${renderTerminalAttachedImages(parsed.images)}`;
+  return `${renderLinearMarkdown(parsed.message, "", {
+    images: false,
+    links: true,
+    compactBlankLines: true,
+    copyCode: options.copyCode !== false,
+  })}${renderTerminalAttachedImages(parsed.images)}`;
 }
 
-function renderTerminalMarkdownOutput(message) {
-  return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message)}</div>`;
+function renderTerminalMarkdownOutput(message, options = {}) {
+  return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message, options)}</div>`;
 }
 
 function renderTerminalStreamingTextOutput(message) {
@@ -5036,6 +5353,7 @@ function renderTerminalStreamingTextOutput(message) {
     images: false,
     links: true,
     compactBlankLines: true,
+    copyCode: false,
   })}</div>`;
 }
 
@@ -5257,6 +5575,7 @@ function toggleTerminalMarkdownOutput(button) {
 
 function highlightCodeBlocks(root) {
   window.Prism?.highlightAllUnder?.(root);
+  updateMarkdownCodeCopyPositions(root);
 }
 
 async function copyTextToClipboard(text) {
@@ -5283,6 +5602,115 @@ async function copyAgentBranchName(branchName) {
   } catch {
     toast("Could not copy branch", { kind: "error" });
   }
+}
+
+async function copyMarkdownCodeBlock(button) {
+  const code = button.closest(".markdown-code-block")?.querySelector("code")?.textContent || "";
+  if (!code) return;
+  try {
+    await copyTextToClipboard(code);
+  } catch {
+    toast("Could not copy code", { kind: "error" });
+  }
+}
+
+function markdownTableColumnWidths(table) {
+  return Array.from(table.querySelectorAll("thead th")).map((header) =>
+    Math.max(MARKDOWN_TABLE_MIN_COLUMN_WIDTH, Math.round(header.getBoundingClientRect().width)),
+  );
+}
+
+function setMarkdownTableColumnWidths(table, widths) {
+  let colgroup = table.querySelector("colgroup");
+  if (!colgroup) {
+    colgroup = document.createElement("colgroup");
+    table.prepend(colgroup);
+  }
+
+  while (colgroup.children.length < widths.length) colgroup.appendChild(document.createElement("col"));
+  Array.from(colgroup.children).forEach((column, index) => {
+    if (index >= widths.length) return;
+    column.style.width = `${widths[index]}px`;
+  });
+  table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
+  table.style.tableLayout = "fixed";
+}
+
+function startMarkdownTableColumnResize(event) {
+  const handle = event.target.closest?.("[data-markdown-column-resizer]");
+  if (!handle) return;
+
+  const header = handle.closest("th");
+  const table = header?.closest("table.markdown-resizable-table");
+  if (!header || !table) return;
+
+  const headers = Array.from(table.querySelectorAll("thead th"));
+  const columnIndex = headers.indexOf(header);
+  if (columnIndex === -1) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const startX = event.clientX;
+  const widths = markdownTableColumnWidths(table);
+  const startWidth = widths[columnIndex] || MARKDOWN_TABLE_MIN_COLUMN_WIDTH;
+  setMarkdownTableColumnWidths(table, widths);
+  table.classList.add("markdown-table-resizing");
+  document.body.classList.add("markdown-table-resizing");
+  handle.setPointerCapture?.(event.pointerId);
+
+  const onPointerMove = (moveEvent) => {
+    const nextWidths = [...widths];
+    nextWidths[columnIndex] = Math.max(
+      MARKDOWN_TABLE_MIN_COLUMN_WIDTH,
+      Math.round(startWidth + moveEvent.clientX - startX),
+    );
+    setMarkdownTableColumnWidths(table, nextWidths);
+  };
+
+  const onPointerUp = (upEvent) => {
+    onPointerMove(upEvent);
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    table.classList.remove("markdown-table-resizing");
+    document.body.classList.remove("markdown-table-resizing");
+    if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
+function updateMarkdownCodeCopyPositions(root = els.flowPane) {
+  for (const block of root.querySelectorAll?.(".markdown-code-block") || []) {
+    const button = block.querySelector(".markdown-code-copy");
+    if (!button) continue;
+    const blockRect = block.getBoundingClientRect();
+    const clipTop = markdownCodeBlockClipTop(block);
+    const rawTop = Math.max(blockRect.top, clipTop) - blockRect.top + MARKDOWN_CODE_COPY_OFFSET;
+    const maxTop = Math.max(MARKDOWN_CODE_COPY_OFFSET, blockRect.height - MARKDOWN_CODE_COPY_SIZE - MARKDOWN_CODE_COPY_OFFSET);
+    const top = Math.min(Math.max(MARKDOWN_CODE_COPY_OFFSET, rawTop), maxTop);
+    button.style.setProperty("--markdown-code-copy-top", `${top}px`);
+  }
+}
+
+function markdownCodeBlockClipTop(block) {
+  let clipTop = 0;
+  for (let node = block.parentElement; node && node !== document.body; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (!/(auto|scroll|hidden|clip)/.test(`${style.overflow}${style.overflowY}`)) continue;
+    clipTop = Math.max(clipTop, node.getBoundingClientRect().top);
+  }
+  return clipTop;
+}
+
+let markdownCodeCopyPositionFrame = 0;
+function scheduleMarkdownCodeCopyPositionUpdate(root = els.flowPane) {
+  if (markdownCodeCopyPositionFrame) return;
+  markdownCodeCopyPositionFrame = requestAnimationFrame(() => {
+    markdownCodeCopyPositionFrame = 0;
+    updateMarkdownCodeCopyPositions(root);
+  });
 }
 
 function terminalMessageMaxLines(root) {
@@ -5388,7 +5816,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
   label.textContent = meta.label;
 
   let markdownToggle = null;
-  if (!group.liveStreaming && usesTerminalMarkdownToggle(group.source)) {
+  if (!group.liveStreaming && !group.turnPending && usesTerminalMarkdownToggle(group.source)) {
     markdownToggle = document.createElement("button");
     markdownToggle.type = "button";
     markdownToggle.className = "terminal-markdown-toggle";
@@ -5418,7 +5846,7 @@ function appendTerminalBlock(fragment, group, options = {}) {
       body.innerHTML = renderTerminalStreamingTextOutput(message);
       highlightCodeBlocks(body);
     } else {
-      body.innerHTML = renderTerminalMarkdownOutput(message);
+      body.innerHTML = renderTerminalMarkdownOutput(message, { copyCode: !group.turnPending });
       highlightCodeBlocks(body);
     }
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
@@ -6063,6 +6491,10 @@ function connectWs() {
         if (flow) scheduleLogRender(flow.id, { force: true });
         return;
       }
+      if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {
+        renderFlowPane();
+        return;
+      }
       render();
       const flow = selectedFlow();
       if (flow) void loadFlowDiff(flow.id, { force: true });
@@ -6143,11 +6575,50 @@ function startFlowSplitResize(event) {
   window.addEventListener("pointerup", onPointerUp, { once: true });
 }
 
-function resizeShellOutputSplitFromPointer(clientX) {
-  const panel = els.flowPane.querySelector(".terminal-panel");
-  const rect = panel.getBoundingClientRect();
+function resizeTicketDrawerFromPointer(clientX) {
+  if (state.ticketDrawerHidden) return;
+  const rect = els.ticketDrawer.getBoundingClientRect();
   if (!rect.width) return;
-  setShellOutputSplitSizeKeepingTerminalBottom(((rect.right - clientX) / rect.width) * 100);
+  setTicketDrawerSize(clientX - rect.left);
+}
+
+function startTicketDrawerResize(event) {
+  if (state.ticketDrawerHidden) return;
+  event.preventDefault();
+  event.stopPropagation();
+  document.body.classList.add("ticket-drawer-resizing");
+  resizeTicketDrawerFromPointer(event.clientX);
+
+  const onPointerMove = (moveEvent) => resizeTicketDrawerFromPointer(moveEvent.clientX);
+  const onPointerUp = () => {
+    document.body.classList.remove("ticket-drawer-resizing");
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
+function handleTicketDrawerResizeKeydown(event) {
+  if (state.ticketDrawerHidden || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Home") {
+    setTicketDrawerSize(TICKET_DRAWER_MIN_SIZE);
+    return;
+  }
+  if (event.key === "End") {
+    setTicketDrawerSize(TICKET_DRAWER_MAX_SIZE);
+    return;
+  }
+  setTicketDrawerSize(state.ticketDrawerSize + (event.key === "ArrowRight" ? 10 : -10));
+}
+
+function resizeShellOutputSplitFromPointer(clientX) {
+  const context = shellOutputSplitResizeContext();
+  if (!context) return;
+  resizeShellOutputSplitFromPointerWithContext(clientX, context);
 }
 
 function setShellOutputSplitSizeKeepingTerminalBottom(value) {
@@ -6156,15 +6627,56 @@ function setShellOutputSplitSizeKeepingTerminalBottom(value) {
   restoreTerminalBottom();
 }
 
+function shellOutputSplitResizeContext() {
+  const panel = els.flowPane.querySelector(".terminal-panel");
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width) return null;
+  const resizer = panel.querySelector(".shell-output-resizer");
+  return {
+    panel,
+    rect,
+    resizer,
+    bounds: shellOutputSplitBounds(panel, rect),
+  };
+}
+
+function shellOutputSplitSizeFromPointer(clientX, context) {
+  return ((context.rect.right - clientX) / context.rect.width) * 100;
+}
+
+function resizeShellOutputSplitFromPointerWithContext(clientX, context) {
+  state.shellOutputSplitSize = constrainedShellOutputSplitSize(shellOutputSplitSizeFromPointer(clientX, context), context.bounds);
+  writeShellOutputSplitSize(context.panel, context.resizer, state.shellOutputSplitSize, context.bounds);
+}
+
 function startShellOutputSplitResize(event) {
   event.preventDefault();
   if (state.shellPaneHidden) setShellPaneHidden(false);
+  const resizeContext = shellOutputSplitResizeContext();
+  if (!resizeContext) return;
+  const restoreTerminalBottom = terminalBottomRestorer();
   document.body.classList.add("shell-output-resizing");
-  resizeShellOutputSplitFromPointer(event.clientX);
+  resizeShellOutputSplitFromPointerWithContext(event.clientX, resizeContext);
 
-  const onPointerMove = (moveEvent) => resizeShellOutputSplitFromPointer(moveEvent.clientX);
-  const onPointerUp = () => {
+  let pendingClientX = event.clientX;
+  let resizeFrame = 0;
+  const flushResize = () => {
+    resizeFrame = 0;
+    resizeShellOutputSplitFromPointerWithContext(pendingClientX, resizeContext);
+  };
+  const onPointerMove = (moveEvent) => {
+    pendingClientX = moveEvent.clientX;
+    if (!resizeFrame) resizeFrame = requestAnimationFrame(flushResize);
+  };
+  const onPointerUp = (upEvent) => {
+    pendingClientX = upEvent.clientX;
+    if (resizeFrame) {
+      cancelAnimationFrame(resizeFrame);
+      flushResize();
+    }
     document.body.classList.remove("shell-output-resizing");
+    localStorage.setItem(SHELL_OUTPUT_SPLIT_SIZE_KEY, String(state.shellOutputSplitSize));
+    restoreTerminalBottom();
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
   };
@@ -6205,6 +6717,9 @@ els.ticketDrawer.addEventListener("keydown", (event) => {
   event.preventDefault();
   setTicketDrawerHidden(false);
 });
+
+els.ticketDrawerResizer.addEventListener("pointerdown", startTicketDrawerResize);
+els.ticketDrawerResizer.addEventListener("keydown", handleTicketDrawerResizeKeydown);
 
 els.settingsPane.addEventListener(
   "wheel",
@@ -6298,6 +6813,9 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", 
 els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 els.flowPane.addEventListener("click", handleLinearDetailClick);
+els.flowPane.addEventListener("pointerdown", startMarkdownTableColumnResize);
+els.flowPane.addEventListener("scroll", () => scheduleMarkdownCodeCopyPositionUpdate(), { capture: true, passive: true });
+window.addEventListener("resize", () => scheduleMarkdownCodeCopyPositionUpdate(), { passive: true });
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
@@ -6351,6 +6869,13 @@ promptInput().addEventListener("input", () => {
 
 promptInput().addEventListener("beforeinput", (event) => {
   handleQueuedPromptBeforeInput(event);
+});
+
+promptInput().addEventListener("paste", (event) => {
+  const files = pastedImageFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  void uploadAgentImages(files);
 });
 
 shellInput().addEventListener("input", () => {

@@ -302,6 +302,10 @@ body.tickets-collapsed .ticket-drawer > * {
   display: none;
 }
 
+body.tickets-collapsed .ticket-drawer-resizer {
+  display: none;
+}
+
 body.app-booting main,
 body.app-booting .ticket-drawer {
   transition: none;
@@ -710,6 +714,7 @@ body.theme-dark .linear-status-pill,
 body.theme-dark .linear-status-option,
 body.theme-dark .linear-priority-pill,
 body.theme-dark .linear-priority-option,
+body.theme-dark .github-ci-pill,
 body.theme-dark .linear-comments > header span,
 body.theme-dark .linear-description,
 body.theme-dark .linear-comment-body {
@@ -1222,10 +1227,54 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   vertical-align: -4px;
 }
 
-.linear-status-icon img {
+.linear-status-icon-glyph {
+  display: block;
   width: 18px;
   height: 18px;
-  display: block;
+  background: currentColor;
+  mask: var(--linear-status-icon-url) center / contain no-repeat;
+  -webkit-mask: var(--linear-status-icon-url) center / contain no-repeat;
+}
+
+.linear-status-icon-backlog {
+  --linear-status-icon-url: url("/linear-status-icons/backlog.svg");
+}
+
+.linear-status-icon-done {
+  --linear-status-icon-url: url("/linear-status-icons/done.svg");
+  color: var(--accent);
+}
+
+.linear-status-icon-review {
+  --linear-status-icon-url: url("/linear-status-icons/review.svg");
+  color: #44c45a;
+}
+
+.linear-status-icon-started {
+  --linear-status-icon-url: url("/linear-status-icons/started.svg");
+  color: #d4a600;
+}
+
+.linear-status-icon-todo {
+  --linear-status-icon-url: url("/linear-status-icons/todo.svg");
+}
+
+.linear-status-icon-triage {
+  --linear-status-icon-url: url("/linear-status-icons/triage.svg");
+  color: var(--accent);
+}
+
+.linear-status-pill .linear-status-icon,
+.linear-status-option .linear-status-icon {
+  width: 13px;
+  height: 13px;
+  vertical-align: 0;
+}
+
+.linear-status-pill .linear-status-icon-glyph,
+.linear-status-option .linear-status-icon-glyph {
+  width: 13px;
+  height: 13px;
 }
 
 .checkout-delete {
@@ -1295,6 +1344,7 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .ticket-drawer {
+  position: relative;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
@@ -1313,6 +1363,47 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
     padding var(--motion-pane),
     border-color var(--motion-pane),
     visibility 0ms linear 0ms;
+}
+
+.ticket-drawer-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.ticket-drawer-resizer::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  right: 3px;
+  bottom: 14px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color var(--motion-fast);
+}
+
+.ticket-drawer-resizer:hover::before,
+.ticket-drawer-resizer:focus-visible::before,
+body.ticket-drawer-resizing .ticket-drawer-resizer::before {
+  background: var(--line-strong);
+}
+
+body.ticket-drawer-resizing {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+body.ticket-drawer-resizing main {
+  transition: none;
 }
 
 .ticket-drawer-header {
@@ -1726,6 +1817,76 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   pointer-events: none;
 }
 
+.ticket-flow-start {
+  appearance: none;
+  right: 8px;
+  top: var(--ticket-card-title-y);
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0;
+  line-height: 0;
+  opacity: 0;
+  transform: scale(0.92);
+  transition:
+    color var(--motion-fast),
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+body.theme-dark .ticket-flow-start,
+body.theme-dark .ticket-flow-start:hover,
+body.theme-dark .ticket-flow-start:focus-visible {
+  background: transparent;
+}
+
+.ticket-flow-start-icon {
+  width: 18px;
+  height: 18px;
+  overflow: visible;
+}
+
+.ticket-flow-start-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke-width var(--motion-fast);
+}
+
+.ticket-flow-start:hover .ticket-flow-start-icon path,
+.ticket-flow-start:focus-visible .ticket-flow-start-icon path {
+  stroke-width: 5.5;
+}
+
+.ticket-card.can-start-agent:hover .ticket-flow-start,
+.ticket-card.can-start-agent:focus-within .ticket-flow-start {
+  pointer-events: auto;
+  opacity: 1;
+  transform: scale(1);
+}
+
+.ticket-flow-start:active {
+  transform: scale(0.88);
+}
+
+.ticket-flow-creating {
+  color: var(--muted);
+}
+
+.ticket-card.creating-flow .ticket-flow-creating {
+  opacity: 1;
+}
+
 .ticket-card.shell-command-active .ticket-flow-corner::after {
   content: "";
   position: absolute;
@@ -1766,6 +1927,10 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
 }
 
 .ticket-card.in-flow .ticket-title {
+  padding-right: 32px;
+}
+
+.ticket-card.can-start-agent .ticket-title {
   padding-right: 32px;
 }
 
@@ -1823,6 +1988,18 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   fill: currentColor;
   stroke: none;
   stroke-width: 0;
+}
+
+.ticket-meta .linear-status-icon {
+  width: 13px;
+  min-width: 13px;
+  height: 13px;
+  vertical-align: 0;
+}
+
+.ticket-meta .linear-status-icon-glyph {
+  width: 13px;
+  height: 13px;
 }
 
 .icon-button {
@@ -2104,6 +2281,10 @@ body.shell-output-resizing {
   user-select: none;
 }
 
+body.shell-output-resizing .terminal-panel {
+  transition: none;
+}
+
 .agent-disabled-message {
   display: none;
   place-self: center;
@@ -2225,6 +2406,7 @@ body.flow-resizing .flow-content {
 .linear-status-option,
 .linear-priority-pill,
 .linear-priority-option,
+.github-ci-pill,
 .linear-comments > header span {
   display: inline-flex;
   align-items: center;
@@ -2246,10 +2428,16 @@ body.flow-resizing .flow-content {
   gap: 6px;
 }
 
+.linear-status-control {
+  margin: -6px -10px;
+  padding: 6px 10px;
+}
+
 .linear-status-pill,
 .linear-status-option,
 .linear-priority-pill,
-.linear-priority-option {
+.linear-priority-option,
+.github-ci-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -2270,7 +2458,8 @@ body.flow-resizing .flow-content {
 body.theme-dark .linear-status-pill,
 body.theme-dark .linear-status-option,
 body.theme-dark .linear-priority-pill,
-body.theme-dark .linear-priority-option {
+body.theme-dark .linear-priority-option,
+body.theme-dark .github-ci-pill {
   background: #151a20;
   color: var(--muted);
 }
@@ -2278,6 +2467,42 @@ body.theme-dark .linear-priority-option {
 .linear-status-pill,
 .linear-priority-pill {
   cursor: pointer;
+}
+
+.github-ci-pill {
+  color: #24292f;
+  text-decoration: none;
+}
+
+.github-ci-pill svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+}
+
+.github-ci-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #d0d7de;
+}
+
+.github-ci-pill-success .github-ci-dot {
+  background: #2da44e;
+}
+
+.github-ci-pill-pending .github-ci-dot,
+.github-ci-pill-unknown .github-ci-dot {
+  background: #fbbf24;
+}
+
+body.theme-dark .github-ci-pill-pending .github-ci-dot,
+body.theme-dark .github-ci-pill-unknown .github-ci-dot {
+  background: #fbbf24;
+}
+
+.github-ci-pill-failure .github-ci-dot {
+  background: #ef4444;
 }
 
 .linear-status-options,
@@ -2326,7 +2551,8 @@ body.theme-dark .linear-priority-option {
 .linear-status-pill:hover,
 .linear-status-option:hover,
 .linear-priority-pill:hover,
-.linear-priority-option:hover {
+.linear-priority-option:hover,
+.github-ci-pill:hover {
   border-color: var(--line-strong);
   color: var(--ink);
 }
@@ -2335,7 +2561,8 @@ body.theme-dark .linear-priority-option {
 .linear-status-pill,
 .linear-status-option,
 .linear-priority-pill,
-.linear-priority-option {
+.linear-priority-option,
+.github-ci-pill {
   user-select: none;
   -webkit-user-select: none;
 }
@@ -2491,10 +2718,68 @@ body.theme-dark .terminal-entry-body a {
 
 .linear-markdown th,
 .terminal-entry-body th {
+  position: relative;
   background: #f1f5f9;
   color: var(--ink);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-weight: 700;
+}
+
+.linear-markdown .markdown-resizable-table th,
+.terminal-entry-body .markdown-resizable-table th {
+  padding-right: 18px;
+}
+
+.markdown-table-header-content {
+  display: block;
+  min-width: 0;
+}
+
+.markdown-table-column-resizer {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  bottom: 0;
+  z-index: 2;
+  width: 10px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+body.theme-dark .markdown-table-column-resizer,
+body.theme-dark .markdown-table-column-resizer:hover,
+body.theme-dark .markdown-table-column-resizer:focus-visible {
+  border: 0;
+  background: transparent;
+}
+
+.markdown-table-column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.markdown-table-column-resizer:hover::after,
+.markdown-table-column-resizer:focus-visible::after,
+.markdown-resizable-table.markdown-table-resizing .markdown-table-column-resizer::after {
+  background: #94a3b8;
+}
+
+body.markdown-table-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .linear-markdown td,
@@ -2522,11 +2807,66 @@ body.theme-dark .terminal-entry-body a {
   margin: 6px 0;
   border: 1px solid var(--line);
   border-radius: 6px;
+  position: relative;
   background: transparent;
-  padding: 10px 12px;
+  padding: 10px 40px 10px 12px;
   color: #27313d;
-  overflow: auto;
-  white-space: pre;
+  overflow: visible;
+  white-space: normal;
+}
+
+.linear-markdown .markdown-code-copy,
+.terminal-entry-body .markdown-code-copy {
+  position: absolute;
+  top: var(--markdown-code-copy-top, 6px);
+  right: 6px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  margin: 0;
+  padding: 0;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.linear-markdown .markdown-code-copy svg,
+.terminal-entry-body .markdown-code-copy svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  fill: none;
+}
+
+.linear-markdown .markdown-code-block:hover .markdown-code-copy,
+.linear-markdown .markdown-code-copy:focus-visible,
+.terminal-entry-body .markdown-code-block:hover .markdown-code-copy,
+.terminal-entry-body .markdown-code-copy:focus-visible {
+  opacity: 1;
+}
+
+.linear-markdown .markdown-code-copy:hover,
+.linear-markdown .markdown-code-copy:focus-visible,
+.terminal-entry-body .markdown-code-copy:hover,
+.terminal-entry-body .markdown-code-copy:focus-visible {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent);
 }
 
 .linear-markdown .markdown-code-block:first-child,
@@ -2542,13 +2882,14 @@ body.theme-dark .terminal-entry-body a {
 .linear-markdown .markdown-code-block code,
 .terminal-entry-body .markdown-code-block code {
   display: block;
+  overflow-x: auto;
   border: 0;
   border-radius: 0;
   background: transparent;
   padding: 0;
   font-size: 12px;
   line-height: 1.5;
-  white-space: inherit;
+  white-space: pre;
 }
 
 .linear-markdown .token.comment,
@@ -2824,6 +3165,13 @@ body.theme-dark .terminal-entry-body a {
   line-height: 1.55;
 }
 
+.flow-creating-message {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
 .terminal-entry {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2945,6 +3293,10 @@ body.theme-dark .terminal-entry-body a {
   min-width: 0;
   white-space: inherit;
   overflow-wrap: inherit;
+}
+
+.terminal-entry-body-content:has(.markdown-code-copy) {
+  overflow: visible;
 }
 
 .shell-output-pane .terminal-entry-body-content {
@@ -3638,6 +3990,23 @@ body.shell-pane-hidden .shell-command-panel {
 }
 
 @keyframes queued-prompt-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.flow-create-spinner {
+  box-sizing: border-box;
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: flow-create-spinner 900ms linear infinite;
+}
+
+@keyframes flow-create-spinner {
   to {
     transform: rotate(360deg);
   }
