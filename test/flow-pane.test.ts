@@ -1267,6 +1267,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function renderTerminalMarkdownContent(message, options = {})");
     expect(app).toContain("renderTerminalMarkdownContent(raw)");
     expect(app).toContain("copyCode: options.copyCode !== false");
+    expect(app).toContain("const MARKDOWN_TABLE_MIN_COLUMN_WIDTH = 72;");
+    expect(app).toContain("function startMarkdownTableColumnResize(event)");
+    expect(app).toContain('els.flowPane.addEventListener("pointerdown", startMarkdownTableColumnResize);');
     expect(app).not.toContain("body.textContent = formatTerminalMessage(group.source, group.message);");
     expect(html).toContain('<script src="/vendor/prismjs/prism.js" data-manual></script>');
     expect(html).toContain('<script src="/vendor/prismjs/components/prism-typescript.min.js"></script>');
@@ -1283,6 +1286,11 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".terminal-entry-body table + br {\n  display: none;\n}");
     expect(css).toContain(".linear-markdown th,\n.linear-markdown td,\n.terminal-entry-body th,\n.terminal-entry-body td");
     expect(css).toContain("  min-width: 0;\n  border-right: 1px solid var(--line);\n  border-bottom: 1px solid var(--line);\n  padding: 4px 8px;");
+    expect(css).toContain(".linear-markdown .markdown-resizable-table th,\n.terminal-entry-body .markdown-resizable-table th");
+    expect(css).toContain(".markdown-table-column-resizer");
+    expect(css).toContain("cursor: col-resize;");
+    expect(css).toContain("body.theme-dark .markdown-table-column-resizer,\nbody.theme-dark .markdown-table-column-resizer:hover,\nbody.theme-dark .markdown-table-column-resizer:focus-visible");
+    expect(css).toContain("body.markdown-table-resizing");
     expect(css).toContain("body.theme-dark .linear-markdown th,\nbody.theme-dark .terminal-entry-body th");
     expect(css).toContain(".terminal-entry-body td {\n  font-size: 11px;\n}");
     expect(css).toContain(".linear-markdown ul,\n.linear-markdown ol {\n  margin: 4px 0 4px 18px;");

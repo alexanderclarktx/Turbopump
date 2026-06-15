@@ -150,7 +150,7 @@ function renderTable(lines, startIndex, options) {
   }
 
   const headerHtml = header
-    .map((cell, cellIndex) => renderTableCell("th", cell, alignments[cellIndex], options))
+    .map((cell, cellIndex) => renderTableCell("th", cell, alignments[cellIndex], options, cellIndex))
     .join("");
   const bodyHtml = rows
     .map((row) => {
@@ -160,16 +160,21 @@ function renderTable(lines, startIndex, options) {
       return `<tr>${cells.join("")}</tr>`;
     })
     .join("");
+  const columnHtml = alignments.map((_, cellIndex) => `<col data-markdown-column-index="${cellIndex}">`).join("");
 
   return {
-    html: `<table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
+    html: `<table class="markdown-resizable-table"><colgroup>${columnHtml}</colgroup><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
     index,
   };
 }
 
-function renderTableCell(tag, value, alignment, options) {
+function renderTableCell(tag, value, alignment, options, cellIndex = -1) {
   const align = alignment ? ` style="text-align: ${alignment}"` : "";
-  return `<${tag}${align}>${renderInlineMarkdown(value.trim(), options)}</${tag}>`;
+  const content = renderInlineMarkdown(value.trim(), options);
+  if (tag === "th") {
+    return `<th${align} data-markdown-column-index="${cellIndex}"><span class="markdown-table-header-content">${content}</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column" title="Resize column"></button></th>`;
+  }
+  return `<${tag}${align}>${content}</${tag}>`;
 }
 
 function parseTableRow(line) {

@@ -31,6 +31,7 @@ const TERMINAL_TRACE_OPEN_DURATION_MS = 90;
 const TERMINAL_TRACE_CLOSE_DURATION_MS = 80;
 const MARKDOWN_CODE_COPY_OFFSET = 6;
 const MARKDOWN_CODE_COPY_SIZE = 24;
+const MARKDOWN_TABLE_MIN_COLUMN_WIDTH = 72;
 const TICKET_DRAWER_MIN_SIZE = 280;
 const TICKET_DRAWER_MAX_SIZE = 320;
 const TICKET_START_AGENT_FLAME_PATH =
@@ -5615,6 +5616,73 @@ async function copyMarkdownCodeBlock(button) {
   }
 }
 
+function markdownTableColumnWidths(table) {
+  return Array.from(table.querySelectorAll("thead th")).map((header) =>
+    Math.max(MARKDOWN_TABLE_MIN_COLUMN_WIDTH, Math.round(header.getBoundingClientRect().width)),
+  );
+}
+
+function setMarkdownTableColumnWidths(table, widths) {
+  let colgroup = table.querySelector("colgroup");
+  if (!colgroup) {
+    colgroup = document.createElement("colgroup");
+    table.prepend(colgroup);
+  }
+
+  while (colgroup.children.length < widths.length) colgroup.appendChild(document.createElement("col"));
+  Array.from(colgroup.children).forEach((column, index) => {
+    if (index >= widths.length) return;
+    column.style.width = `${widths[index]}px`;
+  });
+  table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
+  table.style.tableLayout = "fixed";
+}
+
+function startMarkdownTableColumnResize(event) {
+  const handle = event.target.closest?.("[data-markdown-column-resizer]");
+  if (!handle) return;
+
+  const header = handle.closest("th");
+  const table = header?.closest("table.markdown-resizable-table");
+  if (!header || !table) return;
+
+  const headers = Array.from(table.querySelectorAll("thead th"));
+  const columnIndex = headers.indexOf(header);
+  if (columnIndex === -1) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const startX = event.clientX;
+  const widths = markdownTableColumnWidths(table);
+  const startWidth = widths[columnIndex] || MARKDOWN_TABLE_MIN_COLUMN_WIDTH;
+  setMarkdownTableColumnWidths(table, widths);
+  table.classList.add("markdown-table-resizing");
+  document.body.classList.add("markdown-table-resizing");
+  handle.setPointerCapture?.(event.pointerId);
+
+  const onPointerMove = (moveEvent) => {
+    const nextWidths = [...widths];
+    nextWidths[columnIndex] = Math.max(
+      MARKDOWN_TABLE_MIN_COLUMN_WIDTH,
+      Math.round(startWidth + moveEvent.clientX - startX),
+    );
+    setMarkdownTableColumnWidths(table, nextWidths);
+  };
+
+  const onPointerUp = (upEvent) => {
+    onPointerMove(upEvent);
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    table.classList.remove("markdown-table-resizing");
+    document.body.classList.remove("markdown-table-resizing");
+    if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
 function updateMarkdownCodeCopyPositions(root = els.flowPane) {
   for (const block of root.querySelectorAll?.(".markdown-code-block") || []) {
     const button = block.querySelector(".markdown-code-copy");
@@ -6747,6 +6815,7 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", 
 els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 els.flowPane.addEventListener("click", handleLinearDetailClick);
+els.flowPane.addEventListener("pointerdown", startMarkdownTableColumnResize);
 els.flowPane.addEventListener("scroll", () => scheduleMarkdownCodeCopyPositionUpdate(), { capture: true, passive: true });
 window.addEventListener("resize", () => scheduleMarkdownCodeCopyPositionUpdate(), { passive: true });
 
