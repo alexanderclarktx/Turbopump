@@ -589,7 +589,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("createLinearTicket: document.querySelector(\"#createLinearTicket\"),");
     expect(app).toContain("async function createPinnedLinearTicket()");
     expect(app).toContain('const data = await api("/api/linear/issues", { method: "POST" });');
-    expect(app).toContain("state.pinnedLinearIssues.add(issue.identifier);");
+    expect(app).toContain('setLinearIssuePinned(issue.identifier, true, { position: "top" });');
+    expect(app).not.toContain("state.pinnedLinearIssues.add(issue.identifier);");
     expect(app).toContain("state.linearDetails.set(issue.identifier, { loading: false, issue });");
     expect(app).toContain("function focusLinearTicketCard(identifier)");
     expect(app).toContain('const card = [...els.ticketGrid.querySelectorAll(".ticket-card")].find((item) => item.dataset.issue === identifier);');

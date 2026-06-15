@@ -3840,13 +3840,11 @@ async function createPinnedLinearTicket() {
     const issue = data.issue;
     if (!issue?.identifier) throw new Error("Linear did not return the created issue.");
     upsertLinearIssue(issue);
-    state.pinnedLinearIssues.add(issue.identifier);
-    persistPinnedLinearIssues();
     state.selectedLinearIssueId = issue.identifier;
     localStorage.setItem("flow.selectedLinearIssueId", issue.identifier);
     state.linearDetails.set(issue.identifier, { loading: false, issue });
     syncLinearTicketsWithFlows();
-    renderTickets();
+    setLinearIssuePinned(issue.identifier, true, { position: "top" });
     renderFlowPane();
     focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
