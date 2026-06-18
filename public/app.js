@@ -1416,8 +1416,8 @@ function handleAgentInterruptKeydown(event) {
   return true;
 }
 
-function handleCommandZ(event) {
-  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "z") return false;
+function handleCommandE(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "e") return false;
   event.preventDefault();
   event.stopImmediatePropagation();
   if (event.repeat) return true;
@@ -3480,6 +3480,30 @@ function renderLinearPriorityControl(issue) {
   </span>`;
 }
 
+function renderLinearPinButton(issue) {
+  const issueId = issue.identifier || state.selectedLinearIssueId;
+  if (!issueId) return "";
+  const pinned = isLinearIssuePinned(issueId);
+  const label = pinned ? "Unpin Linear ticket" : "Pin Linear ticket";
+  return `<button class="linear-pin-toggle${pinned ? " active" : ""}" type="button" data-linear-pin-toggle="true" data-issue="${escapeAttribute(issueId)}" aria-label="${label}" title="${label}" aria-pressed="${pinned}">
+    <svg class="linear-pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="m12 2.75 2.85 5.78 6.38.93-4.62 4.5 1.09 6.35L12 17.31l-5.7 3 1.09-6.35-4.62-4.5 6.38-.93L12 2.75Z" />
+    </svg>
+  </button>`;
+}
+
+function updateLinearPinButtons(issueId) {
+  const pinned = isLinearIssuePinned(issueId);
+  const label = pinned ? "Unpin Linear ticket" : "Pin Linear ticket";
+  for (const button of els.flowPane.querySelectorAll("[data-linear-pin-toggle]")) {
+    if (button.dataset.issue !== issueId) continue;
+    button.classList.toggle("active", pinned);
+    button.setAttribute("aria-pressed", String(pinned));
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+  }
+}
+
 function handleLinearDetailClick(event) {
   if (!(event.target instanceof Element)) return;
   const copyButton = event.target.closest("[data-code-copy]");
@@ -3487,6 +3511,18 @@ function handleLinearDetailClick(event) {
     event.preventDefault();
     event.stopPropagation();
     void copyMarkdownCodeBlock(copyButton);
+    return;
+  }
+
+  const pinButton = event.target.closest("[data-linear-pin-toggle]");
+  if (pinButton && els.flowPane.contains(pinButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    const issueId = pinButton.dataset.issue || "";
+    if (!issueId) return;
+    const pinned = !isLinearIssuePinned(issueId);
+    setLinearIssuePinned(issueId, pinned, pinned ? { position: "top" } : {});
+    updateLinearPinButtons(issueId);
     return;
   }
 
@@ -4332,14 +4368,22 @@ function renderLinearDetail(context, options = {}) {
   const statusName = issue.state?.name || context.ticket?.state?.name || "";
   const statusControl = renderLinearStatusControl(issue, statusName);
   const githubCiPill = renderGithubCiPill(context.flow);
+  const pinButton = renderLinearPinButton(issue);
+  const issueDescription = issue.description || "";
+  const descriptionHtml = issueDescription.trim()
+    ? `<div class="linear-description linear-markdown">${options.light ? escapeHtml(issueDescription) : renderLinearMarkdown(issueDescription, "")}</div>`
+    : "";
 
   container.innerHTML = `
     <section class="linear-issue">
       <div class="linear-issue-header">
         <div>
-          <a href="${escapeAttribute(issue.url || context.issueUrl)}" target="_blank" rel="noreferrer">
-            ${escapeHtml(issue.identifier || context.issueId)}
-          </a>
+          <div class="linear-issue-kicker">
+            <a href="${escapeAttribute(issue.url || context.issueUrl)}" target="_blank" rel="noreferrer">
+              ${escapeHtml(issue.identifier || context.issueId)}
+            </a>
+            ${pinButton}
+          </div>
           <h3>${escapeHtml(issue.title || context.title)}</h3>
         </div>
       </div>
@@ -4349,7 +4393,7 @@ function renderLinearDetail(context, options = {}) {
         ${priorityControl}
         ${githubCiPill}
       </div>
-      <div class="linear-description linear-markdown">${options.light ? escapeHtml(issue.description || "") : renderLinearMarkdown(issue.description, "")}</div>
+      ${descriptionHtml}
     </section>
     <section class="linear-comments">
       <header>
@@ -7174,7 +7218,7 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", handleCommandK, true);
-document.addEventListener("keydown", handleCommandZ, true);
+document.addEventListener("keydown", handleCommandE, true);
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
 document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
 window.addEventListener("focus", acknowledgeSelectedLinearIssueNotification);

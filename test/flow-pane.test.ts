@@ -917,8 +917,12 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("issue.team?.key || issue.team?.name");
   });
 
-  test("does not show placeholder copy for empty Linear descriptions", () => {
-    expect(app).toContain('renderLinearMarkdown(issue.description, "")');
+  test("does not render empty Linear descriptions", () => {
+    expect(app).toContain('const issueDescription = issue.description || "";');
+    expect(app).toContain("const descriptionHtml = issueDescription.trim()");
+    expect(app).toContain('renderLinearMarkdown(issueDescription, "")');
+    expect(app).toContain("${descriptionHtml}");
+    expect(app).not.toContain('renderLinearMarkdown(issue.description, "")');
     expect(app).not.toContain("No description.");
     expect(app).not.toContain("Loading issue details.");
   });
@@ -1032,12 +1036,23 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function setLinearIssuePinned(identifier, pinned, options = {})");
     expect(app).toContain('if (pinned && options.position === "top") {');
     expect(app).toContain("state.pinnedLinearIssues = new Set([identifier, ...[...state.pinnedLinearIssues].filter((issueId) => issueId !== identifier)]);");
+    expect(app).toContain("function renderLinearPinButton(issue)");
+    expect(app).toContain('data-linear-pin-toggle="true"');
+    expect(app).toContain('const pinned = !isLinearIssuePinned(issueId);');
+    expect(app).toContain('setLinearIssuePinned(issueId, pinned, pinned ? { position: "top" } : {});');
+    expect(app).toContain("updateLinearPinButtons(issueId);");
     expect(app).toContain("function ticketCanMoveToPinned(issueId)");
     expect(app).toContain("if (isLinearIssuePinned(issueId)) {");
     expect(app).not.toContain('class="ticket-pin"');
     expect(css).toContain(".pinned-ticket-separator");
     expect(css).toContain(".pinned-ticket-group .ticket-status-group-items");
     expect(css).toContain(".ticket-card.pinned");
+    expect(css).toContain(".linear-issue-kicker");
+    expect(css).toContain(".linear-pin-toggle");
+    expect(css).toContain("min-height: 18px;\n  padding: 0;\n  border: 0;\n  border-radius: 0;\n  background: transparent;");
+    expect(css).toContain("body.theme-dark .linear-pin-toggle,\nbody.theme-dark .linear-pin-toggle:hover,\nbody.theme-dark .linear-pin-toggle:focus-visible,\nbody.theme-dark .linear-pin-toggle.active {\n  background: transparent;\n}");
+    expect(css).toContain(".linear-pin-icon path {\n  fill: none;");
+    expect(css).toContain(".linear-pin-toggle.active .linear-pin-icon path {\n  fill: currentColor;\n}");
     expect(css).not.toContain(".ticket-pin {");
   });
 
@@ -2851,15 +2866,15 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (focusMessageInputForKey(event)) return;");
   });
 
-  test("toggles the theme with Cmd+Z", () => {
-    expect(html).toContain("<kbd>Cmd + Z</kbd>");
+  test("toggles the theme with Cmd+E", () => {
+    expect(html).toContain("<kbd>Cmd + E</kbd>");
     expect(html).toContain("<dd>Toggle theme</dd>");
-    expect(app).toContain("function handleCommandZ(event)");
-    expect(app).toContain('event.key.toLowerCase() !== "z"');
+    expect(app).toContain("function handleCommandE(event)");
+    expect(app).toContain('event.key.toLowerCase() !== "e"');
     expect(app).toContain("event.preventDefault();");
     expect(app).toContain("event.stopImmediatePropagation();");
     expect(app).toContain("toggleTheme();");
-    expect(app).toContain('document.addEventListener("keydown", handleCommandZ, true);');
+    expect(app).toContain('document.addEventListener("keydown", handleCommandE, true);');
   });
 
   test("clears the shell input pane with Cmd+K", () => {

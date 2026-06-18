@@ -2387,6 +2387,68 @@ body.flow-resizing .flow-content {
     opacity var(--motion-fast);
 }
 
+.linear-issue-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.linear-pin-toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
+  transition:
+    color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.linear-pin-toggle:hover,
+.linear-pin-toggle:focus-visible,
+.linear-pin-toggle.active {
+  color: #facc15;
+}
+
+.linear-pin-toggle:active {
+  transform: scale(0.88);
+}
+
+body.theme-dark .linear-pin-toggle,
+body.theme-dark .linear-pin-toggle:hover,
+body.theme-dark .linear-pin-toggle:focus-visible,
+body.theme-dark .linear-pin-toggle.active {
+  background: transparent;
+}
+
+.linear-pin-icon {
+  width: 14px;
+  height: 14px;
+  overflow: visible;
+}
+
+.linear-pin-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.linear-pin-toggle.active .linear-pin-icon path {
+  fill: currentColor;
+}
+
 .linear-issue-header h3,
 .linear-comments h3 {
   margin: 2px 0 0;
