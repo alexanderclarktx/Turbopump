@@ -1325,7 +1325,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("stroke-width: 1.4;");
     expect(css).toContain("overflow: visible;\n  white-space: normal;");
     expect(css).toContain("display: block;\n  overflow-x: auto;");
-    expect(css).toContain(".terminal-entry-body-content:has(.markdown-code-copy) {\n  overflow: visible;\n}");
+    expect(css).not.toContain(".terminal-entry-body-content:has(.markdown-code-copy) {\n  overflow: visible;\n}");
     expect(css).toContain("opacity: 0;\n  transition:");
     expect(css).toContain(".linear-markdown .markdown-code-block:hover .markdown-code-copy");
     expect(css).toContain(".terminal-entry-body .markdown-code-copy:focus-visible");
@@ -1504,8 +1504,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("additions: Number(data?.additions || 0)");
     expect(app).toContain("deletions: Number(data?.deletions || 0)");
     expect(app).toContain("files: Array.isArray(data?.files) ? data.files : []");
-    expect(app).toContain('return `<span class="diff-additions">+${additions}</span><span class="diff-deletions">-${deletions}</span>`;');
-    expect(app).toContain("diffButton.innerHTML = diffIndicatorLabel(diff);");
+    expect(app).toContain('count.className = `${className} diff-count`;');
+    expect(app).toContain('stack.className = `diff-count-digit-stack ${direction > 0 ? "is-up" : "is-down"}`;');
+    expect(app).toContain('count.setAttribute("aria-label", `${prefix}${nextText}`);');
+    expect(app).toContain("function renderDiffIndicator(button, flowId, diff)");
+    expect(app).toContain('if (button.dataset.flowId !== (flowId || ""))');
+    expect(app).toContain('renderDiffIndicator(diffButton, flow?.id || "", diff);');
     expect(app).toContain("function diffCountLabel(value, prefix)");
     expect(app).toContain("function showDiffModal()");
     expect(app).toContain("function hideDiffModal()");
@@ -1594,10 +1598,14 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("padding-block: 2px;");
     expect(css).toContain(".agent-context-diff {\n  display: inline-flex;");
     expect(css).toContain("min-height: 0;\n  height: 1.2em;");
+    expect(css).toContain("font-variant-numeric: tabular-nums;");
     expect(css).toContain(".agent-context-diff:hover,\n.agent-context-diff:focus-visible {\n  text-decoration: none;\n}");
     expect(css).toContain("body.theme-dark .agent-context-diff,\nbody.theme-dark .agent-context-diff:hover");
     expect(css).toContain(".agent-context-diff .diff-additions");
     expect(css).toContain(".agent-context-diff .diff-deletions");
+    expect(css).toContain(".agent-context-diff .diff-count-digit-stack.is-up");
+    expect(css).toContain("@keyframes diff-count-slide-up");
+    expect(css).toContain("@keyframes diff-count-slide-down");
     expect(css).toContain(".diff-modal-backdrop");
     expect(css).toContain(".diff-modal-backdrop.is-open");
     expect(css).toContain("display: flex;\n  flex-direction: column;");

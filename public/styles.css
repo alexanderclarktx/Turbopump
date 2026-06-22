@@ -3357,10 +3357,6 @@ body.markdown-table-resizing {
   overflow-wrap: inherit;
 }
 
-.terminal-entry-body-content:has(.markdown-code-copy) {
-  overflow: visible;
-}
-
 .shell-output-pane .terminal-entry-body-content {
   max-height: none;
   overflow: visible;
@@ -4306,6 +4302,7 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
   background: transparent;
   font: inherit;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   line-height: 1.2;
   cursor: pointer;
 }
@@ -4321,6 +4318,70 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
 
 .agent-context-diff .diff-deletions {
   color: #dc2626;
+}
+
+.agent-context-diff .diff-count {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.agent-context-diff .diff-count-prefix {
+  flex: 0 0 auto;
+}
+
+.agent-context-diff .diff-count-digits {
+  display: inline-flex;
+  height: 1.2em;
+  overflow: hidden;
+  vertical-align: bottom;
+}
+
+.agent-context-diff .diff-count-digit {
+  display: inline-block;
+  width: 0.62em;
+  height: 1.2em;
+  overflow: hidden;
+  text-align: center;
+}
+
+.agent-context-diff .diff-count-digit-stack {
+  display: flex;
+  flex-direction: column;
+  height: 2.4em;
+  will-change: transform;
+}
+
+.agent-context-diff .diff-count-digit-stack > span {
+  height: 1.2em;
+}
+
+.agent-context-diff .diff-count-digit-stack.is-up {
+  animation: diff-count-slide-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.agent-context-diff .diff-count-digit-stack.is-down {
+  animation: diff-count-slide-down 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes diff-count-slide-up {
+  from {
+    transform: translateY(0);
+  }
+
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+@keyframes diff-count-slide-down {
+  from {
+    transform: translateY(-50%);
+  }
+
+  to {
+    transform: translateY(0);
+  }
 }
 
 body.theme-dark .agent-context-diff .diff-additions {
@@ -4804,6 +4865,16 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   .flow-content.ticket-switch-fade-in {
     animation-duration: 1ms;
     animation-delay: 0ms;
+  }
+
+  .agent-context-diff .diff-count-digit-stack.is-up {
+    animation: none;
+    transform: translateY(-50%);
+  }
+
+  .agent-context-diff .diff-count-digit-stack.is-down {
+    animation: none;
+    transform: translateY(0);
   }
 
   .ticket-card.agent-turn-notified:not(.active) {
