@@ -353,6 +353,10 @@ function linearStatusId(ticket) {
   return ticket?.state?.id || "";
 }
 
+function linearStatusType(ticket) {
+  return ticket?.state?.type || "";
+}
+
 function linearPriorityValue(priority) {
   const value = Number(priority);
   return Number.isInteger(value) && value >= 1 && value <= 4 ? value : 0;
@@ -437,19 +441,27 @@ function renderGithubCiPill(flow) {
   </a>`;
 }
 
-function linearStatusIconKind(status) {
+function linearStatusIconKind(status, type = "") {
   const key = linearStatusKey(status);
   if (key === "triage") return "triage";
   if (key === "done" || key === "completed") return "done";
   if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "review";
+  if (key === "in-eng") return "in-eng";
+  const typeKey = linearStatusKey(type);
+  if (typeKey === "triage") return "triage";
+  if (typeKey === "backlog") return "backlog";
+  if (typeKey === "unstarted") return "todo";
+  if (typeKey === "started") return "started";
+  if (typeKey === "completed") return "done";
   if (key === "in-progress" || key === "in-eng" || key === "working" || key === "started") return "started";
-  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "backlog";
+  if (key === "ready-for-eng" || key === "ready") return "started";
+  if (key === "backlog") return "backlog";
   return "todo";
 }
 
 function renderLinearStatusIcon(status) {
-  const label = status || "No status";
-  const kind = linearStatusIconKind(label);
+  const label = typeof status === "object" ? linearStatusName(status) : status || "No status";
+  const kind = linearStatusIconKind(label, typeof status === "object" ? linearStatusType(status) : "");
   return `
     <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
       <span class="linear-status-icon-glyph" aria-hidden="true"></span>
@@ -457,9 +469,9 @@ function renderLinearStatusIcon(status) {
   `;
 }
 
-function renderLinearStatusPillContent(status) {
+function renderLinearStatusPillContent(status, type = "") {
   const label = status || "No status";
-  const kind = linearStatusIconKind(label);
+  const kind = linearStatusIconKind(label, type);
   return `<span>${escapeHtml(label)}</span><span class="linear-status-icon linear-status-icon-${kind}" aria-hidden="true">
     <span class="linear-status-icon-glyph" aria-hidden="true"></span>
   </span>`;
@@ -3336,6 +3348,7 @@ function renderTickets() {
         ticket.title,
         linearStatusId(ticket),
         linearStatusName(ticket),
+        linearStatusType(ticket),
         ticket.priority || "",
         ticket.project?.name || "",
         ticket.flowId || "",
@@ -3409,6 +3422,7 @@ function groupedTicketsByLinearStatus(tickets) {
         key,
         stateId: linearStatusId(ticket),
         status,
+        type: linearStatusType(ticket),
         tickets: [],
         collapsed: state.collapsedLinearStatuses.has(key),
       };
@@ -3416,6 +3430,7 @@ function groupedTicketsByLinearStatus(tickets) {
       groups.push(group);
     } else if (!group.stateId) {
       group.stateId = linearStatusId(ticket);
+      group.type = linearStatusType(ticket);
     }
     group.tickets.push(ticket);
   }
@@ -3502,20 +3517,21 @@ function renderTicketStatusSeparator(group) {
 
 function linearStatusOptions(issue = null, fallbackStatus = null) {
   const byStateId = new Map();
-  const addStatus = (stateId, status) => {
+  const addStatus = (stateId, status, type = "") => {
     if (!stateId || !status || byStateId.has(stateId)) return;
     byStateId.set(stateId, {
       stateId,
       status,
+      type,
       key: linearStatusKey(status),
     });
   };
   const addIssueStatus = (item) => {
-    addStatus(linearStatusId(item), linearStatusName(item));
+    addStatus(linearStatusId(item), linearStatusName(item), linearStatusType(item));
   };
   state.linearTickets.forEach(addIssueStatus);
   if (issue) addIssueStatus(issue);
-  if (fallbackStatus) addStatus(fallbackStatus.stateId, fallbackStatus.status);
+  if (fallbackStatus) addStatus(fallbackStatus.stateId, fallbackStatus.status, fallbackStatus.type);
   return [...byStateId.values()].sort((a, b) => linearStatusRank(a.key) - linearStatusRank(b.key) || a.status.localeCompare(b.status));
 }
 
@@ -3523,16 +3539,17 @@ function renderLinearStatusControl(issue, statusName) {
   const issueId = issue.identifier || state.selectedLinearIssueId;
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
   const currentStateId = linearStatusId(issue) || linearStatusId(ticket);
+  const currentStatusType = linearStatusType(issue) || linearStatusType(ticket);
   if (!issueId || !statusName) return "";
-  const options = linearStatusOptions(issue, { stateId: currentStateId, status: statusName }).filter((option) => option.stateId !== currentStateId);
+  const options = linearStatusOptions(issue, { stateId: currentStateId, status: statusName, type: currentStatusType }).filter((option) => option.stateId !== currentStateId);
   const optionButtons = options
     .map(
       (option, index) =>
-        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${renderLinearStatusPillContent(option.status)}</button>`,
+        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${renderLinearStatusPillContent(option.status, option.type)}</button>`,
     )
     .join("");
   return `<span class="linear-status-control">
-    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName)}</button>
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName, currentStatusType)}</button>
     ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
   </span>`;
 }
@@ -3877,6 +3894,7 @@ async function moveTicketToLinearStatus(issueId, group) {
       ...(ticket.state || {}),
       id: group.stateId,
       name: group.status,
+      type: group.type || ticket.state?.type,
     },
   });
   renderTickets();
@@ -4079,7 +4097,7 @@ function renderTicketCard(ticket) {
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
-      ${renderLinearStatusIcon(linearStatusName(ticket))}
+      ${renderLinearStatusIcon(ticket)}
       ${renderLinearPriorityIcon(ticket.priority)}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>
