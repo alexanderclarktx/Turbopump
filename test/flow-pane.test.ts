@@ -1311,6 +1311,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-markdown th,\n.linear-markdown td,\n.terminal-entry-body th,\n.terminal-entry-body td");
     expect(css).toContain("  min-width: 0;\n  border-right: 1px solid var(--line);\n  border-bottom: 1px solid var(--line);\n  padding: 4px 8px;");
     expect(css).toContain(".linear-markdown .markdown-resizable-table th,\n.terminal-entry-body .markdown-resizable-table th");
+    expect(css).toContain("overflow-wrap: normal;\n  word-break: normal;");
     expect(css).toContain(".markdown-table-column-resizer");
     expect(css).toContain("cursor: col-resize;");
     expect(css).toContain("body.theme-dark .markdown-table-column-resizer,\nbody.theme-dark .markdown-table-column-resizer:hover,\nbody.theme-dark .markdown-table-column-resizer:focus-visible");
@@ -1513,8 +1514,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("deletions: Number(data?.deletions || 0)");
     expect(app).toContain("files: Array.isArray(data?.files) ? data.files : []");
     expect(app).toContain('count.className = `${className} diff-count`;');
-    expect(app).toContain('stack.className = `diff-count-digit-stack ${direction > 0 ? "is-up" : "is-down"}`;');
     expect(app).toContain('count.setAttribute("aria-label", `${prefix}${nextText}`);');
+    expect(app).toContain("digits.textContent = nextText;");
+    expect(app).not.toContain("diff-count-digit-stack");
     expect(app).toContain("function renderDiffIndicator(button, flowId, diff)");
     expect(app).toContain('if (button.dataset.flowId !== (flowId || ""))');
     expect(app).toContain('renderDiffIndicator(diffButton, flow?.id || "", diff);');
@@ -1611,9 +1613,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("body.theme-dark .agent-context-diff,\nbody.theme-dark .agent-context-diff:hover");
     expect(css).toContain(".agent-context-diff .diff-additions");
     expect(css).toContain(".agent-context-diff .diff-deletions");
-    expect(css).toContain(".agent-context-diff .diff-count-digit-stack.is-up");
-    expect(css).toContain("@keyframes diff-count-slide-up");
-    expect(css).toContain("@keyframes diff-count-slide-down");
+    expect(css).not.toContain("diff-count-slide");
+    expect(css).not.toContain("diff-count-digit-stack");
     expect(css).toContain(".diff-modal-backdrop");
     expect(css).toContain(".diff-modal-backdrop.is-open");
     expect(css).toContain("display: flex;\n  flex-direction: column;");

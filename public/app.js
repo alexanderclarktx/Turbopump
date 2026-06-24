@@ -2652,53 +2652,15 @@ function ensureDiffIndicatorCount(button, kind, className, prefix) {
   return count;
 }
 
-function appendDiffCountDigit(container, previousChar, nextChar, direction, animate) {
-  const digit = document.createElement("span");
-  digit.className = "diff-count-digit";
-  const visibleNextChar = nextChar === " " ? "" : nextChar;
-  if (!animate || previousChar === nextChar) {
-    digit.textContent = visibleNextChar;
-    container.append(digit);
-    return;
-  }
-
-  const stack = document.createElement("span");
-  stack.className = `diff-count-digit-stack ${direction > 0 ? "is-up" : "is-down"}`;
-  const oldValue = document.createElement("span");
-  const newValue = document.createElement("span");
-  oldValue.textContent = previousChar === " " ? "" : previousChar;
-  newValue.textContent = visibleNextChar;
-  if (direction > 0) {
-    stack.append(oldValue, newValue);
-  } else {
-    stack.append(newValue, oldValue);
-  }
-  digit.append(stack);
-  container.append(digit);
-}
-
 function updateDiffIndicatorCount(button, kind, className, prefix, value) {
   const count = ensureDiffIndicatorCount(button, kind, className, prefix);
   const digits = count.querySelector(".diff-count-digits");
   const numericValue = Number(value || 0);
   const nextValue = Number.isFinite(numericValue) ? Math.max(0, numericValue) : 0;
   const nextText = String(nextValue);
-  const previousText = count.dataset.value;
-  const shouldAnimate = previousText !== undefined && previousText !== nextText;
-  const previousNumber = Number(previousText);
-  const direction = Number.isFinite(previousNumber) && nextValue < previousNumber ? -1 : 1;
-  const width = nextText.length;
-  const previousDigits = (previousText || nextText).padStart(width, " ").slice(-width);
-  const nextDigits = nextText.padStart(width, " ");
-  const fragment = document.createDocumentFragment();
-
-  for (let index = 0; index < width; index += 1) {
-    appendDiffCountDigit(fragment, previousDigits[index], nextDigits[index], direction, shouldAnimate);
-  }
-
   count.dataset.value = nextText;
   count.setAttribute("aria-label", `${prefix}${nextText}`);
-  digits.replaceChildren(fragment);
+  digits.textContent = nextText;
 }
 
 function renderDiffIndicator(button, flowId, diff) {
