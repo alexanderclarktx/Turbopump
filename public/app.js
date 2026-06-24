@@ -49,6 +49,7 @@ const SLASH_COMMANDS = [
   { name: "/effort", description: "Set Codex reasoning effort" },
   { name: "/fast", description: "Toggle fast mode for this flow" },
   { name: "/model", description: "Set the Codex model for this flow" },
+  { name: "/plugins", description: "List Codex plugins" },
   { name: "/review", description: "Ask Codex to review the current changes" },
 ];
 const SLASH_COMMAND_EXPANSIONS = {
@@ -411,11 +412,12 @@ function renderLinearPriorityIcon(priority, options = {}) {
 
 function githubCiStatus(flow) {
   const status = String(flow?.githubCiStatus || "unknown").toLowerCase();
-  if (status === "success" || status === "pending" || status === "failure") return status;
+  if (status === "success" || status === "pending" || status === "failure" || status === "merged") return status;
   return "unknown";
 }
 
 function githubCiLabel(status) {
+  if (status === "merged") return "GitHub PR merged";
   if (status === "success") return "GitHub CI passing";
   if (status === "failure") return "GitHub CI failing";
   if (status === "pending") return "GitHub CI pending";
@@ -4826,6 +4828,10 @@ function isUserLogSource(source) {
   return source === "user" || source === "user:queued";
 }
 
+function isSubmittedUserLogSource(source) {
+  return source === "user";
+}
+
 function parseTraceGroup(log) {
   if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
@@ -4887,7 +4893,7 @@ function syntheticCompletedTurnTraceRanges(logs, existingRanges) {
     let beforeId = Number(log.id) + 1;
     for (let nextIndex = index + 1; nextIndex < logs.length; nextIndex += 1) {
       const nextLog = logs[nextIndex];
-      if (isUserLogSource(nextLog.source)) break;
+      if (isSubmittedUserLogSource(nextLog.source)) break;
       if (isTraceGroupSource(nextLog.source)) continue;
       if (!isAgentMessageSource(nextLog.source)) continue;
       beforeId = Number(nextLog.id) + 1;
@@ -4924,8 +4930,12 @@ function isStructuralTerminalSource(source) {
   return isTraceGroupSource(source) || isAgentMessageBoundarySource(source);
 }
 
+function isTraceContentLog(log) {
+  return !isStructuralTerminalSource(log.source) && log.source !== "user:queued";
+}
+
 function traceRangeLogCount(logs, afterId, beforeId) {
-  return logs.filter((log) => log.id > afterId && log.id < beforeId && !isStructuralTerminalSource(log.source)).length;
+  return logs.filter((log) => log.id > afterId && log.id < beforeId && isTraceContentLog(log)).length;
 }
 
 function lowerBound(values, target) {
@@ -4956,7 +4966,7 @@ function logIdsHaveRangeEntry(ids, afterId, beforeId) {
 
 function traceRangeLogCounter(logs) {
   const ids = logs
-    .filter((log) => !isStructuralTerminalSource(log.source))
+    .filter(isTraceContentLog)
     .map((log) => Number(log.id))
     .filter(Number.isFinite)
     .sort((a, b) => a - b);
@@ -4997,7 +5007,7 @@ function finalResponseStartIdForTrace(range, rangeLogs) {
 function traceRangeShouldIncludeUserLogs(range, rangeLogs) {
   if (range.kind === "compact") return true;
   if (range.kind === "shell") return false;
-  return rangeLogs.some((log) => isUserLogSource(log.source)) && rangeLogs.some((log) => isAgentTurnEndedLog(log));
+  return rangeLogs.some((log) => isSubmittedUserLogSource(log.source)) && rangeLogs.some((log) => isAgentTurnEndedLog(log));
 }
 
 function sanitizeTraceRanges(logs, ranges) {
@@ -5015,7 +5025,7 @@ function sanitizeTraceRanges(logs, ranges) {
     let segmentAfterId = range.afterId;
     for (const log of rangeLogs) {
       if (log.id >= beforeId) break;
-      if (!isUserLogSource(log.source)) continue;
+      if (!isSubmittedUserLogSource(log.source)) continue;
       addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id, countRange);
       segmentAfterId = log.id;
     }
@@ -5102,7 +5112,7 @@ function markPendingTerminalTurnGroups(groups, flow) {
   const contentGroups = terminalContentGroups(groups);
   let lastUserIndex = -1;
   for (let index = 0; index < contentGroups.length; index += 1) {
-    if (isUserLogSource(contentGroups[index].source)) lastUserIndex = index;
+    if (isSubmittedUserLogSource(contentGroups[index].source)) lastUserIndex = index;
   }
   if (lastUserIndex < 0) return groups;
   for (let index = lastUserIndex + 1; index < contentGroups.length; index += 1) {
@@ -5187,7 +5197,7 @@ function terminalGroups(logs, flow) {
     const traceRange =
       currentTraceRange && logId > currentTraceRange.afterId && logId < currentTraceRange.beforeId ? currentTraceRange : null;
     if (isHiddenTerminalLog(log)) continue;
-    if (traceRange && (!isUserLogSource(log.source) || traceRange.includeUserLogs)) {
+    if (traceRange && log.source !== "user:queued" && (!isSubmittedUserLogSource(log.source) || traceRange.includeUserLogs)) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
         traceGroup = {
@@ -6402,7 +6412,7 @@ function terminalVisibleTurnStartIndex(flowId, groups) {
   const visibleTurns = terminalVisibleTurnCount(flowId);
   let seenTurns = 0;
   for (let index = groups.length - 1; index >= 0; index -= 1) {
-    if (!isUserLogSource(groups[index].source)) continue;
+    if (!isSubmittedUserLogSource(groups[index].source)) continue;
     seenTurns += 1;
     if (seenTurns >= visibleTurns) return index;
   }
@@ -6410,7 +6420,7 @@ function terminalVisibleTurnStartIndex(flowId, groups) {
 }
 
 function terminalTurnCount(groups) {
-  return groups.filter((group) => isUserLogSource(group.source)).length;
+  return groups.filter((group) => isSubmittedUserLogSource(group.source)).length;
 }
 
 function scheduleLogRender(id, options = {}) {

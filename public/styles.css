@@ -2558,6 +2558,10 @@ body.theme-dark .github-ci-pill {
   background: #2da44e;
 }
 
+.github-ci-pill-merged .github-ci-dot {
+  background: #8b5cf6;
+}
+
 .github-ci-pill-pending .github-ci-dot,
 .github-ci-pill-unknown .github-ci-dot {
   background: #fbbf24;

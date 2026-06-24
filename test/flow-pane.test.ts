@@ -442,7 +442,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("pointer-events: none;");
     expect(server).toContain("function listWorktrees()");
     expect(server).toContain("Date.parse(a.lastPromptAt || a.createdAt || \"\")");
-    expect(server).toContain("linearStatus: flow?.linearStatus ?? \"\",");
+    expect(server).toContain("function latestLinearStatusForFlow(flow: Flow | null)");
+    expect(server).toContain("return issue?.state?.name || flow.linearStatus || \"\";");
+    expect(server).toContain("linearStatus: latestLinearStatusForFlow(flow),");
     expect(server).not.toContain("function refreshWorktreeLinearStatuses()");
     expect(server).not.toContain("function scheduleWorktreeLinearStatusRefresh()");
     expect(server).not.toContain("worktreeLinearStatusRefreshRunning");
@@ -1732,7 +1734,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("async function runGh(args: string[], flow?: Flow)");
     expect(server).toContain('cmd: ["gh", ...args]');
     expect(server).toContain("const [stdoutText, stderrText, exitCode] = await Promise.all");
-    expect(server).toContain('JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,url"], flow))');
+    expect(server).toContain('JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,state,url"], flow))');
+    expect(server).toContain('if (String(pr.state || "").toLowerCase() === "merged")');
+    expect(server).toContain('state: "merged" as GithubCiState,');
     expect(server).toContain("async function pollSelectedGithubCiStatus()");
     expect(server).toContain("setInterval(() => void pollSelectedGithubCiStatus(), 5000);");
     expect(server).toContain("githubCiStatus: ci.state,");
@@ -1744,6 +1748,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (!flow?.prUrl) return \"\";");
     expect(app).toContain("const GITHUB_CI_RECENT_MS = 30 * 60 * 1000;");
     expect(app).toContain("function githubCiStatusRecent(flow)");
+    expect(app).toContain('if (status === "success" || status === "pending" || status === "failure" || status === "merged") return status;');
+    expect(app).toContain('if (status === "merged") return "GitHub PR merged";');
     expect(app).toContain('const knownRecent = status !== "unknown" && githubCiStatusRecent(flow);');
     expect(app).toContain('${knownRecent ? \'<span class="github-ci-dot" aria-hidden="true"></span>\' : ""}');
     expect(app).toContain('href="${escapeAttribute(flow.prUrl)}"');
@@ -1752,6 +1758,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {\n        renderFlowPane();\n        return;\n      }");
     expect(app).not.toContain("setInterval(() => void loadGithub");
     expect(css).toContain(".github-ci-pill-success .github-ci-dot");
+    expect(css).toContain(".github-ci-pill-merged .github-ci-dot {\n  background: #8b5cf6;\n}");
     expect(css).toContain(".github-ci-pill-pending .github-ci-dot");
     expect(css).toContain(".github-ci-pill-unknown .github-ci-dot {\n  background: #fbbf24;\n}");
     expect(css).toContain("body.theme-dark .github-ci-pill-pending .github-ci-dot,\nbody.theme-dark .github-ci-pill-unknown .github-ci-dot {\n  background: #fbbf24;\n}");
@@ -2369,7 +2376,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('wsRequest("logs", { flowId, before, limit: LOG_PAGE_SIZE })');
     expect(app).toContain("function visibleTerminalGroups(flowId, groups)");
     expect(app).toContain("function terminalVisibleTurnStartIndex(flowId, groups)");
-    expect(app).toContain("if (!isUserLogSource(groups[index].source)) continue;");
+    expect(app).toContain("if (!isSubmittedUserLogSource(groups[index].source)) continue;");
     expect(app).toContain("if (seenTurns >= visibleTurns) return index;");
     expect(app).toContain("function terminalTurnCount(groups)");
     expect(app).toContain("function terminalTraceCanLoadMore(flowId, groups)");
@@ -2490,7 +2497,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function isAgentMessageBoundarySource(source: string)");
     expect(server).toContain('return source === "agent:message-boundary";');
     expect(server).toContain("function isTraceCountSource(source: string)");
-    expect(server).toContain("return !isAgentMessageBoundarySource(source);");
+    expect(server).toContain('return !isAgentMessageBoundarySource(source) && source !== "user:queued";');
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("const prompt = latestUserLogBeforeStmt.get(flowId, beforeId)");
     expect(server).toContain("createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);");
@@ -2518,6 +2525,8 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("function isAgentResponseSource(source)");
     expect(app).toContain("function isUserLogSource(source)");
     expect(app).toContain('source === "user" || source === "user:queued"');
+    expect(app).toContain("function isSubmittedUserLogSource(source)");
+    expect(app).toContain('return source === "user";');
     expect(app).not.toContain("function syntheticRuntimeDisappearedTraceRanges(logs, existingRanges)");
     expect(app).not.toContain("function syntheticShellTraceRanges(logs, existingRanges)");
     expect(app).not.toContain("function latestInputLogId(logs)");
@@ -2533,19 +2542,23 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function sanitizeTraceRanges(logs, ranges)");
     expect(app).toContain("function traceRangeShouldIncludeUserLogs(range, rangeLogs)");
     expect(app).toContain('if (range.kind === "compact") return true;');
-    expect(app).toContain("return rangeLogs.some((log) => isUserLogSource(log.source)) && rangeLogs.some((log) => isAgentTurnEndedLog(log));");
+    expect(app).toContain(
+      "return rangeLogs.some((log) => isSubmittedUserLogSource(log.source)) && rangeLogs.some((log) => isAgentTurnEndedLog(log));",
+    );
     expect(app).toContain("const includeUserLogs = traceRangeShouldIncludeUserLogs(range, rangeLogs);");
     expect(app).toContain("addSanitizedTraceRange(result, seen, logs, { ...range, includeUserLogs }, range.afterId, beforeId, countRange);");
     expect(app).toContain("function isTraceGroupSource(source)");
     expect(app).toContain("function isStructuralTerminalSource(source)");
     expect(app).toContain("return isTraceGroupSource(source) || isAgentMessageBoundarySource(source);");
+    expect(app).toContain("function isTraceContentLog(log)");
+    expect(app).toContain('return !isStructuralTerminalSource(log.source) && log.source !== "user:queued";');
     expect(app).toContain("function finalResponseStartIdForTrace(range, rangeLogs)");
     expect(app).toContain("function lowerBound(values, target)");
     expect(app).toContain("function upperBound(values, target)");
     expect(app).toContain("function traceRangeLogCounter(logs)");
     expect(app).toContain("function sortedTraceRanges(ranges)");
     expect(app).toContain("function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId, countRange = traceRangeLogCounter(logs))");
-    expect(app).toContain("if (!isUserLogSource(log.source)) continue;");
+    expect(app).toContain("if (!isSubmittedUserLogSource(log.source)) continue;");
     expect(app).toContain("addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id, countRange);");
     expect(app).toContain("addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, beforeId, countRange);");
     expect(app).not.toContain("function isFinalResponseLogForTrace(log, traceRange, logs)");
@@ -2556,7 +2569,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('range && range.kind !== "shell" && (range.kind || logIdsHaveRangeEntry(agentTurnEndIds, range.afterId, range.beforeId))');
     expect(app).toContain("const completedTurnTraceRanges = syntheticCompletedTurnTraceRanges(normalizedLogs, persistedTraceRanges);");
     expect(app).toContain("if (count <= 1) continue;");
-    expect(app).toContain("!isStructuralTerminalSource(log.source)");
+    expect(app).toContain(".filter(isTraceContentLog)");
     expect(app).toContain('range.kind !== "shell"');
     expect(server).toContain("createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);");
     expect(app).toContain("function isShellTraceGroupLog(log)");
@@ -2565,7 +2578,9 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('ranges.push({ afterId, beforeId, count, key, kind: "shell" });');
     expect(app).toContain("if (isHiddenTerminalLog(log)) continue;");
     expect(app).toContain("if (isAgentMessageBoundarySource(log.source)) return true;");
-    expect(app).toContain("if (traceRange && (!isUserLogSource(log.source) || traceRange.includeUserLogs)) {");
+    expect(app).toContain(
+      'if (traceRange && log.source !== "user:queued" && (!isSubmittedUserLogSource(log.source) || traceRange.includeUserLogs)) {',
+    );
     expect(app).toContain("const traceRanges = sortedTraceRanges(");
     expect(app).toContain("sanitizeTraceRanges(normalizedLogs, [");
     expect(app).toContain("let traceRangeIndex = 0;");
@@ -2710,6 +2725,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('name: "/effort"');
     expect(app).toContain('name: "/fast"');
     expect(app).toContain('name: "/model"');
+    expect(app).toContain('name: "/plugins"');
     expect(app).toContain('name: "/review"');
     expect(app).toContain('"/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({');
     expect(app).toContain('"/model": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"].map((model) => ({');
@@ -2829,6 +2845,12 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('const queuedLogId = insertLog(flow.id, "user:queued", `${userMessage}\\n`);');
     expect(server).toContain("existingRuntime.queuedAgentMessages.push({ message: userMessage, queuedLogId });");
     expect(server).toContain("await compactCodexThread(runtime, flow, userLogId);");
+    expect(server).toContain("function formatCodexPluginList(stdout: string)");
+    expect(server).toContain('cmd: ["codex", "plugin", "list", "--json"]');
+    expect(server).toContain('"| Plugin | Status | Version |"');
+    expect(server).toContain('if (stdout) insertLog(flow.id, "agent:message", `${formatCodexPluginList(stdout)}\\n`);');
+    expect(server).toContain('if (command === "/plugins")');
+    expect(server).toContain("await listCodexPlugins(flow);");
     expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
     expect(server).toContain('updateFlow(flow.id, { agentStatus: "running" });');
     expect(server).toContain("const reviewFindingInstructions =");

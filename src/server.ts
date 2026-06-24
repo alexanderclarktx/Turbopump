@@ -109,7 +109,7 @@ type LinearWorkflowState = {
   team?: { id: string; key: string; name: string } | null;
 };
 
-type GithubCiState = "success" | "pending" | "failure" | "unknown";
+type GithubCiState = "success" | "pending" | "failure" | "merged" | "unknown";
 
 const rootDir = process.cwd();
 const agentHeartbeatSweepIntervalMs = 5000;
@@ -700,6 +700,12 @@ function latestPromptTimestamp(flowId: string) {
   return row?.createdAt ?? "";
 }
 
+function latestLinearStatusForFlow(flow: Flow | null) {
+  if (!flow) return "";
+  const issue = cachedLinearIssue(flow.linearIssueId);
+  return issue?.state?.name || flow.linearStatus || "";
+}
+
 function listWorktreeDirectories() {
   if (!existsSync(worktreeDir)) return [];
   const directories: Array<{ name: string; path: string }> = [];
@@ -725,7 +731,7 @@ function listWorktrees() {
         updatedAt: stats.mtime.toISOString(),
         ticketId: flow?.linearIssueId ?? entry.name.match(/[a-z]+-\d+/i)?.[0]?.toUpperCase() ?? "",
         ticketName: flow?.title ?? "",
-        linearStatus: flow?.linearStatus ?? "",
+        linearStatus: latestLinearStatusForFlow(flow),
         lastPromptAt: flow ? latestPromptTimestamp(flow.id) : "",
       };
     })
@@ -893,8 +899,9 @@ function githubRollupState(check: { status?: string | null; conclusion?: string 
 
 async function getGithubCiStatus(flow: Flow) {
   try {
-    const pr = JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,url"], flow)) as {
+    const pr = JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,state,url"], flow)) as {
       headRefOid?: string;
+      state?: string;
       url?: string;
       statusCheckRollup?: Array<{
         status?: string | null;
@@ -904,6 +911,16 @@ async function getGithubCiStatus(flow: Flow) {
         targetUrl?: string | null;
       }>;
     };
+    if (String(pr.state || "").toLowerCase() === "merged") {
+      return {
+        state: "merged" as GithubCiState,
+        prUrl: flow.prUrl,
+        sha: pr.headRefOid || "",
+        description: "GitHub PR merged.",
+        targetUrl: pr.url || flow.prUrl,
+        checkedAt: now(),
+      };
+    }
     const checks = pr.statusCheckRollup || [];
     const states = checks.map(githubRollupState);
     const state = combineGithubCiStates(states);
@@ -1813,7 +1830,7 @@ function isAgentMessageBoundarySource(source: string) {
 }
 
 function isTraceCountSource(source: string) {
-  return !isAgentMessageBoundarySource(source);
+  return !isAgentMessageBoundarySource(source) && source !== "user:queued";
 }
 
 function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
@@ -2277,6 +2294,48 @@ async function compactCodexThread(runtime: RuntimeProcess, flow: Flow, promptLog
   }
 }
 
+function formatCodexPluginList(stdout: string) {
+  const parsed = JSON.parse(stdout) as {
+    installed?: Array<{ pluginId?: unknown; name?: unknown; enabled?: unknown; version?: unknown }>;
+  };
+  const plugins = parsed.installed ?? [];
+  if (!plugins.length) return "No installed Codex plugins.";
+  return [
+    "| Plugin | Status | Version |",
+    "| --- | --- | --- |",
+    ...plugins.map((plugin) =>
+      [
+        `| ${String(plugin.pluginId || plugin.name || "unknown")} `,
+        `${plugin.enabled === false ? "installed, disabled" : "installed, enabled"} `,
+        `${typeof plugin.version === "string" ? plugin.version : ""} |`,
+      ].join("| "),
+    ),
+  ].join("\n");
+}
+
+async function listCodexPlugins(flow: Flow) {
+  updateFlow(flow.id, { agentStatus: "running" });
+  insertLog(flow.id, "agent:status", "listing Codex plugins");
+  const proc = Bun.spawn({
+    cmd: ["codex", "plugin", "list", "--json"],
+    cwd: flow.checkoutPath,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: runtimeEnv(flow),
+  });
+  const [stdoutText, stderrText, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  const stdout = stdoutText.trim();
+  const stderr = stderrText.trim();
+  if (stdout) insertLog(flow.id, "agent:message", `${formatCodexPluginList(stdout)}\n`);
+  if (stderr) insertLog(flow.id, exitCode === 0 ? "agent:status" : "agent:error", `${stderr}\n`);
+  updateFlow(flow.id, { agentStatus: exitCode === 0 ? "idle" : "failed" });
+  if (exitCode !== 0) throw new Error(stderr || stdout || "codex plugin list failed");
+}
+
 async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMessage: string) {
   updateFlow(flow.id, { agentStatus: "running" });
   const updated = getFlow(flow.id);
@@ -2381,6 +2440,10 @@ async function handleSlashCommand(flow: Flow, message: string) {
   }
   if (command === "/review") {
     await startAgentTurnAfterUserLog(flow, userLogId, reviewPromptForSlashCommand(message));
+    return true;
+  }
+  if (command === "/plugins") {
+    await listCodexPlugins(flow);
     return true;
   }
 
