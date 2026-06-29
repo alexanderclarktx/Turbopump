@@ -153,7 +153,7 @@ describe("renderLinearMarkdown", () => {
     expect(html).toContain('confirmed<table class="markdown-resizable-table">');
     expect(html).toContain('<colgroup><col data-markdown-column-index="0"><col data-markdown-column-index="1"></colgroup>');
     expect(html).toContain(
-      '<thead><tr><th data-markdown-column-index="0"><span class="markdown-table-header-content">before</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column"></button></th><th data-markdown-column-index="1"><span class="markdown-table-header-content">after</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column"></button></th></tr></thead>',
+      '<thead><tr><th data-markdown-column-index="0"><span class="markdown-table-header-content">before</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column" title="Resize column"></button></th><th data-markdown-column-index="1"><span class="markdown-table-header-content">after</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column" title="Resize column"></button></th></tr></thead>',
     );
     expect(html).toContain("<tbody><tr><td>one</td><td><strong>two</strong></td></tr></tbody>");
     expect(html).not.toContain("| before | after |");

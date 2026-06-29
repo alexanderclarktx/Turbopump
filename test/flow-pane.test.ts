@@ -18,7 +18,10 @@ describe("Turbopump pane markup", () => {
     expect(html).not.toContain(" title=");
     expect(app).not.toMatch(/\.title\s*=/);
     expect(app).not.toContain("setAttribute(\"title\"");
-    expect(markdown).not.toContain(" title=");
+    expect(markdown).toContain('aria-label="Copy code" title="Copy code"');
+    expect(markdown).toContain('aria-label="Resize column" title="Resize column"');
+    expect(app).toContain('title="Change Linear status"');
+    expect(app).toContain('title="In flow"');
     expect(html).toContain("<h2>Tickets</h2>");
     expect(html).not.toContain("<h2>Linear Tickets</h2>");
     expect(html).toContain('href="/favicon.svg"');
@@ -1410,7 +1413,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("stroke-width: 1.4;");
     expect(css).toContain("overflow: visible;\n  white-space: normal;");
     expect(css).toContain("display: block;\n  overflow-x: auto;");
-    expect(css).not.toContain(".terminal-entry-body-content:has(.markdown-code-copy) {\n  overflow: visible;\n}");
+    expect(css).toContain(".terminal-entry-body-content:has(.markdown-code-copy) {\n  overflow: visible;\n}");
     expect(css).toContain("opacity: 0;\n  transition:");
     expect(css).toContain(".linear-markdown .markdown-code-block:hover .markdown-code-copy");
     expect(css).toContain(".terminal-entry-body .markdown-code-copy:focus-visible");
@@ -1833,7 +1836,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('${knownRecent ? \'<span class="github-ci-dot" aria-hidden="true"></span>\' : ""}');
     expect(app).toContain('href="${escapeAttribute(flow.prUrl)}"');
     expect(app).toContain('class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}"');
-    expect(app).not.toContain('class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}" href="${escapeAttribute(flow.prUrl)}" target="_blank" rel="noreferrer" aria-label=');
+    expect(app).toContain('aria-label="${escapeAttribute(label)}" title="${escapeAttribute(title)}"');
     expect(app).toContain("function githubCiOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain("if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {\n        renderFlowPane();\n        return;\n      }");
     expect(app).not.toContain("setInterval(() => void loadGithub");

@@ -100,7 +100,7 @@ function renderCodeFence(lines, startIndex, fence = matchCodeFenceStart(lines[st
   const language = prismLanguage ? ` data-language="${escapeAttribute(prismLanguage)}"` : "";
   const className = prismLanguage ? ` class="language-${escapeAttribute(prismLanguage)}"` : "";
   const copyButton = copyCode
-    ? '<button class="markdown-code-copy" type="button" data-code-copy="true" aria-label="Copy code"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="6.25" y="2.25" width="7.25" height="7.25" rx="1.4"/><rect x="2.5" y="6" width="7.25" height="7.25" rx="1.4"/></svg></button>'
+    ? '<button class="markdown-code-copy" type="button" data-code-copy="true" aria-label="Copy code" title="Copy code"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="6.25" y="2.25" width="7.25" height="7.25" rx="1.4"/><rect x="2.5" y="6" width="7.25" height="7.25" rx="1.4"/></svg></button>'
     : "";
   return {
     html: `<pre class="markdown-code-block${prismLanguage ? ` language-${escapeAttribute(prismLanguage)}` : ""}"${language}>${copyButton}<code${className}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
@@ -172,7 +172,7 @@ function renderTableCell(tag, value, alignment, options, cellIndex = -1) {
   const align = alignment ? ` style="text-align: ${alignment}"` : "";
   const content = renderInlineMarkdown(value.trim(), options);
   if (tag === "th") {
-    return `<th${align} data-markdown-column-index="${cellIndex}"><span class="markdown-table-header-content">${content}</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column"></button></th>`;
+    return `<th${align} data-markdown-column-index="${cellIndex}"><span class="markdown-table-header-content">${content}</span><button class="markdown-table-column-resizer" type="button" data-markdown-column-resizer="true" aria-label="Resize column" title="Resize column"></button></th>`;
   }
   return `<${tag}${align}>${content}</${tag}>`;
 }

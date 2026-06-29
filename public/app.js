@@ -445,7 +445,8 @@ function renderGithubCiPill(flow) {
   const status = githubCiStatus(flow);
   const knownRecent = status !== "unknown" && githubCiStatusRecent(flow);
   const label = knownRecent ? githubCiLabel(status) : "GitHub CI status unknown";
-  return `<a class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}" href="${escapeAttribute(flow.prUrl)}" target="_blank" rel="noreferrer">
+  const title = flow.githubCiDescription || label;
+  return `<a class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}" href="${escapeAttribute(flow.prUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(title)}">
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.88-1.17-.88-1.17-.73-.5.05-.49.05-.49.8.06 1.22.82 1.22.82.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.58 7.58 0 0 1 8 3.89c.68 0 1.36.09 2 .27 1.52-1.03 2.19-.82 2.19-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.17c0 .21.14.46.55.38A8 8 0 0 0 8 0Z" />
     </svg>
@@ -475,7 +476,7 @@ function renderLinearStatusIcon(status) {
   const label = typeof status === "object" ? linearStatusName(status) : status || "No status";
   const kind = linearStatusIconKind(label, typeof status === "object" ? linearStatusType(status) : "");
   return `
-    <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}">
+    <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
       <span class="linear-status-icon-glyph" aria-hidden="true"></span>
     </span>
   `;
@@ -3594,7 +3595,7 @@ function renderLinearStatusControl(issue, statusName) {
     )
     .join("");
   return `<span class="linear-status-control">
-    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName, currentStatusType)}</button>
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName, currentStatusType)}</button>
     ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
   </span>`;
 }
@@ -4235,7 +4236,7 @@ function renderTicketCard(ticket) {
     </div>
     ${
       ticket.flowId
-        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow"></div>`
+        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow" title="In flow"></div>`
         : creatingFlow
           ? renderTicketCreatingFlowIndicator(ticket)
           : renderTicketStartAgentButton(ticket)

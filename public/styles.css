@@ -3415,6 +3415,10 @@ body.markdown-table-resizing {
   overflow-wrap: inherit;
 }
 
+.terminal-entry-body-content:has(.markdown-code-copy) {
+  overflow: visible;
+}
+
 .shell-output-pane .terminal-entry-body-content {
   max-height: none;
   overflow: visible;
