@@ -492,6 +492,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function cachedLinearIssuesFromDb()");
     expect(server).toContain("function cachedAssignedLinearIssuesPayload()");
     expect(server).toContain("function hasCachedAssignedLinearIssues()");
+    expect(server).toContain('if (url.searchParams.get("cached") === "1") return json(cachedAssignedLinearIssuesPayload());');
     expect(server).toContain("if (!apiKey && hasCachedAssignedLinearIssues()) {");
     expect(server).toContain("return cachedAssignedLinearIssuesPayload();");
     expect(server).toContain("if (!assigned.cached) setSetting(\"linearViewerName\", assigned.viewer.name);");
@@ -547,6 +548,11 @@ describe("Turbopump pane markup", () => {
   });
 
   test("keeps cached Linear tickets rendered when a ticket refresh fails", () => {
+    expect(app).toContain("if (!options.refreshDetails) await loadCachedLinearTickets();");
+    expect(app).toContain('const data = await api("/api/linear/issues?cached=1");');
+    expect(app).toContain("if (data.issues?.length) applyLinearTicketsPayload(data, { loaded: false, prefetchLogs: false });");
+    expect(app).toContain("function applyLinearTicketsPayload(data, options = {})");
+    expect(app).toContain("state.linearTicketsLoaded = options.loaded !== false;");
     expect(app).toContain('els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();');
     expect(app).toContain(
       'els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;',

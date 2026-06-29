@@ -3493,6 +3493,7 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/linear/issues" && request.method === "GET") {
+    if (url.searchParams.get("cached") === "1") return json(cachedAssignedLinearIssuesPayload());
     const assigned = await listAssignedLinearIssues();
     if (!assigned.cached) setSetting("linearViewerName", assigned.viewer.name);
     return json(assigned);

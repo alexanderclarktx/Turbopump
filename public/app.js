@@ -3339,25 +3339,10 @@ async function loadLinearTickets(options = {}) {
   updateRefreshLinearTicketsButton();
   try {
     els.ticketState.textContent = "Loading assigned tickets.";
+    if (!options.refreshDetails) await loadCachedLinearTickets();
     const data = await api("/api/linear/issues");
-    const previousTickets = state.linearTickets;
-    const nextTickets = data.issues || [];
-    state.linearViewer = data.viewer;
-    state.linearViewerName = data.viewer?.name || state.linearViewerName;
-    reconcileRemovedLinearTickets(previousTickets, nextTickets);
-    state.linearTickets = nextTickets;
-    state.linearTicketsLoaded = true;
-    state.logPrefetchFailedFlowIds.clear();
-    state.logPrefetchedFlowCount = 0;
-    if (options.refreshDetails) state.linearDetails.clear();
-    syncLinearTicketsWithFlows();
-    els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
-    els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
-    els.linearState.classList.toggle("live", !data.cached);
+    applyLinearTicketsPayload(data, options);
     if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
-    renderTickets();
-    renderFlowPane();
-    scheduleTicketLogPrefetch();
   } catch (error) {
     state.linearTicketsLoaded = true;
     syncLinearTicketsWithFlows();
@@ -3370,6 +3355,34 @@ async function loadLinearTickets(options = {}) {
     state.linearTicketsLoading = false;
     updateRefreshLinearTicketsButton();
   }
+}
+
+async function loadCachedLinearTickets() {
+  try {
+    const data = await api("/api/linear/issues?cached=1");
+    if (data.issues?.length) applyLinearTicketsPayload(data, { loaded: false, prefetchLogs: false });
+  } catch {
+  }
+}
+
+function applyLinearTicketsPayload(data, options = {}) {
+  const previousTickets = state.linearTickets;
+  const nextTickets = data.issues || [];
+  state.linearViewer = data.viewer;
+  state.linearViewerName = data.viewer?.name || state.linearViewerName;
+  reconcileRemovedLinearTickets(previousTickets, nextTickets);
+  state.linearTickets = nextTickets;
+  state.linearTicketsLoaded = options.loaded !== false;
+  state.logPrefetchFailedFlowIds.clear();
+  state.logPrefetchedFlowCount = 0;
+  if (options.refreshDetails) state.linearDetails.clear();
+  syncLinearTicketsWithFlows();
+  els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
+  els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
+  els.linearState.classList.toggle("live", !data.cached);
+  renderTickets();
+  renderFlowPane();
+  if (options.prefetchLogs !== false) scheduleTicketLogPrefetch();
 }
 
 function renderTickets() {
