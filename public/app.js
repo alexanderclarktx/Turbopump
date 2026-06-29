@@ -49,6 +49,7 @@ const SLASH_COMMANDS = [
   { name: "/effort", description: "Set Codex reasoning effort" },
   { name: "/fast", description: "Toggle fast mode for this flow" },
   { name: "/model", description: "Set the Codex model for this flow" },
+  { name: "/permissions", description: "Set Codex permissions for this flow" },
   { name: "/plugins", description: "List Codex plugins" },
   { name: "/review", description: "Ask Codex to review the current changes" },
 ];
@@ -61,6 +62,11 @@ const SLASH_COMMAND_EXPANSIONS = {
     name: `/model ${model}`,
     description: "",
   })),
+  "/permissions": [
+    { name: "/permissions read-only", description: "Read files only" },
+    { name: "/permissions workspace-write", description: "Write inside the workspace" },
+    { name: "/permissions full-access", description: "Full filesystem access", icon: DEFAULT_FAVICON_HREF },
+  ],
   "/review": [
     { name: "/review base", description: "Review against a base branch (PR style)" },
     { name: "/review uncommitted", description: "Review uncommitted changes" },
@@ -325,6 +331,11 @@ let envSaveTimer = 0;
 let diffModalTransitionTimer = 0;
 let diffModalScrollFrame = 0;
 let imagePreviewTransitionTimer = 0;
+let imagePreviewScale = 1;
+let imagePreviewOffsetX = 0;
+let imagePreviewOffsetY = 0;
+let imagePreviewDrag = null;
+const MODAL_HIDE_DELAY_MS = 220;
 let checkoutLoadFrame = 0;
 let ticketDragScrollFrame = 0;
 let lastSavedRepoConfig = "";
@@ -397,7 +408,7 @@ function renderLinearPriorityIcon(priority, options = {}) {
     { x: 12, y: 1, height: 12 },
   ];
   return `
-    <span class="ticket-priority${urgent ? " urgent" : ""}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
+    <span class="ticket-priority${urgent ? " urgent" : ""}">
       <svg viewBox="0 0 16 14" aria-hidden="true" focusable="false">
         ${bars
           .map(
@@ -434,8 +445,7 @@ function renderGithubCiPill(flow) {
   const status = githubCiStatus(flow);
   const knownRecent = status !== "unknown" && githubCiStatusRecent(flow);
   const label = knownRecent ? githubCiLabel(status) : "GitHub CI status unknown";
-  const title = flow.githubCiDescription || label;
-  return `<a class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}" href="${escapeAttribute(flow.prUrl)}" target="_blank" rel="noreferrer" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(title)}">
+  return `<a class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}" href="${escapeAttribute(flow.prUrl)}" target="_blank" rel="noreferrer">
     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.88-1.17-.88-1.17-.73-.5.05-.49.05-.49.8.06 1.22.82 1.22.82.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.58 7.58 0 0 1 8 3.89c.68 0 1.36.09 2 .27 1.52-1.03 2.19-.82 2.19-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.17c0 .21.14.46.55.38A8 8 0 0 0 8 0Z" />
     </svg>
@@ -465,7 +475,7 @@ function renderLinearStatusIcon(status) {
   const label = typeof status === "object" ? linearStatusName(status) : status || "No status";
   const kind = linearStatusIconKind(label, typeof status === "object" ? linearStatusType(status) : "");
   return `
-    <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
+    <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}">
       <span class="linear-status-icon-glyph" aria-hidden="true"></span>
     </span>
   `;
@@ -1534,6 +1544,13 @@ function renderSlashMenu() {
     const name = document.createElement("span");
     name.className = "slash-command-name";
     name.textContent = command.name;
+    if (command.icon) {
+      const icon = document.createElement("img");
+      icon.className = "slash-command-icon";
+      icon.src = command.icon;
+      icon.alt = "";
+      name.append(" ", icon);
+    }
 
     const description = document.createElement("span");
     description.className = "slash-command-description";
@@ -1711,7 +1728,6 @@ function createEnvRow(key = "", values = [{ value: "", active: false }]) {
   addValueButton.className = "env-add-value";
   addValueButton.type = "button";
   addValueButton.setAttribute("aria-label", "Add value");
-  addValueButton.title = "Add value";
   addValueButton.textContent = "+";
 
   const valueList = document.createElement("div");
@@ -1952,15 +1968,12 @@ function setSettingsCollapsed(collapsed) {
   document.body.classList.toggle("settings-collapsed", collapsed);
   els.settingsToggle.setAttribute("aria-expanded", String(!collapsed));
   els.settingsToggle.setAttribute("aria-label", "Collapse settings");
-  els.settingsToggle.title = "Collapse settings";
   els.settingsPane.setAttribute("aria-label", collapsed ? "Expand settings" : "Settings");
   if (collapsed) {
     els.settingsPane.setAttribute("tabindex", "0");
-    els.settingsPane.setAttribute("title", "Expand settings");
     els.settingsPane.setAttribute("role", "button");
   } else {
     els.settingsPane.removeAttribute("tabindex");
-    els.settingsPane.removeAttribute("title");
     els.settingsPane.removeAttribute("role");
     resetSettingsHorizontalScroll();
     renderCheckouts();
@@ -2047,7 +2060,6 @@ function applyTheme(theme) {
   document.body.classList.toggle("theme-light", !dark);
   els.themeToggle.setAttribute("aria-pressed", String(dark));
   els.themeToggle.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
-  els.themeToggle.title = dark ? "Switch to light mode" : "Switch to dark mode";
 }
 
 function setTheme(theme) {
@@ -2518,7 +2530,6 @@ function renderCheckoutCard(checkout) {
   const button = document.createElement("button");
   button.className = "checkout-delete";
   button.type = "button";
-  button.title = "Delete worktree";
   button.setAttribute("aria-label", `Delete worktree ${checkout.name}`);
   button.innerHTML = `
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2765,7 +2776,6 @@ function renderAgentContext(flow) {
   context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
   diffButton.hidden = !flow || !diffHasChanges(diff);
   renderDiffIndicator(diffButton, flow?.id || "", diff);
-  diffButton.title = "Open diff viewer";
   diffButton.disabled = !flow;
   diffButton.onclick = flow ? () => openDiffViewer(flow.id) : null;
   const branchName = flow?.branchName || "";
@@ -2774,7 +2784,6 @@ function renderAgentContext(flow) {
     branch.href = flow.prUrl;
     branch.target = "_blank";
     branch.rel = "noreferrer";
-    branch.title = flow.prUrl;
     branch.onclick = null;
     branch.onkeydown = null;
     branch.removeAttribute("role");
@@ -2784,7 +2793,6 @@ function renderAgentContext(flow) {
     branch.removeAttribute("href");
     branch.removeAttribute("target");
     branch.removeAttribute("rel");
-    branch.title = branchName ? "Copy branch name" : "";
     branch.setAttribute("role", "button");
     branch.setAttribute("tabindex", "0");
     branch.setAttribute("aria-label", "Copy branch name");
@@ -2815,11 +2823,16 @@ function closeDiffViewer() {
   renderDiffModal();
 }
 
+function showModalElement(element) {
+  element.hidden = false;
+  element.classList.remove("is-open", "is-closing");
+  void element.offsetWidth;
+  element.classList.add("is-open");
+}
+
 function showDiffModal() {
   clearTimeout(diffModalTransitionTimer);
-  els.diffModal.hidden = false;
-  els.diffModal.classList.remove("is-closing");
-  requestAnimationFrame(() => els.diffModal.classList.add("is-open"));
+  showModalElement(els.diffModal);
 }
 
 function hideDiffModal() {
@@ -2830,7 +2843,7 @@ function hideDiffModal() {
     if (state.diffModalFlowId) return;
     els.diffModal.hidden = true;
     els.diffModal.classList.remove("is-closing");
-  }, 180);
+  }, MODAL_HIDE_DELAY_MS);
 }
 
 function openImagePreview(src, alt = "") {
@@ -2838,33 +2851,98 @@ function openImagePreview(src, alt = "") {
   clearTimeout(imagePreviewTransitionTimer);
   const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
   const title = els.imagePreviewModal.querySelector("#imagePreviewTitle");
+  imagePreviewScale = 1;
+  imagePreviewOffsetX = 0;
+  imagePreviewOffsetY = 0;
   image.src = src;
   image.alt = alt;
+  applyImagePreviewTransform();
   title.textContent = alt || "Image preview";
-  els.imagePreviewModal.hidden = false;
-  els.imagePreviewModal.classList.remove("is-closing");
-  requestAnimationFrame(() => els.imagePreviewModal.classList.add("is-open"));
+  showModalElement(els.imagePreviewModal);
 }
 
 function closeImagePreview() {
   if (!els.imagePreviewModal || els.imagePreviewModal.hidden) return;
   clearTimeout(imagePreviewTransitionTimer);
+  imagePreviewDrag = null;
   els.imagePreviewModal.classList.remove("is-open");
+  els.imagePreviewModal.classList.remove("is-dragging");
   els.imagePreviewModal.classList.add("is-closing");
   imagePreviewTransitionTimer = setTimeout(() => {
     const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
     image.removeAttribute("src");
     image.alt = "";
+    image.style.removeProperty("--image-preview-scale");
+    image.style.removeProperty("--image-preview-x");
+    image.style.removeProperty("--image-preview-y");
     els.imagePreviewModal.hidden = true;
     els.imagePreviewModal.classList.remove("is-closing");
-  }, 180);
+  }, MODAL_HIDE_DELAY_MS);
+}
+
+function applyImagePreviewTransform() {
+  const image = els.imagePreviewModal?.querySelector(".image-preview-frame img");
+  if (!image) return;
+  image.style.setProperty("--image-preview-scale", imagePreviewScale);
+  image.style.setProperty("--image-preview-x", `${imagePreviewOffsetX}px`);
+  image.style.setProperty("--image-preview-y", `${imagePreviewOffsetY}px`);
+}
+
+function handleImagePreviewWheel(event) {
+  if (!els.imagePreviewModal || els.imagePreviewModal.hidden) return;
+  event.preventDefault();
+  const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
+  const rect = image.getBoundingClientRect();
+  const oldScale = imagePreviewScale;
+  const nextScale = Math.min(5, Math.max(1, imagePreviewScale + (event.deltaY < 0 ? 0.15 : -0.15)));
+  if (nextScale === oldScale) return;
+  const scaleRatio = nextScale / oldScale;
+  const baseCenterX = rect.left + rect.width / 2 - imagePreviewOffsetX;
+  const baseCenterY = rect.top + rect.height / 2 - imagePreviewOffsetY;
+  imagePreviewOffsetX += (event.clientX - baseCenterX - imagePreviewOffsetX) * (1 - scaleRatio);
+  imagePreviewOffsetY += (event.clientY - baseCenterY - imagePreviewOffsetY) * (1 - scaleRatio);
+  imagePreviewScale = nextScale;
+  if (imagePreviewScale === 1) {
+    imagePreviewOffsetX = 0;
+    imagePreviewOffsetY = 0;
+  }
+  applyImagePreviewTransform();
+}
+
+function handleImagePreviewPointerDown(event) {
+  if (event.button !== 0 || imagePreviewScale <= 1) return;
+  imagePreviewDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    offsetX: imagePreviewOffsetX,
+    offsetY: imagePreviewOffsetY,
+  };
+  els.imagePreviewModal?.classList.add("is-dragging");
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+}
+
+function handleImagePreviewPointerMove(event) {
+  if (!imagePreviewDrag || imagePreviewDrag.pointerId !== event.pointerId) return;
+  imagePreviewOffsetX = imagePreviewDrag.offsetX + event.clientX - imagePreviewDrag.startX;
+  imagePreviewOffsetY = imagePreviewDrag.offsetY + event.clientY - imagePreviewDrag.startY;
+  applyImagePreviewTransform();
+}
+
+function endImagePreviewDrag(event) {
+  if (!imagePreviewDrag || imagePreviewDrag.pointerId !== event.pointerId) return;
+  imagePreviewDrag = null;
+  els.imagePreviewModal?.classList.remove("is-dragging");
+  event.currentTarget.releasePointerCapture?.(event.pointerId);
 }
 
 function handleImagePreviewClick(event) {
-  const link = event.target.closest?.("a[data-image-preview]");
-  if (!link) return;
+  if (event.target.closest?.(".agent-image-chip button")) return;
+  const target = event.target.closest?.("[data-image-preview]");
+  if (!target) return;
   event.preventDefault();
-  openImagePreview(link.href, link.dataset.imagePreviewAlt || link.querySelector("img")?.alt || "");
+  openImagePreview(target.dataset.imagePreviewSrc || target.href, target.dataset.imagePreviewAlt || target.querySelector("img")?.alt || "");
 }
 
 function diffLineClass(line) {
@@ -3328,6 +3406,7 @@ function renderTickets() {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
       updateTicketCardState(card);
     }
+    updateTicketStatusGroupShellStates();
     return;
   }
 
@@ -3410,6 +3489,7 @@ function linearStatusRank(key) {
 function renderTicketStatusGroup(group) {
   const section = document.createElement("section");
   section.className = "ticket-status-group";
+  section.classList.toggle("shell-command-active", group.tickets.some(ticketShellRunning));
   section.dataset.status = group.key;
   section.dataset.stateId = group.stateId;
   section.dataset.collapsed = String(group.collapsed);
@@ -3437,6 +3517,7 @@ function renderTicketStatusGroup(group) {
 function renderPinnedTicketGroup(tickets) {
   const section = document.createElement("section");
   section.className = "ticket-status-group pinned-ticket-group";
+  section.classList.toggle("shell-command-active", tickets.some(ticketShellRunning));
   section.addEventListener("dragenter", handlePinnedTicketDragEnter);
   section.addEventListener("dragover", handlePinnedTicketDragOver);
   section.addEventListener("dragleave", handleTicketStatusDragLeave);
@@ -3513,7 +3594,7 @@ function renderLinearStatusControl(issue, statusName) {
     )
     .join("");
   return `<span class="linear-status-control">
-    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName, currentStatusType)}</button>
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName, currentStatusType)}</button>
     ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
   </span>`;
 }
@@ -3525,15 +3606,14 @@ function renderLinearPriorityControl(issue) {
   if (!issueId) return "";
   const options = LINEAR_PRIORITY_OPTIONS.filter((option) => option.priority !== currentPriority);
   const currentIcon = renderLinearPriorityIcon(currentPriority, { empty: true });
-  const currentName = linearPriorityName(currentPriority);
   const optionButtons = options
     .map((option, index) => {
       const icon = renderLinearPriorityIcon(option.priority, { empty: true });
-      return `<button class="linear-priority-option" type="button" data-linear-priority-option="true" data-issue="${escapeAttribute(issueId)}" data-priority="${option.priority}" title="${escapeAttribute(option.name)}" aria-label="${escapeAttribute(option.name)}" style="--linear-priority-option-index: ${index};">${icon}</button>`;
+      return `<button class="linear-priority-option" type="button" data-linear-priority-option="true" data-issue="${escapeAttribute(issueId)}" data-priority="${option.priority}" style="--linear-priority-option-index: ${index};">${icon}</button>`;
     })
     .join("");
   return `<span class="linear-priority-control">
-    <button class="linear-priority-pill" type="button" data-linear-priority-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear priority" aria-label="${escapeAttribute(currentName)}" aria-haspopup="true">${currentIcon}</button>
+    <button class="linear-priority-pill" type="button" data-linear-priority-pill="true" data-issue="${escapeAttribute(issueId)}" aria-haspopup="true">${currentIcon}</button>
     <span class="linear-priority-options" aria-label="Linear priority options">${optionButtons}</span>
   </span>`;
 }
@@ -3543,7 +3623,7 @@ function renderLinearPinButton(issue) {
   if (!issueId) return "";
   const pinned = isLinearIssuePinned(issueId);
   const label = pinned ? "Unpin Linear ticket" : "Pin Linear ticket";
-  return `<button class="linear-pin-toggle${pinned ? " active" : ""}" type="button" data-linear-pin-toggle="true" data-issue="${escapeAttribute(issueId)}" aria-label="${label}" title="${label}" aria-pressed="${pinned}">
+  return `<button class="linear-pin-toggle${pinned ? " active" : ""}" type="button" data-linear-pin-toggle="true" data-issue="${escapeAttribute(issueId)}" aria-label="${label}" aria-pressed="${pinned}">
     <svg class="linear-pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="m12 2.75 2.85 5.78 6.38.93-4.62 4.5 1.09 6.35L12 17.31l-5.7 3 1.09-6.35-4.62-4.5 6.38-.93L12 2.75Z" />
     </svg>
@@ -3558,8 +3638,81 @@ function updateLinearPinButtons(issueId) {
     button.classList.toggle("active", pinned);
     button.setAttribute("aria-pressed", String(pinned));
     button.setAttribute("aria-label", label);
-    button.setAttribute("title", label);
   }
+}
+
+let floatingLinearOptions = null;
+let floatingLinearOptionsHideTimer = 0;
+let floatingLinearOptionsKey = "";
+
+function floatingLinearOptionsTarget(element) {
+  return els.flowPane.contains(element) || Boolean(element.closest(".linear-floating-options"));
+}
+
+function hideFloatingLinearOptions() {
+  window.clearTimeout(floatingLinearOptionsHideTimer);
+  floatingLinearOptionsHideTimer = 0;
+  const menu = floatingLinearOptions;
+  menu?.classList.remove("is-open");
+  floatingLinearOptionsKey = "";
+  floatingLinearOptions = null;
+  window.setTimeout(() => menu?.remove(), 140);
+}
+
+function scheduleHideFloatingLinearOptions() {
+  window.clearTimeout(floatingLinearOptionsHideTimer);
+  floatingLinearOptionsHideTimer = window.setTimeout(hideFloatingLinearOptions, 120);
+}
+
+function positionFloatingLinearOptions(control, menu) {
+  const trigger = control.querySelector(".linear-status-pill, .linear-priority-pill") || control;
+  const rect = trigger.getBoundingClientRect();
+  const width = Math.min(menu.getBoundingClientRect().width || 240, window.innerWidth - 32);
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${rect.bottom + 4}px`;
+}
+
+function showFloatingLinearOptions(control) {
+  const options = control.querySelector(".linear-status-options, .linear-priority-options");
+  if (!options) return;
+  window.clearTimeout(floatingLinearOptionsHideTimer);
+  floatingLinearOptionsHideTimer = 0;
+  const key = `${options.className}:${options.innerHTML}`;
+  if (floatingLinearOptions && floatingLinearOptionsKey === key) {
+    floatingLinearOptions.classList.add("is-open");
+    positionFloatingLinearOptions(control, floatingLinearOptions);
+    return;
+  }
+  floatingLinearOptions?.remove();
+  floatingLinearOptionsKey = key;
+  floatingLinearOptions = document.createElement("div");
+  floatingLinearOptions.className = `linear-floating-options ${
+    options.classList.contains("linear-status-options") ? "linear-floating-status-options" : "linear-floating-priority-options"
+  }`;
+  floatingLinearOptions.setAttribute("aria-label", options.getAttribute("aria-label") || "Linear options");
+  floatingLinearOptions.innerHTML = options.innerHTML;
+  floatingLinearOptions.addEventListener("mouseenter", () => window.clearTimeout(floatingLinearOptionsHideTimer));
+  floatingLinearOptions.addEventListener("mouseleave", scheduleHideFloatingLinearOptions);
+  floatingLinearOptions.addEventListener("click", handleLinearDetailClick);
+  document.body.append(floatingLinearOptions);
+  positionFloatingLinearOptions(control, floatingLinearOptions);
+  requestAnimationFrame(() => floatingLinearOptions?.classList.add("is-open"));
+}
+
+function handleLinearOptionsOpen(event) {
+  if (!(event.target instanceof Element)) return;
+  const control = event.target.closest(".linear-status-control, .linear-priority-control");
+  if (control && els.flowPane.contains(control)) showFloatingLinearOptions(control);
+}
+
+function handleLinearOptionsClose(event) {
+  if (!(event.target instanceof Element)) return;
+  const control = event.target.closest(".linear-status-control, .linear-priority-control");
+  if (!control || !els.flowPane.contains(control)) return;
+  const next = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+  if (next && (control.contains(next) || floatingLinearOptions?.contains(next))) return;
+  scheduleHideFloatingLinearOptions();
 }
 
 function handleLinearDetailClick(event) {
@@ -3585,8 +3738,9 @@ function handleLinearDetailClick(event) {
   }
 
   const priorityButton = event.target.closest("[data-linear-priority-option]");
-  if (priorityButton && els.flowPane.contains(priorityButton)) {
+  if (priorityButton && floatingLinearOptionsTarget(priorityButton)) {
     event.preventDefault();
+    hideFloatingLinearOptions();
     const issueId = priorityButton.dataset.issue || "";
     const priority = Number(priorityButton.dataset.priority);
     if (!issueId || !Number.isInteger(priority)) {
@@ -3598,8 +3752,9 @@ function handleLinearDetailClick(event) {
   }
 
   const button = event.target.closest("[data-linear-status-option]");
-  if (!button || !els.flowPane.contains(button)) return;
+  if (!button || !floatingLinearOptionsTarget(button)) return;
   event.preventDefault();
+  hideFloatingLinearOptions();
   const issueId = button.dataset.issue || "";
   const stateId = button.dataset.stateId || "";
   const status = button.dataset.status || button.textContent || "";
@@ -3986,6 +4141,19 @@ function updateTicketCardsForIdentifiers(...identifiers) {
   for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
     if (issueIds.has(card.dataset.issue)) updateTicketCardState(card);
   }
+  updateTicketStatusGroupShellStates();
+}
+
+function updateTicketStatusGroupShellStates() {
+  for (const section of els.ticketGrid.querySelectorAll(".ticket-status-group")) {
+    const statusKey = section.dataset.status;
+    const tickets = section.classList.contains("pinned-ticket-group")
+      ? state.linearTickets.filter((ticket) => isLinearIssuePinned(ticket.identifier))
+      : state.linearTickets.filter(
+          (ticket) => !isLinearIssuePinned(ticket.identifier) && linearStatusKey(linearStatusName(ticket)) === statusKey,
+        );
+    section.classList.toggle("shell-command-active", tickets.some(ticketShellRunning));
+  }
 }
 
 function ticketInCollapsedStatusGroup(identifier) {
@@ -4067,7 +4235,7 @@ function renderTicketCard(ticket) {
     </div>
     ${
       ticket.flowId
-        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow" title="In flow"></div>`
+        ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow"></div>`
         : creatingFlow
           ? renderTicketCreatingFlowIndicator(ticket)
           : renderTicketStartAgentButton(ticket)
@@ -4293,12 +4461,23 @@ function renderAgentImageContext() {
 function renderAgentImageChip(image, options = {}) {
   const label = image.name || imageLabelFromPath(image.relativePath || image.path) || "image";
   const removable = options.index !== undefined;
+  const previewSrc = agentImagePreviewSource(image);
+  const previewAttrs = previewSrc
+    ? ` data-image-preview data-image-preview-src="${escapeAttribute(previewSrc)}" data-image-preview-alt="${escapeAttribute(label)}"`
+    : "";
   return `
-    <span class="agent-image-chip" title="${escapeAttribute(image.path || label)}">
-      <span>${escapeHtml(label)}</span>
+    <span class="agent-image-chip"${previewAttrs}>
+      <span class="agent-image-chip-label">${escapeHtml(label)}</span>
       ${removable ? `<button type="button" aria-label="Remove image" data-index="${options.index}">×</button>` : ""}
     </span>
   `;
+}
+
+function agentImagePreviewSource(image) {
+  if (!state.selectedFlowId) return "";
+  const path = image.relativePath || image.path || "";
+  if (!path) return "";
+  return `/api/flows/${encodeURIComponent(state.selectedFlowId)}/context-images/preview?path=${encodeURIComponent(path)}`;
 }
 
 function imageLabelFromPath(path) {
@@ -4433,7 +4612,7 @@ function renderLinearDetail(context, options = {}) {
     ? `<div class="linear-description linear-markdown">${options.light ? escapeHtml(issueDescription) : renderLinearMarkdown(issueDescription, "")}</div>`
     : "";
 
-  container.innerHTML = `
+  const html = `
     <section class="linear-issue">
       <div class="linear-issue-header">
         <div>
@@ -4447,10 +4626,10 @@ function renderLinearDetail(context, options = {}) {
         </div>
       </div>
       <div class="linear-meta">
+        ${githubCiPill}
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
         ${statusControl}
         ${priorityControl}
-        ${githubCiPill}
       </div>
       ${descriptionHtml}
     </section>
@@ -4468,6 +4647,12 @@ function renderLinearDetail(context, options = {}) {
       }
     </section>
   `;
+  if (container._linearDetailHtml === html) {
+    updateMarkdownCodeCopyPositions(container);
+    return;
+  }
+  container._linearDetailHtml = html;
+  container.innerHTML = html;
   updateMarkdownCodeCopyPositions(container);
 }
 
@@ -5675,7 +5860,6 @@ function toggleTerminalMarkdownOutput(button) {
   const showingRaw = body.classList.toggle("showing-raw-markdown");
   button.setAttribute("aria-pressed", String(showingRaw));
   button.setAttribute("aria-label", "Toggle raw markdown");
-  button.title = "Toggle raw markdown";
   button.textContent = "raw";
   content.innerHTML = showingRaw
     ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
@@ -5933,7 +6117,6 @@ function appendTerminalBlock(fragment, group, options = {}) {
     markdownToggle.className = "terminal-markdown-toggle";
     markdownToggle.setAttribute("aria-pressed", "false");
     markdownToggle.setAttribute("aria-label", "Toggle raw markdown");
-    markdownToggle.title = "Toggle raw markdown";
     markdownToggle.textContent = "raw";
   }
 
@@ -5981,7 +6164,6 @@ function renderOutputDeleteButton(group) {
   button.type = "button";
   button.className = "terminal-output-delete";
   button.setAttribute("aria-label", "Delete output message");
-  button.title = "Delete output message";
   button.disabled = ids.some((id) => state.deletingOutputLogIds.has(id));
   button.innerHTML = `
     <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -6337,6 +6519,9 @@ function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
 }
 
 function terminalGroupSignaturePart(group) {
+  if (group.source === "agent:trace-group" && group.traceKey && !isTerminalTraceGroupOpen(group)) {
+    return [group.source, group.traceKey, group.createdAt].join(":");
+  }
   const logIds = group.logIds || [group.id];
   const firstLogId = logIds[0] ?? group.id;
   const lastLogId = logIds[logIds.length - 1] ?? group.id;
@@ -6355,6 +6540,19 @@ function terminalGroupSignaturePart(group) {
 
 function terminalGroupsSignature(groups) {
   return groups.map((group) => terminalGroupSignaturePart(group)).join("\u001f");
+}
+
+function syncClosedTerminalTraceChildren(terminal, groups) {
+  const childrenByKey = new Map(
+    groups
+      .filter((group) => group.source === "agent:trace-group" && group.traceKey && !isTerminalTraceGroupOpen(group))
+      .map((group) => [group.traceKey, group.children || []]),
+  );
+  if (!childrenByKey.size) return;
+  for (const details of terminal.querySelectorAll(".terminal-trace-group:not([open])")) {
+    const children = childrenByKey.get(details.dataset.traceKey || "");
+    if (children) details._traceChildren = children;
+  }
 }
 
 function terminalVisibleTurnCount(flowId) {
@@ -6409,6 +6607,7 @@ function renderLogs(id, options = {}) {
   const logs = state.logs.get(id) || [];
   const allGroups = terminalGroups(logs, flow);
   const groups = visibleTerminalGroups(id, allGroups);
+  syncClosedTerminalTraceChildren(terminal, groups);
   const canLoadMore = terminalTraceCanLoadMore(id, allGroups);
   const loadMoreLoading = state.logOlderLoadingFlowIds.has(id);
   const agentWorking = agentWorkingForFlow(flow);
@@ -6434,7 +6633,7 @@ function renderLogs(id, options = {}) {
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const scrollHeightBeforeRender = terminal.scrollHeight;
   const scrollTopBeforeRender = terminal.scrollTop;
-  const animateIncoming = !options.suppressIncoming;
+  const animateIncoming = !options.suppressIncoming && !agentWorking;
   const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
   const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
   const fragment = document.createDocumentFragment();
@@ -6924,9 +7123,24 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", 
 els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 els.flowPane.addEventListener("click", handleLinearDetailClick);
+els.flowPane.addEventListener("mouseover", handleLinearOptionsOpen);
+els.flowPane.addEventListener("mouseout", handleLinearOptionsClose);
+els.flowPane.addEventListener("focusin", handleLinearOptionsOpen);
+els.flowPane.addEventListener("focusout", handleLinearOptionsClose);
 els.flowPane.addEventListener("pointerdown", startMarkdownTableColumnResize);
-els.flowPane.addEventListener("scroll", () => scheduleMarkdownCodeCopyPositionUpdate(), { capture: true, passive: true });
-window.addEventListener("resize", () => scheduleMarkdownCodeCopyPositionUpdate(), { passive: true });
+function shouldHideFloatingLinearOptionsForScroll(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  return target === els.flowPane || Boolean(target?.closest(".linear-panel, .linear-detail"));
+}
+
+els.flowPane.addEventListener("scroll", (event) => {
+  scheduleMarkdownCodeCopyPositionUpdate();
+  if (shouldHideFloatingLinearOptionsForScroll(event)) hideFloatingLinearOptions();
+}, { capture: true, passive: true });
+window.addEventListener("resize", () => {
+  scheduleMarkdownCodeCopyPositionUpdate();
+  hideFloatingLinearOptions();
+}, { passive: true });
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
@@ -7273,6 +7487,12 @@ els.diffModal?.querySelector(".diff-modal-code")?.addEventListener("scroll", sch
 els.imagePreviewModal?.addEventListener("click", (event) => {
   if (event.target === els.imagePreviewModal) closeImagePreview();
 });
+const imagePreviewFrame = els.imagePreviewModal?.querySelector(".image-preview-frame");
+imagePreviewFrame?.addEventListener("wheel", handleImagePreviewWheel, { passive: false });
+imagePreviewFrame?.addEventListener("pointerdown", handleImagePreviewPointerDown);
+imagePreviewFrame?.addEventListener("pointermove", handleImagePreviewPointerMove);
+imagePreviewFrame?.addEventListener("pointerup", endImagePreviewDrag);
+imagePreviewFrame?.addEventListener("pointercancel", endImagePreviewDrag);
 els.flowPane.addEventListener("click", handleImagePreviewClick);
 
 let titleResizeFrame = 0;

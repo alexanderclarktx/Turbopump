@@ -16,6 +16,7 @@ import { basename, extname, join, resolve } from "node:path";
 type ThreadStartSource = "startup" | "clear";
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "fast" | "flex";
+type AgentSandbox = "read-only" | "workspace-write" | "danger-full-access";
 
 type Flow = {
   id: string;
@@ -35,6 +36,7 @@ type Flow = {
   agentModel: string;
   agentReasoningEffort: string;
   agentServiceTier: string;
+  agentSandbox: string;
   agentContextTokensUsed: number;
   agentContextWindow: number;
   serving: number;
@@ -101,6 +103,11 @@ type LinearIssue = {
   };
 };
 
+type LinearIssueConnection = {
+  nodes: LinearIssue[];
+  pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+};
+
 type LinearWorkflowState = {
   id: string;
   name: string;
@@ -129,6 +136,7 @@ const apiBaseUrl = `http://localhost:${port}`;
 const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
+const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
 const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
 const reviewFindingInstructions =
   "Focus on bugs, behavioral regressions, missing tests, and risks. Report findings first with file and line references.";
@@ -201,6 +209,7 @@ db.exec(`
     agentModel text not null default '',
     agentReasoningEffort text not null default '',
     agentServiceTier text not null default 'fast',
+    agentSandbox text not null default 'danger-full-access',
     agentContextTokensUsed integer not null default 0,
     agentContextWindow integer not null default 0,
     serving integer not null default 0,
@@ -243,6 +252,7 @@ tryMigration("alter table flows drop column stage");
 tryMigration("alter table flows add column agentModel text not null default ''");
 tryMigration("alter table flows add column agentReasoningEffort text not null default ''");
 tryMigration("alter table flows add column agentServiceTier text not null default 'fast'");
+tryMigration("alter table flows add column agentSandbox text not null default 'danger-full-access'");
 tryMigration("alter table flows add column agentContextTokensUsed integer not null default 0");
 tryMigration("alter table flows add column agentContextWindow integer not null default 0");
 tryMigration("alter table flows add column prUrl text not null default ''");
@@ -822,6 +832,17 @@ function safeImageExtension(file: UploadedImage) {
   return "";
 }
 
+function imageContentType(path: string) {
+  const extension = extname(path).toLowerCase();
+  if (extension === ".png") return "image/png";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".gif") return "image/gif";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".avif") return "image/avif";
+  if (extension === ".svg") return "image/svg+xml";
+  return "";
+}
+
 async function saveFlowContextImages(flow: Flow, formData: FormData) {
   const values = formData.getAll("images");
   const files = values.filter((value): value is UploadedImage => {
@@ -848,6 +869,18 @@ async function saveFlowContextImages(flow: Flow, formData: FormData) {
     });
   }
   return images;
+}
+
+async function serveFlowContextImage(flow: Flow, rawPath: string) {
+  if (!rawPath) return new Response("Image path is required.", { status: 400 });
+  const contextDir = join(flow.checkoutPath, ".flow", "context");
+  const resolved = rawPath.startsWith("/") ? resolve(rawPath) : resolve(flow.checkoutPath, rawPath);
+  if (!pathIsInsideDirectory(resolved, contextDir)) return new Response("Not found", { status: 404 });
+  const contentType = imageContentType(resolved);
+  if (!contentType) return new Response("Unsupported image type.", { status: 400 });
+  const file = Bun.file(resolved);
+  if (!(await file.exists())) return new Response("Not found", { status: 404 });
+  return new Response(file, { headers: { "content-type": contentType } });
 }
 
 function normalizePrUrl(value: unknown) {
@@ -1657,7 +1690,29 @@ function configuredAgentMetadata(flow: Flow): Partial<Flow> {
       ? { agentReasoningEffort: flow.agentReasoningEffort }
       : {}),
     ...(serviceTiers.has(flow.agentServiceTier as ServiceTier) ? { agentServiceTier: flow.agentServiceTier } : {}),
+    ...(agentSandboxes.has(flow.agentSandbox as AgentSandbox) ? { agentSandbox: flow.agentSandbox } : {}),
   };
+}
+
+function codexSandboxMode(flow: Flow): AgentSandbox {
+  return agentSandboxes.has(flow.agentSandbox as AgentSandbox)
+    ? (flow.agentSandbox as AgentSandbox)
+    : "danger-full-access";
+}
+
+function codexSandboxPolicy(flow: Flow) {
+  const sandbox = codexSandboxMode(flow);
+  if (sandbox === "read-only") return { type: "readOnly", networkAccess: true };
+  if (sandbox === "workspace-write") {
+    return {
+      type: "workspaceWrite",
+      writableRoots: [flow.checkoutPath],
+      networkAccess: true,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    };
+  }
+  return { type: "dangerFullAccess" };
 }
 
 function optionalInteger(value: unknown) {
@@ -1679,7 +1734,7 @@ function codexThreadParams(flow: Flow, sessionStartSource: ThreadStartSource = "
     cwd: flow.checkoutPath,
     approvalPolicy: "on-failure",
     approvalsReviewer: "auto_review",
-    sandbox: "danger-full-access",
+    sandbox: codexSandboxMode(flow),
     developerInstructions: flowDeveloperInstructions(flow),
     serviceName: "turbopump",
     experimentalRawEvents: false,
@@ -1695,7 +1750,7 @@ function codexThreadResumeParams(flow: Flow, threadId: string) {
     cwd: flow.checkoutPath,
     approvalPolicy: "on-failure",
     approvalsReviewer: "auto_review",
-    sandbox: "danger-full-access",
+    sandbox: codexSandboxMode(flow),
     developerInstructions: flowDeveloperInstructions(flow),
     persistExtendedHistory: true,
   };
@@ -1709,7 +1764,7 @@ function codexTurnParams(runtime: RuntimeProcess, flow: Flow, message: string) {
     cwd: flow.checkoutPath,
     approvalPolicy: "on-failure",
     approvalsReviewer: "auto_review",
-    sandboxPolicy: { type: "dangerFullAccess" },
+    sandboxPolicy: codexSandboxPolicy(flow),
     ...codexTurnOverrides(flow),
   };
 }
@@ -2221,6 +2276,11 @@ function slashCommandArgs(message: string) {
   return trimmed.slice(firstSpace).trim();
 }
 
+function agentSandboxForSlashCommand(value: string): AgentSandbox | "" {
+  const sandbox = value.toLowerCase();
+  return sandbox === "full-access" ? "danger-full-access" : agentSandboxes.has(sandbox as AgentSandbox) ? (sandbox as AgentSandbox) : "";
+}
+
 function reviewPromptForSlashCommand(message: string) {
   const [preset = "", ...rest] = slashCommandArgs(message).split(/\s+/);
   const detail = rest.join(" ").trim();
@@ -2444,6 +2504,13 @@ async function handleSlashCommand(flow: Flow, message: string) {
   }
   if (command === "/plugins") {
     await listCodexPlugins(flow);
+    return true;
+  }
+  if (command === "/permissions") {
+    const agentSandbox = agentSandboxForSlashCommand(slashCommandArgs(message));
+    if (!agentSandbox) throw new Error("Usage: /permissions read-only|workspace-write|full-access");
+    updateFlow(flow.id, { agentSandbox });
+    insertLog(flow.id, "agent:status", `permissions set to ${agentSandbox}`);
     return true;
   }
 
@@ -2904,6 +2971,16 @@ function isDeletedLinearIssue(issue: LinearIssue) {
   return Boolean(issue.archivedAt);
 }
 
+function isDoneLinearIssue(issue: LinearIssue) {
+  const stateName = linearWorkflowKey(issue.state?.name ?? "");
+  const stateType = linearWorkflowKey(issue.state?.type ?? "");
+  return stateType === "completed" || stateName === "done" || stateName === "completed";
+}
+
+function isDuplicateLinearIssue(issue: LinearIssue) {
+  return linearWorkflowKey(issue.state?.name ?? "") === "duplicate";
+}
+
 function isLinearIssueNotFoundError(error: unknown) {
   return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
@@ -2916,6 +2993,7 @@ function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issue
     issues: issues.flatMap((issue) => {
       const flow = flowsByIssue.get(issue.identifier);
       if (isDeletedLinearIssue(issue)) return [];
+      if (!flow && (isDoneLinearIssue(issue) || isDuplicateLinearIssue(issue))) return [];
       return [
         {
           ...issue,
@@ -2954,49 +3032,51 @@ function hasCachedAssignedLinearIssues() {
 }
 
 async function listAssignedLinearIssues(apiKey?: string) {
-  let data: {
-    viewer: {
-      id: string;
-      name: string;
-      assignedIssues: {
-        nodes: LinearIssue[];
-      };
-    };
-  };
+  let viewer: { id: string; name: string } | null = null;
+  const issues: LinearIssue[] = [];
+  let after: string | null = null;
   try {
-    data = await linearGraphql<{
-      viewer: {
-        id: string;
-        name: string;
-        assignedIssues: {
-          nodes: LinearIssue[];
+    do {
+      const data = await linearGraphql<{
+        viewer: {
+          id: string;
+          name: string;
+          assignedIssues: LinearIssueConnection;
         };
-      };
-    }>(`
-      query AssignedToMe {
-        viewer {
-          id
-          name
-          assignedIssues(first: 100) {
-            nodes {
-              id
-              identifier
-              title
-              url
-              archivedAt
-              priority
-              estimate
-              createdAt
-              updatedAt
-              state { id name color type }
-              team { key name }
-              project { name }
-              labels { nodes { name color } }
+      }>(`
+        query AssignedToMe($after: String) {
+          viewer {
+            id
+            name
+            assignedIssues(first: 100, after: $after) {
+              nodes {
+                id
+                identifier
+                title
+                url
+                archivedAt
+                priority
+                estimate
+                createdAt
+                updatedAt
+                state { id name color type }
+                team { key name }
+                project { name }
+                labels { nodes { name color } }
+              }
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
             }
           }
         }
-      }
-    `, {}, apiKey);
+      `, { after }, apiKey);
+      viewer = { id: data.viewer.id, name: data.viewer.name };
+      issues.push(...data.viewer.assignedIssues.nodes);
+      const pageInfo = data.viewer.assignedIssues.pageInfo;
+      after = pageInfo?.hasNextPage ? pageInfo.endCursor ?? null : null;
+    } while (after);
   } catch (error) {
     if (!apiKey && hasCachedAssignedLinearIssues()) {
       if (error instanceof LinearUnavailableError) logLinearUnavailable(error);
@@ -3005,9 +3085,9 @@ async function listAssignedLinearIssues(apiKey?: string) {
     }
     throw error;
   }
-  for (const issue of data.viewer.assignedIssues.nodes) cacheLinearIssue(issue);
-  const viewer = { id: data.viewer.id, name: data.viewer.name };
-  return assignedLinearIssuesPayload(viewer, data.viewer.assignedIssues.nodes);
+  for (const issue of issues) cacheLinearIssue(issue);
+  if (!viewer) throw new Error("Linear did not return the viewer.");
+  return assignedLinearIssuesPayload(viewer, issues);
 }
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
@@ -3303,6 +3383,10 @@ async function handleApi(request: Request, url: URL) {
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
       }
+    }
+
+    if (parts[3] === "context-images" && parts[4] === "preview" && request.method === "GET") {
+      return await serveFlowContextImage(assertFlowWorktree(flow), url.searchParams.get("path") ?? "");
     }
 
     if (parts[3] === "diff" && request.method === "GET") {
