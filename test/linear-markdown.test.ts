@@ -47,6 +47,15 @@ describe("renderLinearMarkdown", () => {
     expect(html).toContain('<a href="https://platform.claude.com/workspaces/default/sessions/sess_123"');
   });
 
+  test("leaves trailing punctuation out of bare URLs", () => {
+    const url = "http://dev.ando.so:3000/ando-corp/2c177334-0cca-40ed-b29a-45c3a55069da";
+    const html = renderLinearMarkdown(`"href": "${url}",`);
+
+    expect(html).toContain(`<a href="${url}"`);
+    expect(html).toContain(`>${url}</a>",`);
+    expect(html).not.toContain(`href="${url}&quot;,`);
+  });
+
   test("renders Linear upload images through the local attachment proxy", () => {
     const url = "https://uploads.linear.app/workspace/file/image.png";
     const html = renderLinearMarkdown(`![Screenshot](${url})`);

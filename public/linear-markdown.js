@@ -344,7 +344,8 @@ export function renderInlineMarkdown(value, options = {}) {
 
   for (const match of text.matchAll(markdownPattern)) {
     const [markdown, code, bold, emphasis, imageMarker, label, angleUrl, plainUrl, bareUrl] = match;
-    const url = angleUrl || plainUrl || bareUrl;
+    const url = angleUrl || plainUrl || trimBareUrl(bareUrl);
+    const matchedText = bareUrl ? url : markdown;
     html += renderTextWithSentenceBreaks(text.slice(cursor, match.index));
 
     if (code !== undefined) {
@@ -364,11 +365,15 @@ export function renderInlineMarkdown(value, options = {}) {
       html += renderTextWithSentenceBreaks(markdown);
     }
 
-    cursor = match.index + markdown.length;
+    cursor = match.index + matchedText.length;
   }
 
   html += renderTextWithSentenceBreaks(text.slice(cursor));
   return html;
+}
+
+function trimBareUrl(url) {
+  return String(url || "").replace(/['",.;:!?]+$/, "");
 }
 
 function isLocalFileLink(url) {

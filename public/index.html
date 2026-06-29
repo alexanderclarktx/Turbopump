@@ -19,7 +19,6 @@
             type="button"
             aria-expanded="false"
             aria-label="Collapse settings"
-            title="Collapse settings"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="m15 6-6 6 6 6" />
@@ -75,7 +74,6 @@
                     class="icon-button"
                     type="button"
                     aria-label="Reset developer instructions"
-                    title="Reset developer instructions"
                   >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="M20 6v5h-5" />
@@ -132,7 +130,7 @@
             <p id="ticketState">Connect Linear to load assigned tickets.</p>
           </div>
           <div class="ticket-drawer-actions">
-            <button id="refreshLinearTickets" class="icon-button" type="button" aria-label="Refresh tickets" title="Refresh tickets">
+            <button id="refreshLinearTickets" class="icon-button" type="button" aria-label="Refresh tickets">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M20 6v5h-5" />
                 <path d="M4 18v-5h5" />
@@ -140,13 +138,13 @@
                 <path d="M5.9 15a7 7 0 0 0 11.5 2.6L20 15" />
               </svg>
             </button>
-            <button id="createLinearTicket" class="icon-button" type="button" aria-label="Create pinned In Eng ticket" title="Create pinned In Eng ticket">
+            <button id="createLinearTicket" class="icon-button" type="button" aria-label="Create pinned In Eng ticket">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 5v14" />
                 <path d="M5 12h14" />
               </svg>
             </button>
-            <button id="searchLinearTickets" class="icon-button" type="button" aria-label="Search tickets" title="Search tickets">
+            <button id="searchLinearTickets" class="icon-button" type="button" aria-label="Search tickets">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <circle cx="11" cy="11" r="6" />
                 <path d="m16 16 4 4" />
@@ -160,7 +158,7 @@
             <path d="m16 16 4 4" />
           </svg>
           <input id="ticketSearchInput" type="search" autocomplete="off" />
-          <button id="closeTicketSearch" class="icon-button" type="button" aria-label="Close ticket search" title="Close ticket search">
+          <button id="closeTicketSearch" class="icon-button" type="button" aria-label="Close ticket search">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M18 6 6 18" />
               <path d="m6 6 12 12" />
@@ -187,7 +185,6 @@
               type="button"
               aria-expanded="true"
               aria-label="Expand Linear pane"
-              title="Expand Linear pane"
             ></button>
             <div class="linear-panel">
               <div class="linear-detail"></div>
@@ -207,7 +204,6 @@
               type="button"
               aria-expanded="true"
               aria-label="Expand Shell pane"
-              title="Expand Shell pane"
               ></button>
               <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
               <div class="terminal" role="log" aria-live="polite"></div>
@@ -252,14 +248,14 @@
     </main>
     <div class="corner-controls">
       <div class="hotkeys-info">
-        <button class="icon-button hotkeys-info-trigger" type="button" aria-label="Show app hotkeys" aria-describedby="hotkeysPane">
+        <button class="icon-button hotkeys-info-trigger" type="button" aria-label="Show app hotkeys">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="9" />
             <path d="M12 10v7" />
             <path d="M12 7h.01" />
           </svg>
         </button>
-        <div id="hotkeysPane" class="hotkeys-pane" role="tooltip">
+        <div id="hotkeysPane" class="hotkeys-pane">
           <strong>Hotkeys</strong>
           <dl>
             <div><dt><kbd>Cmd + ,</kbd></dt><dd>Toggle settings</dd></div>
@@ -270,7 +266,7 @@
             <div><dt><kbd>Ctrl + Z</kbd></dt><dd>Previous history match</dd></div>
             <div><dt><kbd>Up / Down</kbd></dt><dd>Navigate input history</dd></div>
             <div><dt><kbd>$</kbd></dt><dd>Focus shell from anywhere</dd></div>
-            <div><dt><kbd>Cmd + Z</kbd></dt><dd>Toggle theme</dd></div>
+            <div><dt><kbd>Cmd + E</kbd></dt><dd>Toggle theme</dd></div>
             <div><dt><kbd>Ctrl + C</kbd></dt><dd>Interrupt running shell</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Interrupt agent or close panels</dd></div>
           </dl>
@@ -282,7 +278,6 @@
         type="button"
         aria-pressed="false"
         aria-label="Switch to dark mode"
-        title="Switch to dark mode"
       >
         <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="12" cy="12" r="4.75" />

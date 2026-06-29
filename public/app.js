@@ -49,6 +49,8 @@ const SLASH_COMMANDS = [
   { name: "/effort", description: "Set Codex reasoning effort" },
   { name: "/fast", description: "Toggle fast mode for this flow" },
   { name: "/model", description: "Set the Codex model for this flow" },
+  { name: "/permissions", description: "Set Codex permissions for this flow" },
+  { name: "/plugins", description: "List Codex plugins" },
   { name: "/review", description: "Ask Codex to review the current changes" },
 ];
 const SLASH_COMMAND_EXPANSIONS = {
@@ -60,6 +62,11 @@ const SLASH_COMMAND_EXPANSIONS = {
     name: `/model ${model}`,
     description: "",
   })),
+  "/permissions": [
+    { name: "/permissions read-only", description: "Read files only" },
+    { name: "/permissions workspace-write", description: "Write inside the workspace" },
+    { name: "/permissions full-access", description: "Full filesystem access", icon: DEFAULT_FAVICON_HREF },
+  ],
   "/review": [
     { name: "/review base", description: "Review against a base branch (PR style)" },
     { name: "/review uncommitted", description: "Review uncommitted changes" },
@@ -324,6 +331,11 @@ let envSaveTimer = 0;
 let diffModalTransitionTimer = 0;
 let diffModalScrollFrame = 0;
 let imagePreviewTransitionTimer = 0;
+let imagePreviewScale = 1;
+let imagePreviewOffsetX = 0;
+let imagePreviewOffsetY = 0;
+let imagePreviewDrag = null;
+const MODAL_HIDE_DELAY_MS = 220;
 let checkoutLoadFrame = 0;
 let ticketDragScrollFrame = 0;
 let lastSavedRepoConfig = "";
@@ -351,6 +363,10 @@ function linearStatusName(ticket) {
 
 function linearStatusId(ticket) {
   return ticket?.state?.id || "";
+}
+
+function linearStatusType(ticket) {
+  return ticket?.state?.type || "";
 }
 
 function linearPriorityValue(priority) {
@@ -392,7 +408,7 @@ function renderLinearPriorityIcon(priority, options = {}) {
     { x: 12, y: 1, height: 12 },
   ];
   return `
-    <span class="ticket-priority${urgent ? " urgent" : ""}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
+    <span class="ticket-priority${urgent ? " urgent" : ""}">
       <svg viewBox="0 0 16 14" aria-hidden="true" focusable="false">
         ${bars
           .map(
@@ -407,11 +423,12 @@ function renderLinearPriorityIcon(priority, options = {}) {
 
 function githubCiStatus(flow) {
   const status = String(flow?.githubCiStatus || "unknown").toLowerCase();
-  if (status === "success" || status === "pending" || status === "failure") return status;
+  if (status === "success" || status === "pending" || status === "failure" || status === "merged") return status;
   return "unknown";
 }
 
 function githubCiLabel(status) {
+  if (status === "merged") return "GitHub PR merged";
   if (status === "success") return "GitHub CI passing";
   if (status === "failure") return "GitHub CI failing";
   if (status === "pending") return "GitHub CI pending";
@@ -437,19 +454,27 @@ function renderGithubCiPill(flow) {
   </a>`;
 }
 
-function linearStatusIconKind(status) {
+function linearStatusIconKind(status, type = "") {
   const key = linearStatusKey(status);
   if (key === "triage") return "triage";
   if (key === "done" || key === "completed") return "done";
   if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "review";
+  if (key === "in-eng") return "in-eng";
+  const typeKey = linearStatusKey(type);
+  if (typeKey === "triage") return "triage";
+  if (typeKey === "backlog") return "backlog";
+  if (typeKey === "unstarted") return "todo";
+  if (typeKey === "started") return "started";
+  if (typeKey === "completed") return "done";
   if (key === "in-progress" || key === "in-eng" || key === "working" || key === "started") return "started";
-  if (key === "ready-for-eng" || key === "ready" || key === "backlog") return "backlog";
+  if (key === "ready-for-eng" || key === "ready") return "started";
+  if (key === "backlog") return "backlog";
   return "todo";
 }
 
 function renderLinearStatusIcon(status) {
-  const label = status || "No status";
-  const kind = linearStatusIconKind(label);
+  const label = typeof status === "object" ? linearStatusName(status) : status || "No status";
+  const kind = linearStatusIconKind(label, typeof status === "object" ? linearStatusType(status) : "");
   return `
     <span class="linear-status-icon linear-status-icon-${kind}" aria-label="${escapeAttribute(label)}" title="${escapeAttribute(label)}">
       <span class="linear-status-icon-glyph" aria-hidden="true"></span>
@@ -457,9 +482,9 @@ function renderLinearStatusIcon(status) {
   `;
 }
 
-function renderLinearStatusPillContent(status) {
+function renderLinearStatusPillContent(status, type = "") {
   const label = status || "No status";
-  const kind = linearStatusIconKind(label);
+  const kind = linearStatusIconKind(label, type);
   return `<span>${escapeHtml(label)}</span><span class="linear-status-icon linear-status-icon-${kind}" aria-hidden="true">
     <span class="linear-status-icon-glyph" aria-hidden="true"></span>
   </span>`;
@@ -1416,8 +1441,8 @@ function handleAgentInterruptKeydown(event) {
   return true;
 }
 
-function handleCommandZ(event) {
-  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "z") return false;
+function handleCommandE(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "e") return false;
   event.preventDefault();
   event.stopImmediatePropagation();
   if (event.repeat) return true;
@@ -1520,6 +1545,13 @@ function renderSlashMenu() {
     const name = document.createElement("span");
     name.className = "slash-command-name";
     name.textContent = command.name;
+    if (command.icon) {
+      const icon = document.createElement("img");
+      icon.className = "slash-command-icon";
+      icon.src = command.icon;
+      icon.alt = "";
+      name.append(" ", icon);
+    }
 
     const description = document.createElement("span");
     description.className = "slash-command-description";
@@ -1697,7 +1729,6 @@ function createEnvRow(key = "", values = [{ value: "", active: false }]) {
   addValueButton.className = "env-add-value";
   addValueButton.type = "button";
   addValueButton.setAttribute("aria-label", "Add value");
-  addValueButton.title = "Add value";
   addValueButton.textContent = "+";
 
   const valueList = document.createElement("div");
@@ -1938,15 +1969,12 @@ function setSettingsCollapsed(collapsed) {
   document.body.classList.toggle("settings-collapsed", collapsed);
   els.settingsToggle.setAttribute("aria-expanded", String(!collapsed));
   els.settingsToggle.setAttribute("aria-label", "Collapse settings");
-  els.settingsToggle.title = "Collapse settings";
   els.settingsPane.setAttribute("aria-label", collapsed ? "Expand settings" : "Settings");
   if (collapsed) {
     els.settingsPane.setAttribute("tabindex", "0");
-    els.settingsPane.setAttribute("title", "Expand settings");
     els.settingsPane.setAttribute("role", "button");
   } else {
     els.settingsPane.removeAttribute("tabindex");
-    els.settingsPane.removeAttribute("title");
     els.settingsPane.removeAttribute("role");
     resetSettingsHorizontalScroll();
     renderCheckouts();
@@ -2033,7 +2061,6 @@ function applyTheme(theme) {
   document.body.classList.toggle("theme-light", !dark);
   els.themeToggle.setAttribute("aria-pressed", String(dark));
   els.themeToggle.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
-  els.themeToggle.title = dark ? "Switch to light mode" : "Switch to dark mode";
 }
 
 function setTheme(theme) {
@@ -2504,7 +2531,6 @@ function renderCheckoutCard(checkout) {
   const button = document.createElement("button");
   button.className = "checkout-delete";
   button.type = "button";
-  button.title = "Delete worktree";
   button.setAttribute("aria-label", `Delete worktree ${checkout.name}`);
   button.innerHTML = `
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2620,11 +2646,50 @@ function diffFileCount(diff) {
   return paths.size;
 }
 
-function diffIndicatorLabel(diff) {
+function ensureDiffIndicatorCount(button, kind, className, prefix) {
+  let count = button.querySelector(`.diff-count[data-kind="${kind}"]`);
+  if (count) return count;
+  count = document.createElement("span");
+  count.className = `${className} diff-count`;
+  count.dataset.kind = kind;
+  const prefixNode = document.createElement("span");
+  prefixNode.className = "diff-count-prefix";
+  prefixNode.setAttribute("aria-hidden", "true");
+  prefixNode.textContent = prefix;
+  const digits = document.createElement("span");
+  digits.className = "diff-count-digits";
+  digits.setAttribute("aria-hidden", "true");
+  count.append(prefixNode, digits);
+  button.append(count);
+  return count;
+}
+
+function updateDiffIndicatorCount(button, kind, className, prefix, value) {
+  const count = ensureDiffIndicatorCount(button, kind, className, prefix);
+  const digits = count.querySelector(".diff-count-digits");
+  const numericValue = Number(value || 0);
+  const nextValue = Number.isFinite(numericValue) ? Math.max(0, numericValue) : 0;
+  const nextText = String(nextValue);
+  count.dataset.value = nextText;
+  count.setAttribute("aria-label", `${prefix}${nextText}`);
+  digits.textContent = nextText;
+}
+
+function renderDiffIndicator(button, flowId, diff) {
+  if (button.dataset.flowId !== (flowId || "")) {
+    button.replaceChildren();
+    button.dataset.flowId = flowId || "";
+  }
+
   const additions = Number(diff?.additions || 0);
   const deletions = Number(diff?.deletions || 0);
-  if (!additions && !deletions && !diffFileCount(diff)) return "";
-  return `<span class="diff-additions">+${additions}</span><span class="diff-deletions">-${deletions}</span>`;
+  if (!additions && !deletions && !diffFileCount(diff)) {
+    button.replaceChildren();
+    return;
+  }
+
+  updateDiffIndicatorCount(button, "additions", "diff-additions", "+", additions);
+  updateDiffIndicatorCount(button, "deletions", "diff-deletions", "-", deletions);
 }
 
 function diffCountLabel(value, prefix) {
@@ -2711,8 +2776,7 @@ function renderAgentContext(flow) {
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
   context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
   diffButton.hidden = !flow || !diffHasChanges(diff);
-  diffButton.innerHTML = diffIndicatorLabel(diff);
-  diffButton.title = "Open diff viewer";
+  renderDiffIndicator(diffButton, flow?.id || "", diff);
   diffButton.disabled = !flow;
   diffButton.onclick = flow ? () => openDiffViewer(flow.id) : null;
   const branchName = flow?.branchName || "";
@@ -2721,7 +2785,6 @@ function renderAgentContext(flow) {
     branch.href = flow.prUrl;
     branch.target = "_blank";
     branch.rel = "noreferrer";
-    branch.title = flow.prUrl;
     branch.onclick = null;
     branch.onkeydown = null;
     branch.removeAttribute("role");
@@ -2731,7 +2794,6 @@ function renderAgentContext(flow) {
     branch.removeAttribute("href");
     branch.removeAttribute("target");
     branch.removeAttribute("rel");
-    branch.title = branchName ? "Copy branch name" : "";
     branch.setAttribute("role", "button");
     branch.setAttribute("tabindex", "0");
     branch.setAttribute("aria-label", "Copy branch name");
@@ -2762,11 +2824,16 @@ function closeDiffViewer() {
   renderDiffModal();
 }
 
+function showModalElement(element) {
+  element.hidden = false;
+  element.classList.remove("is-open", "is-closing");
+  void element.offsetWidth;
+  element.classList.add("is-open");
+}
+
 function showDiffModal() {
   clearTimeout(diffModalTransitionTimer);
-  els.diffModal.hidden = false;
-  els.diffModal.classList.remove("is-closing");
-  requestAnimationFrame(() => els.diffModal.classList.add("is-open"));
+  showModalElement(els.diffModal);
 }
 
 function hideDiffModal() {
@@ -2777,7 +2844,7 @@ function hideDiffModal() {
     if (state.diffModalFlowId) return;
     els.diffModal.hidden = true;
     els.diffModal.classList.remove("is-closing");
-  }, 180);
+  }, MODAL_HIDE_DELAY_MS);
 }
 
 function openImagePreview(src, alt = "") {
@@ -2785,33 +2852,98 @@ function openImagePreview(src, alt = "") {
   clearTimeout(imagePreviewTransitionTimer);
   const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
   const title = els.imagePreviewModal.querySelector("#imagePreviewTitle");
+  imagePreviewScale = 1;
+  imagePreviewOffsetX = 0;
+  imagePreviewOffsetY = 0;
   image.src = src;
   image.alt = alt;
+  applyImagePreviewTransform();
   title.textContent = alt || "Image preview";
-  els.imagePreviewModal.hidden = false;
-  els.imagePreviewModal.classList.remove("is-closing");
-  requestAnimationFrame(() => els.imagePreviewModal.classList.add("is-open"));
+  showModalElement(els.imagePreviewModal);
 }
 
 function closeImagePreview() {
   if (!els.imagePreviewModal || els.imagePreviewModal.hidden) return;
   clearTimeout(imagePreviewTransitionTimer);
+  imagePreviewDrag = null;
   els.imagePreviewModal.classList.remove("is-open");
+  els.imagePreviewModal.classList.remove("is-dragging");
   els.imagePreviewModal.classList.add("is-closing");
   imagePreviewTransitionTimer = setTimeout(() => {
     const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
     image.removeAttribute("src");
     image.alt = "";
+    image.style.removeProperty("--image-preview-scale");
+    image.style.removeProperty("--image-preview-x");
+    image.style.removeProperty("--image-preview-y");
     els.imagePreviewModal.hidden = true;
     els.imagePreviewModal.classList.remove("is-closing");
-  }, 180);
+  }, MODAL_HIDE_DELAY_MS);
+}
+
+function applyImagePreviewTransform() {
+  const image = els.imagePreviewModal?.querySelector(".image-preview-frame img");
+  if (!image) return;
+  image.style.setProperty("--image-preview-scale", imagePreviewScale);
+  image.style.setProperty("--image-preview-x", `${imagePreviewOffsetX}px`);
+  image.style.setProperty("--image-preview-y", `${imagePreviewOffsetY}px`);
+}
+
+function handleImagePreviewWheel(event) {
+  if (!els.imagePreviewModal || els.imagePreviewModal.hidden) return;
+  event.preventDefault();
+  const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
+  const rect = image.getBoundingClientRect();
+  const oldScale = imagePreviewScale;
+  const nextScale = Math.min(5, Math.max(1, imagePreviewScale + (event.deltaY < 0 ? 0.15 : -0.15)));
+  if (nextScale === oldScale) return;
+  const scaleRatio = nextScale / oldScale;
+  const baseCenterX = rect.left + rect.width / 2 - imagePreviewOffsetX;
+  const baseCenterY = rect.top + rect.height / 2 - imagePreviewOffsetY;
+  imagePreviewOffsetX += (event.clientX - baseCenterX - imagePreviewOffsetX) * (1 - scaleRatio);
+  imagePreviewOffsetY += (event.clientY - baseCenterY - imagePreviewOffsetY) * (1 - scaleRatio);
+  imagePreviewScale = nextScale;
+  if (imagePreviewScale === 1) {
+    imagePreviewOffsetX = 0;
+    imagePreviewOffsetY = 0;
+  }
+  applyImagePreviewTransform();
+}
+
+function handleImagePreviewPointerDown(event) {
+  if (event.button !== 0 || imagePreviewScale <= 1) return;
+  imagePreviewDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    offsetX: imagePreviewOffsetX,
+    offsetY: imagePreviewOffsetY,
+  };
+  els.imagePreviewModal?.classList.add("is-dragging");
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+}
+
+function handleImagePreviewPointerMove(event) {
+  if (!imagePreviewDrag || imagePreviewDrag.pointerId !== event.pointerId) return;
+  imagePreviewOffsetX = imagePreviewDrag.offsetX + event.clientX - imagePreviewDrag.startX;
+  imagePreviewOffsetY = imagePreviewDrag.offsetY + event.clientY - imagePreviewDrag.startY;
+  applyImagePreviewTransform();
+}
+
+function endImagePreviewDrag(event) {
+  if (!imagePreviewDrag || imagePreviewDrag.pointerId !== event.pointerId) return;
+  imagePreviewDrag = null;
+  els.imagePreviewModal?.classList.remove("is-dragging");
+  event.currentTarget.releasePointerCapture?.(event.pointerId);
 }
 
 function handleImagePreviewClick(event) {
-  const link = event.target.closest?.("a[data-image-preview]");
-  if (!link) return;
+  if (event.target.closest?.(".agent-image-chip button")) return;
+  const target = event.target.closest?.("[data-image-preview]");
+  if (!target) return;
   event.preventDefault();
-  openImagePreview(link.href, link.dataset.imagePreviewAlt || link.querySelector("img")?.alt || "");
+  openImagePreview(target.dataset.imagePreviewSrc || target.href, target.dataset.imagePreviewAlt || target.querySelector("img")?.alt || "");
 }
 
 function diffLineClass(line) {
@@ -3207,25 +3339,10 @@ async function loadLinearTickets(options = {}) {
   updateRefreshLinearTicketsButton();
   try {
     els.ticketState.textContent = "Loading assigned tickets.";
+    if (!options.refreshDetails) await loadCachedLinearTickets();
     const data = await api("/api/linear/issues");
-    const previousTickets = state.linearTickets;
-    const nextTickets = data.issues || [];
-    state.linearViewer = data.viewer;
-    state.linearViewerName = data.viewer?.name || state.linearViewerName;
-    reconcileRemovedLinearTickets(previousTickets, nextTickets);
-    state.linearTickets = nextTickets;
-    state.linearTicketsLoaded = true;
-    state.logPrefetchFailedFlowIds.clear();
-    state.logPrefetchedFlowCount = 0;
-    if (options.refreshDetails) state.linearDetails.clear();
-    syncLinearTicketsWithFlows();
-    els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
-    els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
-    els.linearState.classList.toggle("live", !data.cached);
+    applyLinearTicketsPayload(data, options);
     if (!state.settingsCollapsed && state.checkoutsLoaded) await loadCheckouts();
-    renderTickets();
-    renderFlowPane();
-    scheduleTicketLogPrefetch();
   } catch (error) {
     state.linearTicketsLoaded = true;
     syncLinearTicketsWithFlows();
@@ -3238,6 +3355,34 @@ async function loadLinearTickets(options = {}) {
     state.linearTicketsLoading = false;
     updateRefreshLinearTicketsButton();
   }
+}
+
+async function loadCachedLinearTickets() {
+  try {
+    const data = await api("/api/linear/issues?cached=1");
+    if (data.issues?.length) applyLinearTicketsPayload(data, { loaded: false, prefetchLogs: false });
+  } catch {
+  }
+}
+
+function applyLinearTicketsPayload(data, options = {}) {
+  const previousTickets = state.linearTickets;
+  const nextTickets = data.issues || [];
+  state.linearViewer = data.viewer;
+  state.linearViewerName = data.viewer?.name || state.linearViewerName;
+  reconcileRemovedLinearTickets(previousTickets, nextTickets);
+  state.linearTickets = nextTickets;
+  state.linearTicketsLoaded = options.loaded !== false;
+  state.logPrefetchFailedFlowIds.clear();
+  state.logPrefetchedFlowCount = 0;
+  if (options.refreshDetails) state.linearDetails.clear();
+  syncLinearTicketsWithFlows();
+  els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
+  els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
+  els.linearState.classList.toggle("live", !data.cached);
+  renderTickets();
+  renderFlowPane();
+  if (options.prefetchLogs !== false) scheduleTicketLogPrefetch();
 }
 
 function renderTickets() {
@@ -3259,6 +3404,7 @@ function renderTickets() {
         ticket.title,
         linearStatusId(ticket),
         linearStatusName(ticket),
+        linearStatusType(ticket),
         ticket.priority || "",
         ticket.project?.name || "",
         ticket.flowId || "",
@@ -3274,6 +3420,7 @@ function renderTickets() {
     for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
       updateTicketCardState(card);
     }
+    updateTicketStatusGroupShellStates();
     return;
   }
 
@@ -3332,6 +3479,7 @@ function groupedTicketsByLinearStatus(tickets) {
         key,
         stateId: linearStatusId(ticket),
         status,
+        type: linearStatusType(ticket),
         tickets: [],
         collapsed: state.collapsedLinearStatuses.has(key),
       };
@@ -3339,6 +3487,7 @@ function groupedTicketsByLinearStatus(tickets) {
       groups.push(group);
     } else if (!group.stateId) {
       group.stateId = linearStatusId(ticket);
+      group.type = linearStatusType(ticket);
     }
     group.tickets.push(ticket);
   }
@@ -3354,6 +3503,7 @@ function linearStatusRank(key) {
 function renderTicketStatusGroup(group) {
   const section = document.createElement("section");
   section.className = "ticket-status-group";
+  section.classList.toggle("shell-command-active", group.tickets.some(ticketShellRunning));
   section.dataset.status = group.key;
   section.dataset.stateId = group.stateId;
   section.dataset.collapsed = String(group.collapsed);
@@ -3381,6 +3531,7 @@ function renderTicketStatusGroup(group) {
 function renderPinnedTicketGroup(tickets) {
   const section = document.createElement("section");
   section.className = "ticket-status-group pinned-ticket-group";
+  section.classList.toggle("shell-command-active", tickets.some(ticketShellRunning));
   section.addEventListener("dragenter", handlePinnedTicketDragEnter);
   section.addEventListener("dragover", handlePinnedTicketDragOver);
   section.addEventListener("dragleave", handleTicketStatusDragLeave);
@@ -3425,20 +3576,21 @@ function renderTicketStatusSeparator(group) {
 
 function linearStatusOptions(issue = null, fallbackStatus = null) {
   const byStateId = new Map();
-  const addStatus = (stateId, status) => {
+  const addStatus = (stateId, status, type = "") => {
     if (!stateId || !status || byStateId.has(stateId)) return;
     byStateId.set(stateId, {
       stateId,
       status,
+      type,
       key: linearStatusKey(status),
     });
   };
   const addIssueStatus = (item) => {
-    addStatus(linearStatusId(item), linearStatusName(item));
+    addStatus(linearStatusId(item), linearStatusName(item), linearStatusType(item));
   };
   state.linearTickets.forEach(addIssueStatus);
   if (issue) addIssueStatus(issue);
-  if (fallbackStatus) addStatus(fallbackStatus.stateId, fallbackStatus.status);
+  if (fallbackStatus) addStatus(fallbackStatus.stateId, fallbackStatus.status, fallbackStatus.type);
   return [...byStateId.values()].sort((a, b) => linearStatusRank(a.key) - linearStatusRank(b.key) || a.status.localeCompare(b.status));
 }
 
@@ -3446,16 +3598,17 @@ function renderLinearStatusControl(issue, statusName) {
   const issueId = issue.identifier || state.selectedLinearIssueId;
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
   const currentStateId = linearStatusId(issue) || linearStatusId(ticket);
+  const currentStatusType = linearStatusType(issue) || linearStatusType(ticket);
   if (!issueId || !statusName) return "";
-  const options = linearStatusOptions(issue, { stateId: currentStateId, status: statusName }).filter((option) => option.stateId !== currentStateId);
+  const options = linearStatusOptions(issue, { stateId: currentStateId, status: statusName, type: currentStatusType }).filter((option) => option.stateId !== currentStateId);
   const optionButtons = options
     .map(
       (option, index) =>
-        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${renderLinearStatusPillContent(option.status)}</button>`,
+        `<button class="linear-status-option" type="button" data-linear-status-option="true" data-issue="${escapeAttribute(issueId)}" data-state-id="${escapeAttribute(option.stateId)}" data-status="${escapeAttribute(option.status)}" style="--linear-status-option-index: ${index};">${renderLinearStatusPillContent(option.status, option.type)}</button>`,
     )
     .join("");
   return `<span class="linear-status-control">
-    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName)}</button>
+    <button class="linear-status-pill" type="button" data-linear-status-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear status" aria-haspopup="${options.length ? "true" : "false"}">${renderLinearStatusPillContent(statusName, currentStatusType)}</button>
     ${options.length ? `<span class="linear-status-options" aria-label="Linear status options">${optionButtons}</span>` : ""}
   </span>`;
 }
@@ -3467,17 +3620,113 @@ function renderLinearPriorityControl(issue) {
   if (!issueId) return "";
   const options = LINEAR_PRIORITY_OPTIONS.filter((option) => option.priority !== currentPriority);
   const currentIcon = renderLinearPriorityIcon(currentPriority, { empty: true });
-  const currentName = linearPriorityName(currentPriority);
   const optionButtons = options
     .map((option, index) => {
       const icon = renderLinearPriorityIcon(option.priority, { empty: true });
-      return `<button class="linear-priority-option" type="button" data-linear-priority-option="true" data-issue="${escapeAttribute(issueId)}" data-priority="${option.priority}" title="${escapeAttribute(option.name)}" aria-label="${escapeAttribute(option.name)}" style="--linear-priority-option-index: ${index};">${icon}</button>`;
+      return `<button class="linear-priority-option" type="button" data-linear-priority-option="true" data-issue="${escapeAttribute(issueId)}" data-priority="${option.priority}" style="--linear-priority-option-index: ${index};">${icon}</button>`;
     })
     .join("");
   return `<span class="linear-priority-control">
-    <button class="linear-priority-pill" type="button" data-linear-priority-pill="true" data-issue="${escapeAttribute(issueId)}" title="Change Linear priority" aria-label="${escapeAttribute(currentName)}" aria-haspopup="true">${currentIcon}</button>
+    <button class="linear-priority-pill" type="button" data-linear-priority-pill="true" data-issue="${escapeAttribute(issueId)}" aria-haspopup="true">${currentIcon}</button>
     <span class="linear-priority-options" aria-label="Linear priority options">${optionButtons}</span>
   </span>`;
+}
+
+function renderLinearPinButton(issue) {
+  const issueId = issue.identifier || state.selectedLinearIssueId;
+  if (!issueId) return "";
+  const pinned = isLinearIssuePinned(issueId);
+  const label = pinned ? "Unpin Linear ticket" : "Pin Linear ticket";
+  return `<button class="linear-pin-toggle${pinned ? " active" : ""}" type="button" data-linear-pin-toggle="true" data-issue="${escapeAttribute(issueId)}" aria-label="${label}" aria-pressed="${pinned}">
+    <svg class="linear-pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="m12 2.75 2.85 5.78 6.38.93-4.62 4.5 1.09 6.35L12 17.31l-5.7 3 1.09-6.35-4.62-4.5 6.38-.93L12 2.75Z" />
+    </svg>
+  </button>`;
+}
+
+function updateLinearPinButtons(issueId) {
+  const pinned = isLinearIssuePinned(issueId);
+  const label = pinned ? "Unpin Linear ticket" : "Pin Linear ticket";
+  for (const button of els.flowPane.querySelectorAll("[data-linear-pin-toggle]")) {
+    if (button.dataset.issue !== issueId) continue;
+    button.classList.toggle("active", pinned);
+    button.setAttribute("aria-pressed", String(pinned));
+    button.setAttribute("aria-label", label);
+  }
+}
+
+let floatingLinearOptions = null;
+let floatingLinearOptionsHideTimer = 0;
+let floatingLinearOptionsKey = "";
+
+function floatingLinearOptionsTarget(element) {
+  return els.flowPane.contains(element) || Boolean(element.closest(".linear-floating-options"));
+}
+
+function hideFloatingLinearOptions() {
+  window.clearTimeout(floatingLinearOptionsHideTimer);
+  floatingLinearOptionsHideTimer = 0;
+  const menu = floatingLinearOptions;
+  menu?.classList.remove("is-open");
+  floatingLinearOptionsKey = "";
+  floatingLinearOptions = null;
+  window.setTimeout(() => menu?.remove(), 140);
+}
+
+function scheduleHideFloatingLinearOptions() {
+  window.clearTimeout(floatingLinearOptionsHideTimer);
+  floatingLinearOptionsHideTimer = window.setTimeout(hideFloatingLinearOptions, 120);
+}
+
+function positionFloatingLinearOptions(control, menu) {
+  const trigger = control.querySelector(".linear-status-pill, .linear-priority-pill") || control;
+  const rect = trigger.getBoundingClientRect();
+  const width = Math.min(menu.getBoundingClientRect().width || 240, window.innerWidth - 32);
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${rect.bottom + 4}px`;
+}
+
+function showFloatingLinearOptions(control) {
+  const options = control.querySelector(".linear-status-options, .linear-priority-options");
+  if (!options) return;
+  window.clearTimeout(floatingLinearOptionsHideTimer);
+  floatingLinearOptionsHideTimer = 0;
+  const key = `${options.className}:${options.innerHTML}`;
+  if (floatingLinearOptions && floatingLinearOptionsKey === key) {
+    floatingLinearOptions.classList.add("is-open");
+    positionFloatingLinearOptions(control, floatingLinearOptions);
+    return;
+  }
+  floatingLinearOptions?.remove();
+  floatingLinearOptionsKey = key;
+  floatingLinearOptions = document.createElement("div");
+  floatingLinearOptions.className = `linear-floating-options ${
+    options.classList.contains("linear-status-options") ? "linear-floating-status-options" : "linear-floating-priority-options"
+  }`;
+  floatingLinearOptions.setAttribute("aria-label", options.getAttribute("aria-label") || "Linear options");
+  floatingLinearOptions.innerHTML = options.innerHTML;
+  floatingLinearOptions.addEventListener("mouseenter", () => window.clearTimeout(floatingLinearOptionsHideTimer));
+  floatingLinearOptions.addEventListener("mouseleave", scheduleHideFloatingLinearOptions);
+  floatingLinearOptions.addEventListener("click", handleLinearDetailClick);
+  document.body.append(floatingLinearOptions);
+  positionFloatingLinearOptions(control, floatingLinearOptions);
+  requestAnimationFrame(() => floatingLinearOptions?.classList.add("is-open"));
+}
+
+function handleLinearOptionsOpen(event) {
+  if (!(event.target instanceof Element)) return;
+  const control = event.target.closest(".linear-status-control, .linear-priority-control");
+  if (control && els.flowPane.contains(control)) showFloatingLinearOptions(control);
+}
+
+function handleLinearOptionsClose(event) {
+  if (!(event.target instanceof Element)) return;
+  const control = event.target.closest(".linear-status-control, .linear-priority-control");
+  if (!control || !els.flowPane.contains(control)) return;
+  const next = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+  if (next && (control.contains(next) || floatingLinearOptions?.contains(next))) return;
+  scheduleHideFloatingLinearOptions();
 }
 
 function handleLinearDetailClick(event) {
@@ -3490,9 +3739,22 @@ function handleLinearDetailClick(event) {
     return;
   }
 
-  const priorityButton = event.target.closest("[data-linear-priority-option]");
-  if (priorityButton && els.flowPane.contains(priorityButton)) {
+  const pinButton = event.target.closest("[data-linear-pin-toggle]");
+  if (pinButton && els.flowPane.contains(pinButton)) {
     event.preventDefault();
+    event.stopPropagation();
+    const issueId = pinButton.dataset.issue || "";
+    if (!issueId) return;
+    const pinned = !isLinearIssuePinned(issueId);
+    setLinearIssuePinned(issueId, pinned, pinned ? { position: "top" } : {});
+    updateLinearPinButtons(issueId);
+    return;
+  }
+
+  const priorityButton = event.target.closest("[data-linear-priority-option]");
+  if (priorityButton && floatingLinearOptionsTarget(priorityButton)) {
+    event.preventDefault();
+    hideFloatingLinearOptions();
     const issueId = priorityButton.dataset.issue || "";
     const priority = Number(priorityButton.dataset.priority);
     if (!issueId || !Number.isInteger(priority)) {
@@ -3504,8 +3766,9 @@ function handleLinearDetailClick(event) {
   }
 
   const button = event.target.closest("[data-linear-status-option]");
-  if (!button || !els.flowPane.contains(button)) return;
+  if (!button || !floatingLinearOptionsTarget(button)) return;
   event.preventDefault();
+  hideFloatingLinearOptions();
   const issueId = button.dataset.issue || "";
   const stateId = button.dataset.stateId || "";
   const status = button.dataset.status || button.textContent || "";
@@ -3764,6 +4027,7 @@ async function moveTicketToLinearStatus(issueId, group) {
       ...(ticket.state || {}),
       id: group.stateId,
       name: group.status,
+      type: group.type || ticket.state?.type,
     },
   });
   renderTickets();
@@ -3891,6 +4155,19 @@ function updateTicketCardsForIdentifiers(...identifiers) {
   for (const card of els.ticketGrid.querySelectorAll(".ticket-card")) {
     if (issueIds.has(card.dataset.issue)) updateTicketCardState(card);
   }
+  updateTicketStatusGroupShellStates();
+}
+
+function updateTicketStatusGroupShellStates() {
+  for (const section of els.ticketGrid.querySelectorAll(".ticket-status-group")) {
+    const statusKey = section.dataset.status;
+    const tickets = section.classList.contains("pinned-ticket-group")
+      ? state.linearTickets.filter((ticket) => isLinearIssuePinned(ticket.identifier))
+      : state.linearTickets.filter(
+          (ticket) => !isLinearIssuePinned(ticket.identifier) && linearStatusKey(linearStatusName(ticket)) === statusKey,
+        );
+    section.classList.toggle("shell-command-active", tickets.some(ticketShellRunning));
+  }
 }
 
 function ticketInCollapsedStatusGroup(identifier) {
@@ -3966,7 +4243,7 @@ function renderTicketCard(ticket) {
     <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
-      ${renderLinearStatusIcon(linearStatusName(ticket))}
+      ${renderLinearStatusIcon(ticket)}
       ${renderLinearPriorityIcon(ticket.priority)}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>
@@ -4198,12 +4475,23 @@ function renderAgentImageContext() {
 function renderAgentImageChip(image, options = {}) {
   const label = image.name || imageLabelFromPath(image.relativePath || image.path) || "image";
   const removable = options.index !== undefined;
+  const previewSrc = agentImagePreviewSource(image);
+  const previewAttrs = previewSrc
+    ? ` data-image-preview data-image-preview-src="${escapeAttribute(previewSrc)}" data-image-preview-alt="${escapeAttribute(label)}"`
+    : "";
   return `
-    <span class="agent-image-chip" title="${escapeAttribute(image.path || label)}">
-      <span>${escapeHtml(label)}</span>
+    <span class="agent-image-chip"${previewAttrs}>
+      <span class="agent-image-chip-label">${escapeHtml(label)}</span>
       ${removable ? `<button type="button" aria-label="Remove image" data-index="${options.index}">×</button>` : ""}
     </span>
   `;
+}
+
+function agentImagePreviewSource(image) {
+  if (!state.selectedFlowId) return "";
+  const path = image.relativePath || image.path || "";
+  if (!path) return "";
+  return `/api/flows/${encodeURIComponent(state.selectedFlowId)}/context-images/preview?path=${encodeURIComponent(path)}`;
 }
 
 function imageLabelFromPath(path) {
@@ -4332,24 +4620,32 @@ function renderLinearDetail(context, options = {}) {
   const statusName = issue.state?.name || context.ticket?.state?.name || "";
   const statusControl = renderLinearStatusControl(issue, statusName);
   const githubCiPill = renderGithubCiPill(context.flow);
+  const pinButton = renderLinearPinButton(issue);
+  const issueDescription = issue.description || "";
+  const descriptionHtml = issueDescription.trim()
+    ? `<div class="linear-description linear-markdown">${options.light ? escapeHtml(issueDescription) : renderLinearMarkdown(issueDescription, "")}</div>`
+    : "";
 
-  container.innerHTML = `
+  const html = `
     <section class="linear-issue">
       <div class="linear-issue-header">
         <div>
-          <a href="${escapeAttribute(issue.url || context.issueUrl)}" target="_blank" rel="noreferrer">
-            ${escapeHtml(issue.identifier || context.issueId)}
-          </a>
+          <div class="linear-issue-kicker">
+            <a href="${escapeAttribute(issue.url || context.issueUrl)}" target="_blank" rel="noreferrer">
+              ${escapeHtml(issue.identifier || context.issueId)}
+            </a>
+            ${pinButton}
+          </div>
           <h3>${escapeHtml(issue.title || context.title)}</h3>
         </div>
       </div>
       <div class="linear-meta">
+        ${githubCiPill}
         ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
         ${statusControl}
         ${priorityControl}
-        ${githubCiPill}
       </div>
-      <div class="linear-description linear-markdown">${options.light ? escapeHtml(issue.description || "") : renderLinearMarkdown(issue.description, "")}</div>
+      ${descriptionHtml}
     </section>
     <section class="linear-comments">
       <header>
@@ -4365,6 +4661,12 @@ function renderLinearDetail(context, options = {}) {
       }
     </section>
   `;
+  if (container._linearDetailHtml === html) {
+    updateMarkdownCodeCopyPositions(container);
+    return;
+  }
+  container._linearDetailHtml = html;
+  container.innerHTML = html;
   updateMarkdownCodeCopyPositions(container);
 }
 
@@ -4687,6 +4989,10 @@ function isUserLogSource(source) {
   return source === "user" || source === "user:queued";
 }
 
+function isSubmittedUserLogSource(source) {
+  return source === "user";
+}
+
 function parseTraceGroup(log) {
   if (log.source !== "agent:trace-group" && log.source !== "shell:trace-group") return null;
   try {
@@ -4748,7 +5054,7 @@ function syntheticCompletedTurnTraceRanges(logs, existingRanges) {
     let beforeId = Number(log.id) + 1;
     for (let nextIndex = index + 1; nextIndex < logs.length; nextIndex += 1) {
       const nextLog = logs[nextIndex];
-      if (isUserLogSource(nextLog.source)) break;
+      if (isSubmittedUserLogSource(nextLog.source)) break;
       if (isTraceGroupSource(nextLog.source)) continue;
       if (!isAgentMessageSource(nextLog.source)) continue;
       beforeId = Number(nextLog.id) + 1;
@@ -4785,8 +5091,12 @@ function isStructuralTerminalSource(source) {
   return isTraceGroupSource(source) || isAgentMessageBoundarySource(source);
 }
 
+function isTraceContentLog(log) {
+  return !isStructuralTerminalSource(log.source) && log.source !== "user:queued";
+}
+
 function traceRangeLogCount(logs, afterId, beforeId) {
-  return logs.filter((log) => log.id > afterId && log.id < beforeId && !isStructuralTerminalSource(log.source)).length;
+  return logs.filter((log) => log.id > afterId && log.id < beforeId && isTraceContentLog(log)).length;
 }
 
 function lowerBound(values, target) {
@@ -4817,7 +5127,7 @@ function logIdsHaveRangeEntry(ids, afterId, beforeId) {
 
 function traceRangeLogCounter(logs) {
   const ids = logs
-    .filter((log) => !isStructuralTerminalSource(log.source))
+    .filter(isTraceContentLog)
     .map((log) => Number(log.id))
     .filter(Number.isFinite)
     .sort((a, b) => a - b);
@@ -4858,7 +5168,7 @@ function finalResponseStartIdForTrace(range, rangeLogs) {
 function traceRangeShouldIncludeUserLogs(range, rangeLogs) {
   if (range.kind === "compact") return true;
   if (range.kind === "shell") return false;
-  return rangeLogs.some((log) => isUserLogSource(log.source)) && rangeLogs.some((log) => isAgentTurnEndedLog(log));
+  return rangeLogs.some((log) => isSubmittedUserLogSource(log.source)) && rangeLogs.some((log) => isAgentTurnEndedLog(log));
 }
 
 function sanitizeTraceRanges(logs, ranges) {
@@ -4876,7 +5186,7 @@ function sanitizeTraceRanges(logs, ranges) {
     let segmentAfterId = range.afterId;
     for (const log of rangeLogs) {
       if (log.id >= beforeId) break;
-      if (!isUserLogSource(log.source)) continue;
+      if (!isSubmittedUserLogSource(log.source)) continue;
       addSanitizedTraceRange(result, seen, logs, range, segmentAfterId, log.id, countRange);
       segmentAfterId = log.id;
     }
@@ -4963,7 +5273,7 @@ function markPendingTerminalTurnGroups(groups, flow) {
   const contentGroups = terminalContentGroups(groups);
   let lastUserIndex = -1;
   for (let index = 0; index < contentGroups.length; index += 1) {
-    if (isUserLogSource(contentGroups[index].source)) lastUserIndex = index;
+    if (isSubmittedUserLogSource(contentGroups[index].source)) lastUserIndex = index;
   }
   if (lastUserIndex < 0) return groups;
   for (let index = lastUserIndex + 1; index < contentGroups.length; index += 1) {
@@ -5048,7 +5358,7 @@ function terminalGroups(logs, flow) {
     const traceRange =
       currentTraceRange && logId > currentTraceRange.afterId && logId < currentTraceRange.beforeId ? currentTraceRange : null;
     if (isHiddenTerminalLog(log)) continue;
-    if (traceRange && (!isUserLogSource(log.source) || traceRange.includeUserLogs)) {
+    if (traceRange && log.source !== "user:queued" && (!isSubmittedUserLogSource(log.source) || traceRange.includeUserLogs)) {
       let traceGroup = traceGroups.get(traceRange.key);
       if (!traceGroup) {
         traceGroup = {
@@ -5564,7 +5874,6 @@ function toggleTerminalMarkdownOutput(button) {
   const showingRaw = body.classList.toggle("showing-raw-markdown");
   button.setAttribute("aria-pressed", String(showingRaw));
   button.setAttribute("aria-label", "Toggle raw markdown");
-  button.title = "Toggle raw markdown";
   button.textContent = "raw";
   content.innerHTML = showingRaw
     ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
@@ -5822,7 +6131,6 @@ function appendTerminalBlock(fragment, group, options = {}) {
     markdownToggle.className = "terminal-markdown-toggle";
     markdownToggle.setAttribute("aria-pressed", "false");
     markdownToggle.setAttribute("aria-label", "Toggle raw markdown");
-    markdownToggle.title = "Toggle raw markdown";
     markdownToggle.textContent = "raw";
   }
 
@@ -5870,7 +6178,6 @@ function renderOutputDeleteButton(group) {
   button.type = "button";
   button.className = "terminal-output-delete";
   button.setAttribute("aria-label", "Delete output message");
-  button.title = "Delete output message";
   button.disabled = ids.some((id) => state.deletingOutputLogIds.has(id));
   button.innerHTML = `
     <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -6226,6 +6533,9 @@ function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
 }
 
 function terminalGroupSignaturePart(group) {
+  if (group.source === "agent:trace-group" && group.traceKey && !isTerminalTraceGroupOpen(group)) {
+    return [group.source, group.traceKey, group.createdAt].join(":");
+  }
   const logIds = group.logIds || [group.id];
   const firstLogId = logIds[0] ?? group.id;
   const lastLogId = logIds[logIds.length - 1] ?? group.id;
@@ -6246,6 +6556,19 @@ function terminalGroupsSignature(groups) {
   return groups.map((group) => terminalGroupSignaturePart(group)).join("\u001f");
 }
 
+function syncClosedTerminalTraceChildren(terminal, groups) {
+  const childrenByKey = new Map(
+    groups
+      .filter((group) => group.source === "agent:trace-group" && group.traceKey && !isTerminalTraceGroupOpen(group))
+      .map((group) => [group.traceKey, group.children || []]),
+  );
+  if (!childrenByKey.size) return;
+  for (const details of terminal.querySelectorAll(".terminal-trace-group:not([open])")) {
+    const children = childrenByKey.get(details.dataset.traceKey || "");
+    if (children) details._traceChildren = children;
+  }
+}
+
 function terminalVisibleTurnCount(flowId) {
   return state.terminalVisibleTurnCounts.get(flowId) || AGENT_TRACE_INITIAL_TURN_COUNT;
 }
@@ -6263,7 +6586,7 @@ function terminalVisibleTurnStartIndex(flowId, groups) {
   const visibleTurns = terminalVisibleTurnCount(flowId);
   let seenTurns = 0;
   for (let index = groups.length - 1; index >= 0; index -= 1) {
-    if (!isUserLogSource(groups[index].source)) continue;
+    if (!isSubmittedUserLogSource(groups[index].source)) continue;
     seenTurns += 1;
     if (seenTurns >= visibleTurns) return index;
   }
@@ -6271,7 +6594,7 @@ function terminalVisibleTurnStartIndex(flowId, groups) {
 }
 
 function terminalTurnCount(groups) {
-  return groups.filter((group) => isUserLogSource(group.source)).length;
+  return groups.filter((group) => isSubmittedUserLogSource(group.source)).length;
 }
 
 function scheduleLogRender(id, options = {}) {
@@ -6298,6 +6621,7 @@ function renderLogs(id, options = {}) {
   const logs = state.logs.get(id) || [];
   const allGroups = terminalGroups(logs, flow);
   const groups = visibleTerminalGroups(id, allGroups);
+  syncClosedTerminalTraceChildren(terminal, groups);
   const canLoadMore = terminalTraceCanLoadMore(id, allGroups);
   const loadMoreLoading = state.logOlderLoadingFlowIds.has(id);
   const agentWorking = agentWorkingForFlow(flow);
@@ -6323,7 +6647,7 @@ function renderLogs(id, options = {}) {
   const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
   const scrollHeightBeforeRender = terminal.scrollHeight;
   const scrollTopBeforeRender = terminal.scrollTop;
-  const animateIncoming = !options.suppressIncoming;
+  const animateIncoming = !options.suppressIncoming && !agentWorking;
   const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
   const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
   const fragment = document.createDocumentFragment();
@@ -6813,9 +7137,24 @@ els.flowPane.querySelector(".shell-output-resizer").addEventListener("keydown", 
 els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => setLinearPaneHidden(false));
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 els.flowPane.addEventListener("click", handleLinearDetailClick);
+els.flowPane.addEventListener("mouseover", handleLinearOptionsOpen);
+els.flowPane.addEventListener("mouseout", handleLinearOptionsClose);
+els.flowPane.addEventListener("focusin", handleLinearOptionsOpen);
+els.flowPane.addEventListener("focusout", handleLinearOptionsClose);
 els.flowPane.addEventListener("pointerdown", startMarkdownTableColumnResize);
-els.flowPane.addEventListener("scroll", () => scheduleMarkdownCodeCopyPositionUpdate(), { capture: true, passive: true });
-window.addEventListener("resize", () => scheduleMarkdownCodeCopyPositionUpdate(), { passive: true });
+function shouldHideFloatingLinearOptionsForScroll(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  return target === els.flowPane || Boolean(target?.closest(".linear-panel, .linear-detail"));
+}
+
+els.flowPane.addEventListener("scroll", (event) => {
+  scheduleMarkdownCodeCopyPositionUpdate();
+  if (shouldHideFloatingLinearOptionsForScroll(event)) hideFloatingLinearOptions();
+}, { capture: true, passive: true });
+window.addEventListener("resize", () => {
+  scheduleMarkdownCodeCopyPositionUpdate();
+  hideFloatingLinearOptions();
+}, { passive: true });
 
 els.flowPane.querySelector(".terminal").addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
@@ -7162,6 +7501,12 @@ els.diffModal?.querySelector(".diff-modal-code")?.addEventListener("scroll", sch
 els.imagePreviewModal?.addEventListener("click", (event) => {
   if (event.target === els.imagePreviewModal) closeImagePreview();
 });
+const imagePreviewFrame = els.imagePreviewModal?.querySelector(".image-preview-frame");
+imagePreviewFrame?.addEventListener("wheel", handleImagePreviewWheel, { passive: false });
+imagePreviewFrame?.addEventListener("pointerdown", handleImagePreviewPointerDown);
+imagePreviewFrame?.addEventListener("pointermove", handleImagePreviewPointerMove);
+imagePreviewFrame?.addEventListener("pointerup", endImagePreviewDrag);
+imagePreviewFrame?.addEventListener("pointercancel", endImagePreviewDrag);
 els.flowPane.addEventListener("click", handleImagePreviewClick);
 
 let titleResizeFrame = 0;
@@ -7174,7 +7519,7 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("keydown", handleCommandK, true);
-document.addEventListener("keydown", handleCommandZ, true);
+document.addEventListener("keydown", handleCommandE, true);
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
 document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
 window.addEventListener("focus", acknowledgeSelectedLinearIssueNotification);
