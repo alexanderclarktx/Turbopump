@@ -6043,8 +6043,7 @@ function applyTerminalMessageClamps(root) {
     if (
       !entry ||
       body.classList.contains("agent-working") ||
-      body.closest(".shell-output-pane") ||
-      entry.classList.contains("terminal-entry-assistant")
+      body.closest(".shell-output-pane")
     ) {
       continue;
     }

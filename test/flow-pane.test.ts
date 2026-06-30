@@ -1419,7 +1419,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("stroke-width: 1.4;");
     expect(css).toContain("overflow: visible;\n  white-space: normal;");
     expect(css).toContain("display: block;\n  overflow-x: auto;");
-    expect(css).toContain(".terminal-entry-body-content:has(.markdown-code-copy) {\n  overflow: visible;\n}");
+    expect(css).not.toContain(".terminal-entry-body-content:has(.markdown-code-copy)");
     expect(css).toContain("opacity: 0;\n  transition:");
     expect(css).toContain(".linear-markdown .markdown-code-block:hover .markdown-code-copy");
     expect(css).toContain(".terminal-entry-body .markdown-code-copy:focus-visible");
@@ -1432,15 +1432,16 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("max-height: var(--terminal-message-max-height);");
     expect(css).toContain(".shell-output-pane .terminal-entry-body-content {\n  max-height: none;\n  overflow: visible;\n}");
     expect(css).toContain(".shell-output-pane .terminal-entry-overflow-marker {\n  display: none;\n}");
-    expect(css).toContain(".terminal-entry-assistant .terminal-entry-body-content {\n  max-height: none;\n  overflow: visible;\n}");
-    expect(css).toContain(".terminal-entry-assistant .terminal-entry-overflow-marker {\n  display: none;\n}");
+    expect(app).not.toContain('entry.classList.contains("terminal-entry-assistant")');
+    expect(css).not.toContain(".terminal-entry-assistant .terminal-entry-body-content");
+    expect(css).not.toContain(".terminal-entry-assistant .terminal-entry-overflow-marker");
     expect(css).toContain(".terminal-entry-body-content");
     expect(css).toContain(".terminal-entry-overflow-marker");
     expect(app).toContain("function applyTerminalMessageClamps(root)");
     expect(app).toContain("function terminalMessageContent(body)");
     expect(app).toContain('if (root.closest?.(".shell-output-pane")) return;');
     expect(app).toContain('body.closest(".shell-output-pane")');
-    expect(app).toContain('entry.classList.contains("terminal-entry-assistant")');
+    expect(app).not.toContain('entry.classList.contains("terminal-entry-assistant")');
     expect(app).toContain('marker.textContent = ". . .";');
     expect(app).toContain("body.appendChild(marker);");
     expect(app).toContain("applyTerminalMessageClamps(terminal);");

@@ -3415,25 +3415,12 @@ body.markdown-table-resizing {
   overflow-wrap: inherit;
 }
 
-.terminal-entry-body-content:has(.markdown-code-copy) {
-  overflow: visible;
-}
-
 .shell-output-pane .terminal-entry-body-content {
   max-height: none;
   overflow: visible;
 }
 
 .shell-output-pane .terminal-entry-overflow-marker {
-  display: none;
-}
-
-.terminal-entry-assistant .terminal-entry-body-content {
-  max-height: none;
-  overflow: visible;
-}
-
-.terminal-entry-assistant .terminal-entry-overflow-marker {
   display: none;
 }
 
