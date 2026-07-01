@@ -17,6 +17,7 @@ type ThreadStartSource = "startup" | "clear";
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type ServiceTier = "fast" | "flex";
 type AgentSandbox = "read-only" | "workspace-write" | "danger-full-access";
+type AgentProviderKind = "codex" | "claude";
 
 type Flow = {
   id: string;
@@ -33,12 +34,14 @@ type Flow = {
   githubCiDescription: string;
   baseSha: string;
   agentStatus: string;
+  agentProvider: string;
   agentModel: string;
   agentReasoningEffort: string;
   agentServiceTier: string;
   agentSandbox: string;
   agentContextTokensUsed: number;
   agentContextWindow: number;
+  agentTotalTokensUsed: number;
   serving: number;
   createdAt: string;
   updatedAt: string;
@@ -138,6 +141,15 @@ const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
 const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
+const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
+const defaultAgentProviderSettingKey = "defaultAgentProvider";
+const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]);
+// Sonnet keeps the 1M context window (haiku's 200k can overflow on the large
+// sessions that need compacting) while staying much faster than fable/opus.
+const claudeCompactModel = "claude-sonnet-5";
+const claudeCompactFastModels = new Set(["claude-sonnet-5", "claude-haiku-4-5"]);
+const claudeDefaultContextWindow = 200000;
+const claudeRuntimeStaleMs = 600000;
 const reviewFindingInstructions =
   "Focus on bugs, behavioral regressions, missing tests, and risks. Report findings first with file and line references.";
 const serveProcessPidSettingKey = "serveProcessPid";
@@ -206,12 +218,14 @@ db.exec(`
     githubCiDescription text not null default '',
     baseSha text not null default '',
     agentStatus text not null default 'idle',
+    agentProvider text not null default 'codex',
     agentModel text not null default '',
     agentReasoningEffort text not null default '',
-    agentServiceTier text not null default 'fast',
+    agentServiceTier text not null default '',
     agentSandbox text not null default 'danger-full-access',
     agentContextTokensUsed integer not null default 0,
     agentContextWindow integer not null default 0,
+    agentTotalTokensUsed integer not null default 0,
     serving integer not null default 0,
     createdAt text not null,
     updatedAt text not null
@@ -249,12 +263,14 @@ db.exec(`
   create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);
 `);
 tryMigration("alter table flows drop column stage");
+tryMigration("alter table flows add column agentProvider text not null default 'codex'");
 tryMigration("alter table flows add column agentModel text not null default ''");
 tryMigration("alter table flows add column agentReasoningEffort text not null default ''");
-tryMigration("alter table flows add column agentServiceTier text not null default 'fast'");
+tryMigration("alter table flows add column agentServiceTier text not null default ''");
 tryMigration("alter table flows add column agentSandbox text not null default 'danger-full-access'");
 tryMigration("alter table flows add column agentContextTokensUsed integer not null default 0");
 tryMigration("alter table flows add column agentContextWindow integer not null default 0");
+tryMigration("alter table flows add column agentTotalTokensUsed integer not null default 0");
 tryMigration("alter table flows add column prUrl text not null default ''");
 tryMigration("alter table flows add column githubCiStatus text not null default 'unknown'");
 tryMigration("alter table flows add column githubCiCheckedAt text not null default ''");
@@ -276,7 +292,9 @@ let serveProcess: RuntimeProcess | null = null;
 type RuntimeProcess = {
   flowId: string;
   kind: "agent" | "serve" | "shell";
-  proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  provider?: AgentProviderKind;
+  proc?: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  claude?: ClaudeRuntimeState;
   command?: string;
   requestId?: number;
   stdoutBuffer?: string;
@@ -300,6 +318,50 @@ type RuntimeProcess = {
 };
 
 type RuntimeSignal = "SIGINT" | "SIGTERM" | "SIGKILL";
+
+type ClaudeUserMessage = {
+  type: "user";
+  message: { role: "user"; content: Array<{ type: "text"; text: string }> };
+  parent_tool_use_id: null;
+  session_id: string;
+};
+
+type ClaudeSdkMessage = Record<string, unknown> & { type?: string };
+
+type ClaudeQuery = AsyncIterable<ClaudeSdkMessage> & {
+  interrupt(): Promise<void>;
+  setModel(model?: string): Promise<void>;
+};
+
+type ClaudeSdkModule = {
+  query(params: { prompt: AsyncIterable<ClaudeUserMessage>; options?: Record<string, unknown> }): ClaudeQuery;
+};
+
+type ClaudeRuntimeState = {
+  query: ClaudeQuery;
+  pushInput: (message: ClaudeUserMessage) => void;
+  endInput: () => void;
+  sessionId: string;
+  turnCounter: number;
+  compactRestoreModel?: string;
+};
+
+type AgentSlashCommandSpec = {
+  name: string;
+  description: string;
+  args?: string[];
+};
+
+type AgentProvider = {
+  kind: AgentProviderKind;
+  label: string;
+  slashCommands: AgentSlashCommandSpec[];
+  startRuntime(flow: Flow): Promise<RuntimeProcess>;
+  sendTurn(runtime: RuntimeProcess, flow: Flow, message: string, userLogId?: number): Promise<void>;
+  interrupt(runtime: RuntimeProcess, flow: Flow): Promise<void>;
+  stop(runtime: RuntimeProcess, reason: string): void;
+  handleSlashCommand(flow: Flow, command: string, message: string, userLogId: number): Promise<boolean>;
+};
 
 type ServerWebSocket = {
   send: (message: string) => void;
@@ -395,12 +457,13 @@ function persistedServeFlowId() {
 }
 
 function rememberServeProcess(runtime: RuntimeProcess) {
+  if (!runtime.proc) return;
   setSetting(serveProcessPidSettingKey, String(runtime.proc.pid));
   setSetting(serveProcessFlowSettingKey, runtime.flowId);
 }
 
 function clearPersistedServeProcess(runtime?: RuntimeProcess) {
-  if (runtime && persistedServePid() !== runtime.proc.pid) return;
+  if (runtime && persistedServePid() !== runtime.proc?.pid) return;
   deleteSettingByKeyStmt.run(serveProcessPidSettingKey);
   deleteSettingByKeyStmt.run(serveProcessFlowSettingKey);
 }
@@ -798,9 +861,8 @@ function stopFlowRuntimesForDelete(flowId: string) {
 
   const agentRuntime = agentProcesses.get(flowId);
   if (agentRuntime) {
-    agentRuntime.stopping = true;
     agentProcesses.delete(flowId);
-    signalRuntimeProcess(agentRuntime, "SIGTERM");
+    providerForRuntime(agentRuntime).stop(agentRuntime, "flow deleted");
   }
 
   if (serveProcess?.flowId === flowId) {
@@ -817,6 +879,8 @@ function deleteFlowTraceData(flowId: string) {
   deleteQueuedPromptStmt.run(flowId);
   deleteSettingByKeyStmt.run(codexThreadSettingKey(flowId));
   deleteSettingByKeyStmt.run(codexActiveTurnSettingKey(flowId));
+  deleteSettingByKeyStmt.run(claudeSessionSettingKey(flowId));
+  deleteSettingByKeyStmt.run(handoffPendingSettingKey(flowId));
   deleteFlowByIdStmt.run(flowId);
 }
 
@@ -1059,6 +1123,14 @@ async function recoverAgentRuntime(flow: Flow) {
 
   const recovery = (async () => {
     try {
+      if (flowProviderKind(flow) === "claude") {
+        const runtime = await startClaudeRuntime(flow);
+        runtime.lastSeenAt = Date.now();
+        setActiveTurnId(flow.id);
+        insertLog(flow.id, "agent:status", "claude session resumed; the interrupted turn cannot be recovered");
+        updateFlow(flow.id, { agentStatus: "idle" });
+        return runtime;
+      }
       const runtime = await startCodexAppServer(flow);
       runtime.activeTurnId = runtime.activeTurnId || activeTurnId;
       runtime.lastSeenAt = Date.now();
@@ -1103,12 +1175,14 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   }
 
   if (runtime.compacting) {
+    const compactingStaleMs = runtime.provider === "claude" ? claudeRuntimeStaleMs : agentRuntimeStaleMs;
     const compactingStartedAt = runtime.compactingStartedAt ?? runtime.lastSeenAt ?? nowMs;
-    if (nowMs - compactingStartedAt <= agentRuntimeStaleMs) return flow;
+    if (nowMs - compactingStartedAt <= compactingStaleMs) return flow;
+    restoreClaudeCompactModel(runtime);
     runtime.compacting = false;
     runtime.compactingStartedAt = undefined;
     runtime.compactionPromptLogId = undefined;
-    insertLog(flow.id, "agent:error", `context compaction timed out after ${Math.round(agentRuntimeStaleMs / 1000)}s\n`);
+    insertLog(flow.id, "agent:error", `context compaction timed out after ${Math.round(compactingStaleMs / 1000)}s\n`);
     updateFlow(flow.id, { agentStatus: "failed" });
     void startNextQueuedAgentMessage(runtime);
     return getFlow(flow.id) ?? flow;
@@ -1122,11 +1196,12 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
   }
 
   const lastSeenAt = runtime.lastSeenAt ?? nowMs;
-  if (nowMs - lastSeenAt <= agentRuntimeStaleMs) return flow;
+  const staleMs = runtime.provider === "claude" ? claudeRuntimeStaleMs : agentRuntimeStaleMs;
+  if (nowMs - lastSeenAt <= staleMs) return flow;
 
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
-  insertLog(flow.id, "agent:error", `agent heartbeat timed out after ${Math.round(agentRuntimeStaleMs / 1000)}s\n`);
+  insertLog(flow.id, "agent:error", `agent heartbeat timed out after ${Math.round(staleMs / 1000)}s\n`);
   updateFlow(flow.id, { agentStatus: "failed" });
   return getFlow(flow.id) ?? flow;
 }
@@ -1190,6 +1265,46 @@ function ensureCodexProjectTrusted(projectPath: string) {
 
 function codexThreadSettingKey(flowId: string) {
   return `codexThread:${flowId}`;
+}
+
+function claudeSessionSettingKey(flowId: string) {
+  return `claudeSession:${flowId}`;
+}
+
+function handoffPendingSettingKey(flowId: string) {
+  return `handoffPending:${flowId}`;
+}
+
+function normalizeAgentProviderKind(value: unknown): AgentProviderKind | "" {
+  const kind = String(value ?? "").trim().toLowerCase();
+  return agentProviderKinds.has(kind as AgentProviderKind) ? (kind as AgentProviderKind) : "";
+}
+
+function defaultAgentProviderKind(): AgentProviderKind {
+  return normalizeAgentProviderKind(getSetting(defaultAgentProviderSettingKey)) || "codex";
+}
+
+function flowProviderKind(flow: Flow): AgentProviderKind {
+  return normalizeAgentProviderKind(flow.agentProvider) || "codex";
+}
+
+function providerForFlow(flow: Flow): AgentProvider {
+  return agentProviders[flowProviderKind(flow)];
+}
+
+function providerForRuntime(runtime: RuntimeProcess): AgentProvider {
+  return agentProviders[runtime.provider ?? "codex"];
+}
+
+function takePendingHandoff(flowId: string) {
+  const pending = getSetting(handoffPendingSettingKey(flowId));
+  if (pending) deleteSettingByKeyStmt.run(handoffPendingSettingKey(flowId));
+  return pending;
+}
+
+function composeTurnMessage(flowId: string, message: string) {
+  const handoff = takePendingHandoff(flowId);
+  return handoff ? `${handoff}\n\n${message}` : message;
 }
 
 function codexActiveTurnSettingKey(flowId: string) {
@@ -1535,6 +1650,7 @@ function signalProcessGroup(pid: number, signal: RuntimeSignal) {
 }
 
 function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal) {
+  if (!runtime.proc) return false;
   let signaled = signalProcessGroup(runtime.proc.pid, signal);
   try {
     runtime.proc.kill(signal);
@@ -1564,11 +1680,16 @@ function forgetRuntimeProcess(runtime: RuntimeProcess) {
 
 function cleanupFailedRuntimeProcess(runtime: RuntimeProcess, reason: string) {
   runtime.stopping = true;
+  if (runtime.claude) {
+    forgetRuntimeProcess(runtime);
+    stopClaudeRuntime(runtime, reason);
+    return;
+  }
   rejectCodexPending(runtime, new Error(reason));
   forgetRuntimeProcess(runtime);
   signalRuntimeProcess(runtime, "SIGTERM");
   setTimeout(() => {
-    if (runtime.proc.exitCode === null) signalRuntimeProcess(runtime, "SIGKILL");
+    if (runtime.proc?.exitCode === null) signalRuntimeProcess(runtime, "SIGKILL");
   }, 1500);
 }
 
@@ -1589,7 +1710,7 @@ function scheduleShellInterruptEscalation(flowId: string, runtime: RuntimeProces
 
 function writeCodexMessage(runtime: RuntimeProcess, message: Record<string, unknown>) {
   if (runtime.kind !== "agent") throw new Error("Codex messages can only be sent to agent processes.");
-  runtime.proc.stdin?.write(`${JSON.stringify(message)}\n`);
+  runtime.proc?.stdin?.write(`${JSON.stringify(message)}\n`);
 }
 
 function sendCodexNotification(runtime: RuntimeProcess, method: string, params?: unknown) {
@@ -2302,6 +2423,59 @@ function reviewPromptForSlashCommand(message: string) {
   throw new Error("Usage: /review base [branch]|uncommitted|commit [ref]|custom [instructions]");
 }
 
+function statusValue(value: unknown, fallback = "unknown") {
+  if (typeof value === "string") return value.trim() || fallback;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+}
+
+function accountStatusValue(account: unknown) {
+  if (!account || typeof account !== "object") return "not signed in";
+  const data = account as { type?: unknown; email?: unknown; planType?: unknown; credentialSource?: unknown };
+  const type = statusValue(data.type);
+  if (type === "chatgpt") {
+    const email = statusValue(data.email, "");
+    const plan = statusValue(data.planType, "");
+    return [email || "ChatGPT", plan].filter(Boolean).join(" ");
+  }
+  if (type === "apiKey") return "API key";
+  if (type === "amazonBedrock") return `Amazon Bedrock ${statusValue(data.credentialSource, "")}`.trim();
+  return type;
+}
+
+function statusPercentLeft(window: unknown) {
+  if (!window || typeof window !== "object") return "unknown";
+  const data = window as { remainingPercent?: unknown; usedPercent?: unknown };
+  if (typeof data.remainingPercent === "number" && Number.isFinite(data.remainingPercent)) return `${Math.round(data.remainingPercent)}%`;
+  if (typeof data.usedPercent === "number" && Number.isFinite(data.usedPercent)) return `${Math.max(0, Math.round(100 - data.usedPercent))}%`;
+  return "unknown";
+}
+
+function codexRateLimits(value: unknown) {
+  const data = value as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null };
+  return (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
+}
+
+function markdownTable(rows: Array<[string, unknown]>) {
+  const cell = (value: unknown) => String(value ?? "unknown").replaceAll("|", "\\|").replaceAll("\n", "<br>");
+  return ["| Field | Value |", "| --- | --- |", ...rows.map((row) => `| ${cell(row[0])} | ${cell(row[1])} |`)].join("\n");
+}
+
+async function flowStatusMessage(runtime: RuntimeProcess) {
+  const [accountResponse, rateLimitsResponse] = await Promise.all([
+    sendCodexRequest(runtime, "account/read", { refreshToken: false }),
+    sendCodexRequest(runtime, "account/rateLimits/read"),
+  ]);
+  const account = (accountResponse as { account?: unknown } | null)?.account;
+  const rateLimits = codexRateLimits(rateLimitsResponse);
+
+  return markdownTable([
+    ["Account", accountStatusValue(account)],
+    ["5h left", statusPercentLeft(rateLimits.primary)],
+    ["Weekly left", statusPercentLeft(rateLimits.secondary)],
+  ]);
+}
+
 async function ensureCodexRuntime(flow: Flow) {
   return agentProcesses.get(flow.id) ?? (await startCodexAppServer(flow));
 }
@@ -2396,6 +2570,694 @@ async function listCodexPlugins(flow: Flow) {
   if (exitCode !== 0) throw new Error(stderr || stdout || "codex plugin list failed");
 }
 
+let claudeSdkModulePromise: Promise<ClaudeSdkModule> | null = null;
+
+async function loadClaudeSdk() {
+  if (!claudeSdkModulePromise) {
+    // Non-literal specifier keeps `bun build` from resolving the module at bundle time,
+    // so the server still builds and runs when the SDK is not installed yet.
+    const moduleName = ["@anthropic-ai", "claude-agent-sdk"].join("/");
+    claudeSdkModulePromise = (import(moduleName) as Promise<ClaudeSdkModule>).catch((error) => {
+      claudeSdkModulePromise = null;
+      throw new Error(`Claude Agent SDK is not installed (run: bun install): ${String(error)}`);
+    });
+  }
+  return claudeSdkModulePromise;
+}
+
+function createClaudeInputQueue() {
+  const pending: ClaudeUserMessage[] = [];
+  let notify: (() => void) | null = null;
+  let ended = false;
+  const stream = (async function* () {
+    while (true) {
+      const next = pending.shift();
+      if (next) {
+        yield next;
+        continue;
+      }
+      if (ended) return;
+      await new Promise<void>((resolve) => {
+        notify = resolve;
+      });
+      notify = null;
+    }
+  })();
+  return {
+    stream,
+    push(message: ClaudeUserMessage) {
+      pending.push(message);
+      notify?.();
+    },
+    end() {
+      ended = true;
+      notify?.();
+    },
+  };
+}
+
+function claudePermissionOptions(flow: Flow): Record<string, unknown> {
+  if (codexSandboxMode(flow) === "read-only") {
+    return {
+      permissionMode: "bypassPermissions",
+      disallowedTools: ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "KillShell"],
+    };
+  }
+  return { permissionMode: "bypassPermissions" };
+}
+
+function claudeRuntimeEnv(flow: Flow) {
+  // Let the Claude Agent SDK use the local Claude Code login instead of the
+  // stored API key, which may belong to an org without Fable access.
+  const env = runtimeEnv(flow);
+  delete env.ANTHROPIC_API_KEY;
+  return env;
+}
+
+async function startClaudeRuntime(flow: Flow) {
+  const activeFlow = assertFlowWorktree(flow);
+  const sdk = await loadClaudeSdk();
+  const input = createClaudeInputQueue();
+  const savedSessionId = getSetting(claudeSessionSettingKey(activeFlow.id));
+  const query = sdk.query({
+    prompt: input.stream,
+    options: {
+      cwd: activeFlow.checkoutPath,
+      env: claudeRuntimeEnv(activeFlow),
+      systemPrompt: { type: "preset", preset: "claude_code", append: flowDeveloperInstructions(activeFlow) },
+      includePartialMessages: true,
+      ...(activeFlow.agentModel && claudeAgentModels.has(activeFlow.agentModel) ? { model: activeFlow.agentModel } : {}),
+      ...(savedSessionId ? { resume: savedSessionId } : {}),
+      ...claudePermissionOptions(activeFlow),
+    },
+  });
+
+  const runtime: RuntimeProcess = {
+    flowId: activeFlow.id,
+    kind: "agent",
+    provider: "claude",
+    lastSeenAt: Date.now(),
+    claude: {
+      query,
+      pushInput: input.push,
+      endInput: input.end,
+      sessionId: savedSessionId,
+      turnCounter: 0,
+    },
+  };
+  agentProcesses.set(activeFlow.id, runtime);
+  insertLog(
+    activeFlow.id,
+    "agent:status",
+    savedSessionId ? `resuming Claude session ${savedSessionId}` : "starting Claude session",
+  );
+  void streamClaudeMessages(runtime, query);
+  return runtime;
+}
+
+async function streamClaudeMessages(runtime: RuntimeProcess, query: ClaudeQuery) {
+  try {
+    for await (const message of query) {
+      runtime.lastSeenAt = Date.now();
+      handleClaudeMessage(runtime, message);
+    }
+    if (agentProcesses.get(runtime.flowId) === runtime) {
+      agentProcesses.delete(runtime.flowId);
+      updateFlow(runtime.flowId, { agentStatus: runtime.stopping ? "stopped" : "idle" });
+    }
+    insertLog(runtime.flowId, "agent:status", "Claude session ended");
+  } catch (error) {
+    const tracked = agentProcesses.get(runtime.flowId) === runtime;
+    if (tracked) agentProcesses.delete(runtime.flowId);
+    if (runtime.stopping) return;
+    insertLog(runtime.flowId, "agent:error", `${String(error)}\n`);
+    if (tracked) updateFlow(runtime.flowId, { agentStatus: "failed" });
+  }
+}
+
+function claudeToolUseLabel(block: Record<string, unknown>) {
+  const name = String(block.name ?? "tool");
+  const input = block.input && typeof block.input === "object" ? (block.input as Record<string, unknown>) : {};
+  const detail = String(input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.url ?? input.query ?? "");
+  return detail ? `${name}: ${detail}` : name;
+}
+
+function claudeContentBlocks(message: ClaudeSdkMessage) {
+  const inner = message.message as { content?: unknown } | undefined;
+  return Array.isArray(inner?.content) ? (inner.content as Array<Record<string, unknown>>) : [];
+}
+
+function claudeTokenUsageMetadata(message: ClaudeSdkMessage): Partial<Flow> {
+  // Per-request usage from an assistant message reflects the current context
+  // size; the result message's `usage` sums every request in the turn and can
+  // exceed the context window.
+  const inner = message.message as { usage?: Record<string, unknown> } | undefined;
+  const usage = inner?.usage;
+  if (!usage) return {};
+  const contextTokensUsed =
+    optionalInteger(usage.input_tokens) +
+    optionalInteger(usage.cache_read_input_tokens) +
+    optionalInteger(usage.cache_creation_input_tokens);
+  if (!contextTokensUsed) return {};
+  return { agentContextTokensUsed: contextTokensUsed };
+}
+
+function claudeTurnTotalTokens(message: ClaudeSdkMessage) {
+  // The result message's `usage` sums every request in the turn.
+  const usage = message.usage as Record<string, unknown> | undefined;
+  if (!usage) return 0;
+  return (
+    optionalInteger(usage.input_tokens) +
+    optionalInteger(usage.output_tokens) +
+    optionalInteger(usage.cache_read_input_tokens) +
+    optionalInteger(usage.cache_creation_input_tokens)
+  );
+}
+
+function claudeContextWindowMetadata(message: ClaudeSdkMessage): Partial<Flow> {
+  const modelUsage = message.modelUsage as Record<string, Record<string, unknown>> | undefined;
+  const contextWindow = Math.max(0, ...Object.values(modelUsage ?? {}).map((entry) => optionalInteger(entry?.contextWindow)));
+  if (!contextWindow) return {};
+  return { agentContextWindow: contextWindow };
+}
+
+function restoreClaudeCompactModel(runtime: RuntimeProcess) {
+  const claude = runtime.claude;
+  const restoreModel = claude?.compactRestoreModel;
+  if (!claude || !restoreModel) return;
+  claude.compactRestoreModel = undefined;
+  void claude.query.setModel(restoreModel).catch(() => {});
+  updateFlow(runtime.flowId, { agentModel: restoreModel });
+}
+
+function finishClaudeCompaction(runtime: RuntimeProcess, succeeded: boolean) {
+  restoreClaudeCompactModel(runtime);
+  runtime.compacting = false;
+  runtime.compactingStartedAt = undefined;
+  const compactionPromptLogId = runtime.compactionPromptLogId;
+  runtime.compactionPromptLogId = undefined;
+  runtime.activeTurnId = undefined;
+  runtime.activeTurnTraceAfterLogId = undefined;
+  setActiveTurnId(runtime.flowId);
+  const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", succeeded ? "context compacted" : "compact failed");
+  deleteQueuedAgentMessagePlaceholders(runtime);
+  if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId + 1, "compact");
+  updateFlow(runtime.flowId, { agentStatus: succeeded ? "idle" : "failed" });
+  if (succeeded) void startNextQueuedAgentMessage(runtime);
+}
+
+function finishClaudeTurn(runtime: RuntimeProcess, message: ClaudeSdkMessage) {
+  const subtype = String(message.subtype ?? "");
+  if (runtime.compacting) {
+    finishClaudeCompaction(runtime, subtype === "success");
+    return;
+  }
+  const flowBefore = getFlow(runtime.flowId);
+  const interrupted = flowBefore?.agentStatus === "interrupting";
+  const failed = !interrupted && subtype !== "success";
+  const activeTurnTraceAfterLogId = runtime.activeTurnTraceAfterLogId;
+  runtime.activeTurnId = undefined;
+  runtime.activeTurnTraceAfterLogId = undefined;
+  setActiveTurnId(runtime.flowId);
+  const turnStatusLogId = insertLog(
+    runtime.flowId,
+    "agent:status",
+    `turn ${interrupted ? "interrupted" : failed ? "failed" : "completed"}`,
+  );
+  createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);
+  if (failed) {
+    const detail = typeof message.result === "string" && message.result.trim() ? message.result : subtype || "unknown error";
+    insertLog(runtime.flowId, "agent:error", `${detail}\n`);
+  }
+  updateFlow(runtime.flowId, {
+    ...worktreeBranchUpdate(runtime.flowId),
+    ...claudeContextWindowMetadata(message),
+    agentTotalTokensUsed: (flowBefore?.agentTotalTokensUsed || 0) + claudeTurnTotalTokens(message),
+    agentStatus: failed ? "failed" : "idle",
+  });
+  if (!failed) void startNextQueuedAgentMessage(runtime);
+}
+
+function handleClaudeMessage(runtime: RuntimeProcess, message: ClaudeSdkMessage) {
+  const type = String(message.type ?? "");
+
+  if (type === "system") {
+    const subtype = String(message.subtype ?? "");
+    if (subtype === "init") {
+      const sessionId = String(message.session_id ?? "");
+      if (sessionId && runtime.claude) {
+        runtime.claude.sessionId = sessionId;
+        setSetting(claudeSessionSettingKey(runtime.flowId), sessionId);
+      }
+      const model = typeof message.model === "string" ? message.model : "";
+      if (model) updateFlow(runtime.flowId, { agentModel: model });
+      insertLog(runtime.flowId, "agent:status", `Claude session ${sessionId} ready`);
+      return;
+    }
+    if (subtype === "compact_boundary" && !runtime.compacting) {
+      insertLog(runtime.flowId, "agent:status", "context compacted");
+    }
+    return;
+  }
+
+  if (type === "assistant") {
+    if (!message.parent_tool_use_id) {
+      const usage = claudeTokenUsageMetadata(message);
+      if (usage.agentContextTokensUsed) {
+        const contextWindow = getFlow(runtime.flowId)?.agentContextWindow || 0;
+        updateFlow(runtime.flowId, contextWindow ? usage : { ...usage, agentContextWindow: claudeDefaultContextWindow });
+      }
+    }
+    for (const block of claudeContentBlocks(message)) {
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+        insertLog(runtime.flowId, "agent:message", block.text);
+        insertLog(runtime.flowId, "agent:message-boundary", "");
+        continue;
+      }
+      if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
+        insertLog(runtime.flowId, "agent:reasoning", block.thinking);
+        continue;
+      }
+      if (block.type === "tool_use") {
+        insertLog(runtime.flowId, "agent:tool", claudeToolUseLabel(block));
+      }
+    }
+    return;
+  }
+
+  if (type === "user") {
+    for (const block of claudeContentBlocks(message)) {
+      if (block.type !== "tool_result") continue;
+      insertLog(runtime.flowId, "agent:tool-result", block.is_error ? "failed" : "completed");
+    }
+    return;
+  }
+
+  if (type === "result") {
+    finishClaudeTurn(runtime, message);
+  }
+}
+
+async function sendClaudeTurn(runtime: RuntimeProcess, flow: Flow, message: string, userLogId = 0) {
+  const claude = runtime.claude;
+  if (!claude) throw new Error("Claude session is not ready.");
+  runtime.lastSeenAt = Date.now();
+  const steering = Boolean(runtime.activeTurnId);
+  claude.pushInput({
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text: message }] },
+    parent_tool_use_id: null,
+    session_id: claude.sessionId || "default",
+  });
+  if (steering) return;
+  claude.turnCounter += 1;
+  runtime.activeTurnId = `claude-${claude.turnCounter}`;
+  runtime.activeTurnTraceAfterLogId = userLogId || undefined;
+  setActiveTurnId(runtime.flowId, runtime.activeTurnId);
+  insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId}`);
+  updateFlow(runtime.flowId, { agentStatus: "running" });
+}
+
+async function interruptClaudeTurn(runtime: RuntimeProcess) {
+  if (!runtime.claude) return;
+  await runtime.claude.query.interrupt();
+}
+
+function stopClaudeRuntime(runtime: RuntimeProcess, reason: string) {
+  runtime.stopping = true;
+  const claude = runtime.claude;
+  if (!claude) return;
+  claude.endInput();
+  void claude.query.interrupt().catch(() => {
+    // Interrupting an idle session is a no-op failure; ending input already shuts it down.
+  });
+  if (reason) insertLog(runtime.flowId, "agent:status", `Claude session stopped: ${reason}`);
+}
+
+async function clearClaudeSession(flow: Flow) {
+  const runtime = agentProcesses.get(flow.id);
+  if (runtime?.activeTurnId) throw new Error("Cannot clear while a Claude turn is running.");
+  if (runtime) {
+    agentProcesses.delete(flow.id);
+    stopClaudeRuntime(runtime, "");
+  }
+  deleteSettingByKeyStmt.run(claudeSessionSettingKey(flow.id));
+  setActiveTurnId(flow.id);
+  updateFlow(flow.id, { agentContextTokensUsed: 0, agentTotalTokensUsed: 0 });
+  insertLog(flow.id, "agent:status", "context cleared");
+  updateFlow(flow.id, { agentStatus: "idle" });
+}
+
+async function compactClaudeSession(flow: Flow, promptLogId?: number) {
+  const runtime = agentProcesses.get(flow.id) ?? (await startClaudeRuntime(flow));
+  const claude = runtime.claude;
+  if (!claude) throw new Error("Claude session is not ready.");
+  if (runtime.activeTurnId) throw new Error("Cannot compact while a Claude turn is running.");
+  const flowModel = flow.agentModel;
+  const swapModel = Boolean(flowModel && claudeAgentModels.has(flowModel) && !claudeCompactFastModels.has(flowModel));
+  runtime.compacting = true;
+  runtime.compactingStartedAt = Date.now();
+  runtime.compactionPromptLogId = promptLogId;
+  runtime.lastSeenAt = Date.now();
+  insertLog(flow.id, "agent:status", swapModel ? `compact requested (using ${claudeCompactModel})` : "compact requested");
+  updateFlow(flow.id, { agentStatus: "running" });
+  if (swapModel) {
+    try {
+      await claude.query.setModel(claudeCompactModel);
+      claude.compactRestoreModel = flowModel;
+    } catch {
+      // Compact on the flow's own model if the switch fails.
+    }
+  }
+  claude.pushInput({
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text: "/compact" }] },
+    parent_tool_use_id: null,
+    session_id: claude.sessionId || "default",
+  });
+}
+
+function claudeOauthAccessToken() {
+  // Claude Code stores its login in the macOS keychain; other platforms use a
+  // credentials file under ~/.claude.
+  const keychain = Bun.spawnSync({
+    cmd: ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  let contents = keychain.exitCode === 0 ? keychain.stdout.toString().trim() : "";
+  if (!contents) {
+    try {
+      contents = readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf8");
+    } catch {
+      return "";
+    }
+  }
+  try {
+    const parsed = JSON.parse(contents) as { claudeAiOauth?: { accessToken?: string } };
+    return parsed.claudeAiOauth?.accessToken ?? "";
+  } catch {
+    return "";
+  }
+}
+
+type ClaudeUsageLimit = {
+  kind?: string;
+  percent?: number;
+  resets_at?: string;
+  scope?: { model?: { display_name?: string } } | null;
+};
+
+async function claudeUsageLimits() {
+  const token = claudeOauthAccessToken();
+  if (!token) throw new Error("Claude Code login not found");
+  const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      "Content-Type": "application/json",
+    },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`usage request failed with ${response.status}`);
+  const data = (await response.json()) as { limits?: ClaudeUsageLimit[] };
+  return Array.isArray(data.limits) ? data.limits : [];
+}
+
+function claudeUsageLimitLabel(limit: ClaudeUsageLimit) {
+  if (limit.kind === "session") return "Session used";
+  if (limit.kind === "weekly_all") return "Week (all models)";
+  if (limit.kind === "weekly_scoped") return `Week (${limit.scope?.model?.display_name || "scoped"})`;
+  return limit.kind || "Usage";
+}
+
+function claudeUsageLimitValue(limit: ClaudeUsageLimit) {
+  if (typeof limit.percent !== "number" || !Number.isFinite(limit.percent)) return "unknown";
+  const resetsAt = Date.parse(limit.resets_at || "");
+  const resets = Number.isFinite(resetsAt)
+    ? new Date(resetsAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : "";
+  return resets ? `${Math.round(limit.percent)}% used, resets ${resets}` : `${Math.round(limit.percent)}% used`;
+}
+
+async function claudeStatusMessage(flow: Flow) {
+  const rows: Array<[string, unknown]> = [
+    ["Permissions", codexSandboxMode(flow)],
+  ];
+  try {
+    const limits = await claudeUsageLimits();
+    for (const limit of limits) rows.push([claudeUsageLimitLabel(limit), claudeUsageLimitValue(limit)]);
+    if (!limits.length) rows.push(["Usage", "unknown"]);
+  } catch (error) {
+    rows.push(["Usage", `unavailable: ${error instanceof Error ? error.message : String(error)}`]);
+  }
+  return markdownTable(rows);
+}
+
+function stopIdleClaudeRuntimeForSettingChange(flow: Flow) {
+  const runtime = agentProcesses.get(flow.id);
+  if (!runtime?.claude) return;
+  if (runtime.activeTurnId) throw new Error("Cannot change Claude settings while a turn is running.");
+  agentProcesses.delete(flow.id);
+  stopClaudeRuntime(runtime, "");
+}
+
+async function handleClaudeSlashCommand(flow: Flow, command: string, message: string, userLogId: number) {
+  if (command === "/model") {
+    const model = slashCommandArgs(message).toLowerCase();
+    if (!claudeAgentModels.has(model)) throw new Error(`Usage: /model ${[...claudeAgentModels].join("|")}`);
+    stopIdleClaudeRuntimeForSettingChange(flow);
+    updateFlow(flow.id, { agentModel: model });
+    insertLog(flow.id, "agent:status", `model set to ${model}`);
+    return true;
+  }
+  if (command === "/permissions") {
+    const agentSandbox = agentSandboxForSlashCommand(slashCommandArgs(message));
+    if (!agentSandbox) throw new Error("Usage: /permissions read-only|workspace-write|full-access");
+    stopIdleClaudeRuntimeForSettingChange(flow);
+    updateFlow(flow.id, { agentSandbox });
+    insertLog(flow.id, "agent:status", `permissions set to ${agentSandbox}`);
+    return true;
+  }
+  if (command === "/status") {
+    insertLog(flow.id, "agent:message", `${await claudeStatusMessage(flow)}\n`);
+    return true;
+  }
+  if (command === "/clear") {
+    await clearClaudeSession(flow);
+    return true;
+  }
+  if (command === "/compact") {
+    await compactClaudeSession(flow, userLogId);
+    return true;
+  }
+  return false;
+}
+
+async function handleCodexSlashCommand(flow: Flow, command: string, message: string, userLogId: number) {
+  if (command === "/fast") {
+    const serviceTier = flow.agentServiceTier === "fast" ? "" : "fast";
+    updateFlow(flow.id, { agentServiceTier: serviceTier });
+    insertLog(flow.id, "agent:status", serviceTier ? "fast mode enabled" : "fast mode disabled");
+    return true;
+  }
+  if (command === "/effort") {
+    const reasoningEffort = slashCommandArgs(message).toLowerCase() as ReasoningEffort;
+    if (!reasoningEfforts.has(reasoningEffort)) throw new Error("Usage: /effort high|medium|low|xhigh");
+    updateFlow(flow.id, { agentReasoningEffort: reasoningEffort });
+    insertLog(flow.id, "agent:status", `reasoning effort set to ${reasoningEffort}`);
+    return true;
+  }
+  if (command === "/model") {
+    const model = slashCommandArgs(message).toLowerCase();
+    if (!agentModels.has(model)) throw new Error("Usage: /model gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2");
+    updateFlow(flow.id, { agentModel: model });
+    insertLog(flow.id, "agent:status", `model set to ${model}`);
+    return true;
+  }
+  if (command === "/plugins") {
+    await listCodexPlugins(flow);
+    return true;
+  }
+  if (command === "/status") {
+    const runtime = await ensureCodexRuntime(flow);
+    insertLog(flow.id, "agent:message", `${await flowStatusMessage(runtime)}\n`);
+    return true;
+  }
+  if (command === "/permissions") {
+    const agentSandbox = agentSandboxForSlashCommand(slashCommandArgs(message));
+    if (!agentSandbox) throw new Error("Usage: /permissions read-only|workspace-write|full-access");
+    updateFlow(flow.id, { agentSandbox });
+    insertLog(flow.id, "agent:status", `permissions set to ${agentSandbox}`);
+    return true;
+  }
+  if (command === "/clear") {
+    const runtime = await ensureCodexRuntime(flow);
+    await startFreshCodexThread(runtime, flow);
+    return true;
+  }
+  if (command === "/compact") {
+    const runtime = await ensureCodexRuntime(flow);
+    await compactCodexThread(runtime, flow, userLogId);
+    return true;
+  }
+  return false;
+}
+
+function stopCodexRuntime(runtime: RuntimeProcess, reason: string) {
+  runtime.stopping = true;
+  rejectCodexPending(runtime, new Error(reason));
+  signalRuntimeProcess(runtime, "SIGTERM");
+}
+
+async function interruptCodexTurn(runtime: RuntimeProcess) {
+  if (!runtime.threadId || !runtime.activeTurnId) return;
+  await sendCodexRequest(runtime, "turn/interrupt", {
+    threadId: runtime.threadId,
+    turnId: runtime.activeTurnId,
+  });
+}
+
+const sharedSlashCommands: AgentSlashCommandSpec[] = [
+  { name: "/provider", description: "Switch the agent provider for this flow", args: ["codex", "claude"] },
+  { name: "/review", description: "Ask the agent to review the current changes" },
+];
+
+const codexProvider: AgentProvider = {
+  kind: "codex",
+  label: "codex",
+  slashCommands: [
+    { name: "/clear", description: "Start a fresh Codex thread for this flow" },
+    { name: "/compact", description: "Compact the current Codex thread context" },
+    { name: "/effort", description: "Set Codex reasoning effort", args: ["xhigh", "high", "medium", "low"] },
+    { name: "/fast", description: "Toggle fast mode for this flow" },
+    { name: "/model", description: "Set the Codex model for this flow", args: [...agentModels] },
+    { name: "/permissions", description: "Set Codex permissions for this flow", args: ["read-only", "workspace-write", "full-access"] },
+    { name: "/plugins", description: "List Codex plugins" },
+    { name: "/status", description: "Show current flow status" },
+    ...sharedSlashCommands,
+  ],
+  startRuntime: (flow) => startCodexAppServer(flow),
+  sendTurn: (runtime, flow, message, userLogId) => sendAgentTurn(runtime, flow, message, userLogId),
+  interrupt: (runtime) => interruptCodexTurn(runtime),
+  stop: stopCodexRuntime,
+  handleSlashCommand: handleCodexSlashCommand,
+};
+
+const claudeProvider: AgentProvider = {
+  kind: "claude",
+  label: "claude",
+  slashCommands: [
+    { name: "/clear", description: "Start a fresh Claude session for this flow" },
+    { name: "/model", description: "Set the Claude model for this flow", args: [...claudeAgentModels] },
+    { name: "/permissions", description: "Set Claude permissions for this flow", args: ["read-only", "workspace-write", "full-access"] },
+    { name: "/status", description: "Show current flow status" },
+    ...sharedSlashCommands,
+  ],
+  startRuntime: (flow) => startClaudeRuntime(flow),
+  sendTurn: (runtime, flow, message, userLogId) => sendClaudeTurn(runtime, flow, message, userLogId),
+  interrupt: (runtime) => interruptClaudeTurn(runtime),
+  stop: stopClaudeRuntime,
+  handleSlashCommand: handleClaudeSlashCommand,
+};
+
+const agentProviders: Record<AgentProviderKind, AgentProvider> = {
+  codex: codexProvider,
+  claude: claudeProvider,
+};
+
+function clientAgentProviders() {
+  return Object.values(agentProviders).map((provider) => ({
+    kind: provider.kind,
+    label: provider.label,
+    slashCommands: provider.slashCommands,
+  }));
+}
+
+function flowTranscriptTurns(flowId: string) {
+  const rows = db
+    .query(
+      "select source, message from logs where flowId = ? and source in ('user', 'agent:message', 'agent:message-boundary') order by id asc",
+    )
+    .all(flowId) as Array<{ source: string; message: string }>;
+
+  const turns: Array<{ role: "user" | "assistant"; text: string }> = [];
+  let assistantBuffer = "";
+  const flushAssistant = () => {
+    const text = assistantBuffer.trim();
+    assistantBuffer = "";
+    if (text) turns.push({ role: "assistant", text });
+  };
+  for (const row of rows) {
+    if (row.source === "user") {
+      flushAssistant();
+      const text = row.message.trim();
+      // Slash commands are provider-specific settings chatter, not conversation.
+      if (text && !text.startsWith("/")) turns.push({ role: "user", text });
+      continue;
+    }
+    if (row.source === "agent:message") {
+      assistantBuffer += row.message;
+      continue;
+    }
+    flushAssistant();
+  }
+  flushAssistant();
+  return turns;
+}
+
+function providerHandoffPrompt(flow: Flow, fromLabel: string) {
+  const transcript = flowTranscriptTurns(flow.id)
+    .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}:\n${turn.text}`)
+    .join("\n\n");
+  return [
+    `You are taking over this Turbopump flow from another coding agent (${fromLabel}). This is a fresh session.`,
+    `Linear issue: ${flow.linearIssueId} — ${flow.title}`,
+    `Branch: ${flow.branchName}`,
+    "The worktree already contains all work so far; inspect it with git status and git diff before making changes.",
+    "Conversation so far:",
+    transcript || "(no prior messages)",
+    "End of handoff context. Respond to the user request that follows it.",
+  ].join("\n\n");
+}
+
+async function switchFlowProvider(flow: Flow, target: string) {
+  const kind = normalizeAgentProviderKind(target);
+  if (!kind) throw new Error("Usage: /provider codex|claude");
+  const current = flowProviderKind(flow);
+  if (kind === current) {
+    insertLog(flow.id, "agent:status", `provider already set to ${agentProviders[kind].label}`);
+    return;
+  }
+
+  const runtime = agentProcesses.get(flow.id);
+  if (runtime?.activeTurnId || runtime?.compacting) {
+    throw new Error("Cannot switch providers while an agent turn is running.");
+  }
+  if (runtime) {
+    agentProcesses.delete(flow.id);
+    providerForRuntime(runtime).stop(runtime, "provider switched");
+  }
+
+  // Every switch starts the target provider fresh; the handoff transcript carries the context.
+  deleteSettingByKeyStmt.run(kind === "claude" ? claudeSessionSettingKey(flow.id) : codexThreadSettingKey(flow.id));
+  setActiveTurnId(flow.id);
+  setSetting(handoffPendingSettingKey(flow.id), providerHandoffPrompt(flow, agentProviders[current].label));
+  updateFlow(flow.id, {
+    agentProvider: kind,
+    agentModel: "",
+    agentContextTokensUsed: 0,
+    agentContextWindow: 0,
+    agentTotalTokensUsed: 0,
+    agentStatus: "idle",
+  });
+  insertLog(
+    flow.id,
+    "agent:status",
+    `provider switched to ${agentProviders[kind].label}; the next message starts a fresh session seeded with the flow transcript`,
+  );
+}
+
 async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMessage: string) {
   updateFlow(flow.id, { agentStatus: "running" });
   const updated = getFlow(flow.id);
@@ -2407,10 +3269,10 @@ async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMe
   try {
     runtime = existingRuntime;
     if (!runtime) {
-      runtime = await startCodexAppServer(updated);
+      runtime = await providerForFlow(updated).startRuntime(updated);
       createdRuntime = true;
     }
-    await sendAgentTurn(runtime, updated, agentMessage, userLogId);
+    await providerForRuntime(runtime).sendTurn(runtime, updated, composeTurnMessage(updated.id, agentMessage), userLogId);
   } catch (error) {
     if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
     updateFlow(flow.id, { agentStatus: "failed" });
@@ -2477,52 +3339,17 @@ async function handleSlashCommand(flow: Flow, message: string) {
   const command = parseSlashCommand(message);
   if (!command) return false;
   const userLogId = insertLog(flow.id, "user", `${message.trim()}\n`);
+  const provider = providerForFlow(flow);
 
-  if (command === "/fast") {
-    const serviceTier = flow.agentServiceTier === "fast" ? "" : "fast";
-    updateFlow(flow.id, { agentServiceTier: serviceTier });
-    insertLog(flow.id, "agent:status", serviceTier ? "fast mode enabled" : "fast mode disabled");
-    return true;
-  }
-  if (command === "/effort") {
-    const reasoningEffort = slashCommandArgs(message).toLowerCase() as ReasoningEffort;
-    if (!reasoningEfforts.has(reasoningEffort)) throw new Error("Usage: /effort high|medium|low|xhigh");
-    updateFlow(flow.id, { agentReasoningEffort: reasoningEffort });
-    insertLog(flow.id, "agent:status", `reasoning effort set to ${reasoningEffort}`);
-    return true;
-  }
-  if (command === "/model") {
-    const model = slashCommandArgs(message).toLowerCase();
-    if (!agentModels.has(model)) throw new Error("Usage: /model gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2");
-    updateFlow(flow.id, { agentModel: model });
-    insertLog(flow.id, "agent:status", `model set to ${model}`);
-    return true;
-  }
   if (command === "/review") {
     await startAgentTurnAfterUserLog(flow, userLogId, reviewPromptForSlashCommand(message));
     return true;
   }
-  if (command === "/plugins") {
-    await listCodexPlugins(flow);
+  if (command === "/provider") {
+    await switchFlowProvider(flow, slashCommandArgs(message));
     return true;
   }
-  if (command === "/permissions") {
-    const agentSandbox = agentSandboxForSlashCommand(slashCommandArgs(message));
-    if (!agentSandbox) throw new Error("Usage: /permissions read-only|workspace-write|full-access");
-    updateFlow(flow.id, { agentSandbox });
-    insertLog(flow.id, "agent:status", `permissions set to ${agentSandbox}`);
-    return true;
-  }
-
-  const runtime = await ensureCodexRuntime(flow);
-  if (command === "/clear") {
-    await startFreshCodexThread(runtime, flow);
-    return true;
-  }
-  if (command === "/compact") {
-    await compactCodexThread(runtime, flow, userLogId);
-    return true;
-  }
+  if (await provider.handleSlashCommand(flow, command, message, userLogId)) return true;
   throw new Error(`Unknown slash command: ${command}`);
 }
 
@@ -2554,11 +3381,11 @@ async function startAgent(flow: Flow, userMessage = "") {
   try {
     runtime = existingRuntime;
     if (!runtime) {
-      runtime = await startCodexAppServer(updated);
+      runtime = await providerForFlow(updated).startRuntime(updated);
       createdRuntime = true;
     }
     if (!message) return;
-    await sendAgentTurn(runtime, updated, userMessage, userLogId);
+    await providerForRuntime(runtime).sendTurn(runtime, updated, composeTurnMessage(updated.id, userMessage), userLogId);
   } catch (error) {
     if (createdRuntime && runtime) cleanupFailedRuntimeProcess(runtime, `agent turn failed: ${String(error)}`);
     updateFlow(flow.id, { agentStatus: "failed" });
@@ -2620,7 +3447,7 @@ function interruptShellCommand(flowId: string) {
   insertLog(flowId, "shell:status", "shell interrupt requested");
   runtime.stopping = true;
   try {
-    runtime.proc.stdin?.write("\x03");
+    runtime.proc?.stdin?.write("\x03");
   } catch {
     // Some commands close stdin before exiting; SIGINT below is the fallback.
   }
@@ -2643,7 +3470,7 @@ async function interruptAgent(flowId: string) {
     updateFlow(flowId, { agentStatus: "idle" });
     return;
   }
-  if (!runtime.threadId || !runtime.activeTurnId) {
+  if ((!runtime.claude && !runtime.threadId) || !runtime.activeTurnId) {
     runtime.activeTurnTraceAfterLogId = undefined;
     setActiveTurnId(flowId);
     updateFlow(flowId, { agentStatus: "idle" });
@@ -2653,10 +3480,7 @@ async function interruptAgent(flowId: string) {
   updateFlow(flowId, { agentStatus: "interrupting" });
   insertLog(flowId, "agent:status", `interrupt requested ${turnId}`);
   try {
-    await sendCodexRequest(runtime, "turn/interrupt", {
-      threadId: runtime.threadId,
-      turnId,
-    });
+    await providerForRuntime(runtime).interrupt(runtime, flow ?? (getFlow(flowId) as Flow));
   } catch (error) {
     if (!isNoActiveTurnInterruptError(error)) throw error;
     runtime.activeTurnId = undefined;
@@ -2672,7 +3496,7 @@ function stopIdleAgentRuntimesForEnvUpdate() {
     if (runtime.activeTurnId) continue;
     runtime.stopping = true;
     agentProcesses.delete(runtime.flowId);
-    signalRuntimeProcess(runtime, "SIGTERM");
+    providerForRuntime(runtime).stop(runtime, "agent environment updated");
     updateFlow(runtime.flowId, { agentStatus: "idle" });
     insertLog(runtime.flowId, "agent:status", "agent environment updated");
   }
@@ -2750,7 +3574,7 @@ async function fetchLinearIssueDetail(identifier: string) {
             createdAt
             updatedAt
             state { id name color type }
-            team { key name }
+            team { id key name }
             project { name }
             assignee { name }
             creator { name }
@@ -2816,7 +3640,7 @@ async function updateLinearIssueStatus(identifier: string, issueId: string, stat
             createdAt
             updatedAt
             state { id name color type }
-            team { key name }
+            team { id key name }
             project { name }
             labels { nodes { name color } }
           }
@@ -2862,7 +3686,7 @@ async function updateLinearIssuePriority(identifier: string, issueId: string, pr
             createdAt
             updatedAt
             state { id name color type }
-            team { key name }
+            team { id key name }
             project { name }
             labels { nodes { name color } }
           }
@@ -2957,7 +3781,7 @@ async function createBlankInEngLinearIssue() {
         teamId: state.team.id,
         stateId: state.id,
         assigneeId: data.viewer.id,
-        title: "Untitled",
+        title: "turbopump placeholder",
       },
     },
   );
@@ -2985,11 +3809,12 @@ function isLinearIssueNotFoundError(error: unknown) {
   return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
 
-function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false) {
+function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false, workflowStates: LinearWorkflowState[] = []) {
   const flowsByIssue = new Map(listFlows().map((flow) => [flow.linearIssueId, flow]));
   return {
     viewer,
     cached,
+    workflowStates,
     issues: issues.flatMap((issue) => {
       const flow = flowsByIssue.get(issue.identifier);
       if (isDeletedLinearIssue(issue)) return [];
@@ -3034,6 +3859,7 @@ function hasCachedAssignedLinearIssues() {
 async function listAssignedLinearIssues(apiKey?: string) {
   let viewer: { id: string; name: string } | null = null;
   const issues: LinearIssue[] = [];
+  let workflowStates: LinearWorkflowState[] = [];
   let after: string | null = null;
   try {
     do {
@@ -3043,8 +3869,9 @@ async function listAssignedLinearIssues(apiKey?: string) {
           name: string;
           assignedIssues: LinearIssueConnection;
         };
+        workflowStates?: { nodes: LinearWorkflowState[] };
       }>(`
-        query AssignedToMe($after: String) {
+        query AssignedToMe($after: String, $includeWorkflowStates: Boolean!) {
           viewer {
             id
             name
@@ -3060,7 +3887,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
                 createdAt
                 updatedAt
                 state { id name color type }
-                team { key name }
+                team { id key name }
                 project { name }
                 labels { nodes { name color } }
               }
@@ -3070,10 +3897,20 @@ async function listAssignedLinearIssues(apiKey?: string) {
               }
             }
           }
+          workflowStates(first: 250) @include(if: $includeWorkflowStates) {
+            nodes {
+              id
+              name
+              color
+              type
+              team { id key name }
+            }
+          }
         }
-      `, { after }, apiKey);
+      `, { after, includeWorkflowStates: !after }, apiKey);
       viewer = { id: data.viewer.id, name: data.viewer.name };
       issues.push(...data.viewer.assignedIssues.nodes);
+      if (data.workflowStates?.nodes) workflowStates = data.workflowStates.nodes;
       const pageInfo = data.viewer.assignedIssues.pageInfo;
       after = pageInfo?.hasNextPage ? pageInfo.endCursor ?? null : null;
     } while (after);
@@ -3087,7 +3924,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
   }
   for (const issue of issues) cacheLinearIssue(issue);
   if (!viewer) throw new Error("Linear did not return the viewer.");
-  return assignedLinearIssuesPayload(viewer, issues);
+  return assignedLinearIssuesPayload(viewer, issues, false, workflowStates);
 }
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
@@ -3192,6 +4029,8 @@ async function handleApi(request: Request, url: URL) {
       agents: {
         developerInstructions: getAgentDeveloperInstructionsTemplate(),
         defaultDeveloperInstructions: defaultAgentDeveloperInstructions,
+        defaultProvider: defaultAgentProviderKind(),
+        providers: clientAgentProviders(),
       },
       flows: listClientFlows(),
     });
@@ -3231,8 +4070,14 @@ async function handleApi(request: Request, url: URL) {
   if (url.pathname === "/api/agents" && request.method === "POST") {
     const body = await readJson<{
       developerInstructions?: string;
+      defaultProvider?: string;
     }>(request);
-    setSetting("agentDeveloperInstructions", body.developerInstructions ?? "");
+    if (body.developerInstructions !== undefined) setSetting("agentDeveloperInstructions", body.developerInstructions ?? "");
+    if (body.defaultProvider !== undefined) {
+      const kind = normalizeAgentProviderKind(body.defaultProvider);
+      if (!kind) return json({ error: "defaultProvider must be codex or claude" }, { status: 400 });
+      setSetting(defaultAgentProviderSettingKey, kind);
+    }
     return json({ ok: true });
   }
 
@@ -3321,16 +4166,17 @@ async function handleApi(request: Request, url: URL) {
     const createdAt = now();
     db.query(`
       insert into flows (
-        id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier,
+        id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier, agentProvider,
         checkoutPath, branchName, baseSha, agentStatus, serving, createdAt, updatedAt
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       parsed.identifier,
       body.url?.trim() || linearIssue?.url || parsed.url,
       body.title?.trim() || linearIssue?.title || parsed.identifier,
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
-      "fast",
+      "",
+      defaultAgentProviderKind(),
       target,
       branch,
       baseSha,
