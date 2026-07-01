@@ -208,7 +208,7 @@ db.exec(`
     agentStatus text not null default 'idle',
     agentModel text not null default '',
     agentReasoningEffort text not null default '',
-    agentServiceTier text not null default 'fast',
+    agentServiceTier text not null default '',
     agentSandbox text not null default 'danger-full-access',
     agentContextTokensUsed integer not null default 0,
     agentContextWindow integer not null default 0,
@@ -251,7 +251,7 @@ db.exec(`
 tryMigration("alter table flows drop column stage");
 tryMigration("alter table flows add column agentModel text not null default ''");
 tryMigration("alter table flows add column agentReasoningEffort text not null default ''");
-tryMigration("alter table flows add column agentServiceTier text not null default 'fast'");
+tryMigration("alter table flows add column agentServiceTier text not null default ''");
 tryMigration("alter table flows add column agentSandbox text not null default 'danger-full-access'");
 tryMigration("alter table flows add column agentContextTokensUsed integer not null default 0");
 tryMigration("alter table flows add column agentContextWindow integer not null default 0");
@@ -2302,6 +2302,59 @@ function reviewPromptForSlashCommand(message: string) {
   throw new Error("Usage: /review base [branch]|uncommitted|commit [ref]|custom [instructions]");
 }
 
+function statusValue(value: unknown, fallback = "unknown") {
+  if (typeof value === "string") return value.trim() || fallback;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+}
+
+function accountStatusValue(account: unknown) {
+  if (!account || typeof account !== "object") return "not signed in";
+  const data = account as { type?: unknown; email?: unknown; planType?: unknown; credentialSource?: unknown };
+  const type = statusValue(data.type);
+  if (type === "chatgpt") {
+    const email = statusValue(data.email, "");
+    const plan = statusValue(data.planType, "");
+    return [email || "ChatGPT", plan].filter(Boolean).join(" ");
+  }
+  if (type === "apiKey") return "API key";
+  if (type === "amazonBedrock") return `Amazon Bedrock ${statusValue(data.credentialSource, "")}`.trim();
+  return type;
+}
+
+function statusPercentLeft(window: unknown) {
+  if (!window || typeof window !== "object") return "unknown";
+  const data = window as { remainingPercent?: unknown; usedPercent?: unknown };
+  if (typeof data.remainingPercent === "number" && Number.isFinite(data.remainingPercent)) return `${Math.round(data.remainingPercent)}%`;
+  if (typeof data.usedPercent === "number" && Number.isFinite(data.usedPercent)) return `${Math.max(0, Math.round(100 - data.usedPercent))}%`;
+  return "unknown";
+}
+
+function codexRateLimits(value: unknown) {
+  const data = value as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null };
+  return (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
+}
+
+function markdownTable(rows: Array<[string, unknown]>) {
+  const cell = (value: unknown) => String(value ?? "unknown").replaceAll("|", "\\|").replaceAll("\n", "<br>");
+  return ["| Field | Value |", "| --- | --- |", ...rows.map((row) => `| ${cell(row[0])} | ${cell(row[1])} |`)].join("\n");
+}
+
+async function flowStatusMessage(runtime: RuntimeProcess) {
+  const [accountResponse, rateLimitsResponse] = await Promise.all([
+    sendCodexRequest(runtime, "account/read", { refreshToken: false }),
+    sendCodexRequest(runtime, "account/rateLimits/read"),
+  ]);
+  const account = (accountResponse as { account?: unknown } | null)?.account;
+  const rateLimits = codexRateLimits(rateLimitsResponse);
+
+  return markdownTable([
+    ["Account", accountStatusValue(account)],
+    ["5h left", statusPercentLeft(rateLimits.primary)],
+    ["Weekly left", statusPercentLeft(rateLimits.secondary)],
+  ]);
+}
+
 async function ensureCodexRuntime(flow: Flow) {
   return agentProcesses.get(flow.id) ?? (await startCodexAppServer(flow));
 }
@@ -2504,6 +2557,11 @@ async function handleSlashCommand(flow: Flow, message: string) {
   }
   if (command === "/plugins") {
     await listCodexPlugins(flow);
+    return true;
+  }
+  if (command === "/status") {
+    const runtime = await ensureCodexRuntime(flow);
+    insertLog(flow.id, "agent:message", `${await flowStatusMessage(runtime)}\n`);
     return true;
   }
   if (command === "/permissions") {
@@ -2750,7 +2808,7 @@ async function fetchLinearIssueDetail(identifier: string) {
             createdAt
             updatedAt
             state { id name color type }
-            team { key name }
+            team { id key name }
             project { name }
             assignee { name }
             creator { name }
@@ -2816,7 +2874,7 @@ async function updateLinearIssueStatus(identifier: string, issueId: string, stat
             createdAt
             updatedAt
             state { id name color type }
-            team { key name }
+            team { id key name }
             project { name }
             labels { nodes { name color } }
           }
@@ -2862,7 +2920,7 @@ async function updateLinearIssuePriority(identifier: string, issueId: string, pr
             createdAt
             updatedAt
             state { id name color type }
-            team { key name }
+            team { id key name }
             project { name }
             labels { nodes { name color } }
           }
@@ -2957,7 +3015,7 @@ async function createBlankInEngLinearIssue() {
         teamId: state.team.id,
         stateId: state.id,
         assigneeId: data.viewer.id,
-        title: "Untitled",
+        title: "turbopump placeholder",
       },
     },
   );
@@ -2985,11 +3043,12 @@ function isLinearIssueNotFoundError(error: unknown) {
   return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
 
-function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false) {
+function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false, workflowStates: LinearWorkflowState[] = []) {
   const flowsByIssue = new Map(listFlows().map((flow) => [flow.linearIssueId, flow]));
   return {
     viewer,
     cached,
+    workflowStates,
     issues: issues.flatMap((issue) => {
       const flow = flowsByIssue.get(issue.identifier);
       if (isDeletedLinearIssue(issue)) return [];
@@ -3034,6 +3093,7 @@ function hasCachedAssignedLinearIssues() {
 async function listAssignedLinearIssues(apiKey?: string) {
   let viewer: { id: string; name: string } | null = null;
   const issues: LinearIssue[] = [];
+  let workflowStates: LinearWorkflowState[] = [];
   let after: string | null = null;
   try {
     do {
@@ -3043,8 +3103,9 @@ async function listAssignedLinearIssues(apiKey?: string) {
           name: string;
           assignedIssues: LinearIssueConnection;
         };
+        workflowStates?: { nodes: LinearWorkflowState[] };
       }>(`
-        query AssignedToMe($after: String) {
+        query AssignedToMe($after: String, $includeWorkflowStates: Boolean!) {
           viewer {
             id
             name
@@ -3060,7 +3121,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
                 createdAt
                 updatedAt
                 state { id name color type }
-                team { key name }
+                team { id key name }
                 project { name }
                 labels { nodes { name color } }
               }
@@ -3070,10 +3131,20 @@ async function listAssignedLinearIssues(apiKey?: string) {
               }
             }
           }
+          workflowStates(first: 250) @include(if: $includeWorkflowStates) {
+            nodes {
+              id
+              name
+              color
+              type
+              team { id key name }
+            }
+          }
         }
-      `, { after }, apiKey);
+      `, { after, includeWorkflowStates: !after }, apiKey);
       viewer = { id: data.viewer.id, name: data.viewer.name };
       issues.push(...data.viewer.assignedIssues.nodes);
+      if (data.workflowStates?.nodes) workflowStates = data.workflowStates.nodes;
       const pageInfo = data.viewer.assignedIssues.pageInfo;
       after = pageInfo?.hasNextPage ? pageInfo.endCursor ?? null : null;
     } while (after);
@@ -3087,7 +3158,7 @@ async function listAssignedLinearIssues(apiKey?: string) {
   }
   for (const issue of issues) cacheLinearIssue(issue);
   if (!viewer) throw new Error("Linear did not return the viewer.");
-  return assignedLinearIssuesPayload(viewer, issues);
+  return assignedLinearIssuesPayload(viewer, issues, false, workflowStates);
 }
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
@@ -3330,7 +3401,7 @@ async function handleApi(request: Request, url: URL) {
       body.url?.trim() || linearIssue?.url || parsed.url,
       body.title?.trim() || linearIssue?.title || parsed.identifier,
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
-      "fast",
+      "",
       target,
       branch,
       baseSha,

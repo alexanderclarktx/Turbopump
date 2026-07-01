@@ -52,6 +52,7 @@ const SLASH_COMMANDS = [
   { name: "/permissions", description: "Set Codex permissions for this flow" },
   { name: "/plugins", description: "List Codex plugins" },
   { name: "/review", description: "Ask Codex to review the current changes" },
+  { name: "/status", description: "Show current flow status" },
 ];
 const SLASH_COMMAND_EXPANSIONS = {
   "/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({
@@ -212,6 +213,7 @@ const state = {
   checkoutsLoaded: false,
   checkoutsLoading: false,
   linearTickets: [],
+  linearWorkflowStates: [],
   linearTicketsLoaded: false,
   linearTicketsLoading: false,
   linearViewer: null,
@@ -367,6 +369,10 @@ function linearStatusId(ticket) {
 
 function linearStatusType(ticket) {
   return ticket?.state?.type || "";
+}
+
+function linearTeamId(ticket) {
+  return ticket?.team?.id || "";
 }
 
 function linearPriorityValue(priority) {
@@ -3370,6 +3376,7 @@ function applyLinearTicketsPayload(data, options = {}) {
   const nextTickets = data.issues || [];
   state.linearViewer = data.viewer;
   state.linearViewerName = data.viewer?.name || state.linearViewerName;
+  if (Array.isArray(data.workflowStates)) state.linearWorkflowStates = data.workflowStates;
   reconcileRemovedLinearTickets(previousTickets, nextTickets);
   state.linearTickets = nextTickets;
   state.linearTicketsLoaded = options.loaded !== false;
@@ -3588,8 +3595,13 @@ function linearStatusOptions(issue = null, fallbackStatus = null) {
   const addIssueStatus = (item) => {
     addStatus(linearStatusId(item), linearStatusName(item), linearStatusType(item));
   };
+  const ticket = issue?.identifier ? state.linearTickets.find((item) => item.identifier === issue.identifier) : null;
+  const teamId = linearTeamId(issue) || linearTeamId(ticket);
   state.linearTickets.forEach(addIssueStatus);
   if (issue) addIssueStatus(issue);
+  state.linearWorkflowStates
+    .filter((status) => linearStatusKey(status.name) === "in-review" && (!teamId || status.team?.id === teamId))
+    .forEach((status) => addStatus(status.id, status.name, status.type));
   if (fallbackStatus) addStatus(fallbackStatus.stateId, fallbackStatus.status, fallbackStatus.type);
   return [...byStateId.values()].sort((a, b) => linearStatusRank(a.key) - linearStatusRank(b.key) || a.status.localeCompare(b.status));
 }
