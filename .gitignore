@@ -1,3 +1,4 @@
 .flow/
 node_modules/
 .DS_Store
+plan.md

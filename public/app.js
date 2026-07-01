@@ -51,6 +51,7 @@ const SLASH_COMMANDS = [
   { name: "/model", description: "Set the Codex model for this flow" },
   { name: "/permissions", description: "Set Codex permissions for this flow" },
   { name: "/plugins", description: "List Codex plugins" },
+  { name: "/provider", description: "Switch the agent provider for this flow" },
   { name: "/review", description: "Ask Codex to review the current changes" },
   { name: "/status", description: "Show current flow status" },
 ];
@@ -68,6 +69,10 @@ const SLASH_COMMAND_EXPANSIONS = {
     { name: "/permissions workspace-write", description: "Write inside the workspace" },
     { name: "/permissions full-access", description: "Full filesystem access", icon: DEFAULT_FAVICON_HREF },
   ],
+  "/provider": [
+    { name: "/provider codex", description: "Use Codex for this flow" },
+    { name: "/provider claude", description: "Use Claude for this flow" },
+  ],
   "/review": [
     { name: "/review base", description: "Review against a base branch (PR style)" },
     { name: "/review uncommitted", description: "Review uncommitted changes" },
@@ -75,23 +80,59 @@ const SLASH_COMMAND_EXPANSIONS = {
     { name: "/review custom", description: "Custom review instructions" },
   ],
 };
+const CLAUDE_SLASH_COMMANDS = [
+  { name: "/clear", description: "Start a fresh Claude session for this flow" },
+  { name: "/compact", description: "Compact the current Claude session context" },
+  { name: "/model", description: "Set the Claude model for this flow" },
+  { name: "/permissions", description: "Set Claude permissions for this flow" },
+  { name: "/provider", description: "Switch the agent provider for this flow" },
+  { name: "/review", description: "Ask Claude to review the current changes" },
+  { name: "/status", description: "Show current flow status" },
+];
+const CLAUDE_SLASH_COMMAND_EXPANSIONS = {
+  "/model": ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"].map((model) => ({
+    name: `/model ${model}`,
+    description: "",
+  })),
+  "/permissions": SLASH_COMMAND_EXPANSIONS["/permissions"],
+  "/provider": SLASH_COMMAND_EXPANSIONS["/provider"],
+  "/review": SLASH_COMMAND_EXPANSIONS["/review"],
+};
 const SLASH_COMMANDS_WITH_ARGUMENTS = ["/review base", "/review commit", "/review custom"];
 
 function sortSlashCommands(commands) {
   return [...commands].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function agentProviderKindForFlow(flow) {
+  return flow?.agentProvider === "claude" ? "claude" : "codex";
+}
+
+function activeAgentProviderKind() {
+  const flow = state.flows.find((item) => item.id === state.selectedFlowId) || null;
+  return agentProviderKindForFlow(flow);
+}
+
+function activeSlashCommands() {
+  return activeAgentProviderKind() === "claude" ? SORTED_CLAUDE_SLASH_COMMANDS : SORTED_SLASH_COMMANDS;
+}
+
+function activeSlashCommandExpansions() {
+  return activeAgentProviderKind() === "claude" ? CLAUDE_SLASH_COMMAND_EXPANSIONS : SLASH_COMMAND_EXPANSIONS;
+}
+
 function slashCommandExpansionMatches(query) {
-  const exactExpansions = SLASH_COMMAND_EXPANSIONS[query];
+  const activeExpansions = activeSlashCommandExpansions();
+  const exactExpansions = activeExpansions[query];
   if (exactExpansions) return exactExpansions;
   const [command, ...args] = query.split(/\s+/);
   if (!args.length) return [];
-  const expansions = SLASH_COMMAND_EXPANSIONS[command] || [];
+  const expansions = activeExpansions[command] || [];
   return expansions.filter((item) => item.name.startsWith(query));
 }
 
 function slashCommandHasExpansions(commandName) {
-  return Boolean(SLASH_COMMAND_EXPANSIONS[commandName]);
+  return Boolean(activeSlashCommandExpansions()[commandName]);
 }
 
 function slashCommandAllowsArguments(commandName) {
@@ -101,8 +142,8 @@ function slashCommandAllowsArguments(commandName) {
 function validSlashCommand(value) {
   const commandName = value.trim();
   if (slashCommandHasExpansions(commandName)) return false;
-  if (SORTED_SLASH_COMMANDS.some((command) => command.name === commandName)) return true;
-  return Object.values(SLASH_COMMAND_EXPANSIONS).some((expansions) =>
+  if (activeSlashCommands().some((command) => command.name === commandName)) return true;
+  return Object.values(activeSlashCommandExpansions()).some((expansions) =>
     expansions.some(
       (command) =>
         command.name === commandName ||
@@ -112,6 +153,7 @@ function validSlashCommand(value) {
 }
 
 const SORTED_SLASH_COMMANDS = sortSlashCommands(SLASH_COMMANDS);
+const SORTED_CLAUDE_SLASH_COMMANDS = sortSlashCommands(CLAUDE_SLASH_COMMANDS);
 
 function initialCollapsedLinearStatuses() {
   const raw = localStorage.getItem(COLLAPSED_LINEAR_STATUSES_KEY);
@@ -465,6 +507,7 @@ function linearStatusIconKind(status, type = "") {
   if (key === "triage") return "triage";
   if (key === "done" || key === "completed") return "done";
   if (key === "review" || key === "in-review" || key === "reviewing" || key === "needs-review") return "review";
+  if (key === "in-qa" || key === "qa") return "in-qa";
   if (key === "in-eng") return "in-eng";
   const typeKey = linearStatusKey(type);
   if (typeKey === "triage") return "triage";
@@ -601,7 +644,7 @@ function slashCommandMatches(value) {
   if (!query.startsWith("/")) return [];
   const expansions = slashCommandExpansionMatches(query);
   if (expansions.length) return expansions;
-  return SORTED_SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
+  return activeSlashCommands().filter((command) => command.name.startsWith(query));
 }
 
 function inputHistoryMode(input = document.activeElement) {
@@ -2608,6 +2651,14 @@ function agentModelLabel(flow) {
   ].filter(Boolean).join(" ");
 }
 
+function agentProviderIcon(flow) {
+  const icon = document.createElement("span");
+  icon.className = "agent-provider-icon";
+  icon.dataset.provider = agentProviderKindForFlow(flow);
+  icon.setAttribute("aria-hidden", "true");
+  return icon;
+}
+
 function agentContextWindowLabel(flow) {
   const used = Number(flow?.agentContextTokensUsed || 0);
   const total = Number(flow?.agentContextWindow || 0);
@@ -2781,6 +2832,7 @@ function renderAgentContext(flow) {
   context.hidden = !flow;
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
   context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
+  context.querySelector(".agent-context-model").prepend(agentProviderIcon(flow));
   diffButton.hidden = !flow || !diffHasChanges(diff);
   renderDiffIndicator(diffButton, flow?.id || "", diff);
   diffButton.disabled = !flow;
@@ -4928,11 +4980,12 @@ async function prefetchTicketLogs() {
 
 function logMeta(source) {
   const userLabel = state.linearViewer?.name || state.linearViewerName || "user";
+  const agentLabel = activeAgentProviderKind();
   if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };
   const map = {
     user: { label: userLabel, marker: ">", tone: "user" },
-    "agent:message": { label: "codex", marker: ">", tone: "assistant" },
-    agent: { label: "codex", marker: ">", tone: "assistant" },
+    "agent:message": { label: agentLabel, marker: ">", tone: "assistant" },
+    agent: { label: agentLabel, marker: ">", tone: "assistant" },
     "agent:thinking": { label: "thinking", marker: "...", tone: "thinking" },
     "agent:reasoning": { label: "thinking", marker: "...", tone: "thinking" },
     "agent:tool": { label: "exec", marker: "$", tone: "tool" },
@@ -5325,7 +5378,9 @@ function isHiddenTerminalLog(log) {
       /^turn completed\b/.test(message) ||
       /^interrupt requested\b/.test(message) ||
       /^[$]\s*codex app-server --listen stdio:\/\/$/i.test(message) ||
-      /^Codex thread \S+ ready$/i.test(message))
+      /^Codex thread \S+ ready$/i.test(message) ||
+      /^(starting|resuming) Claude session\b/i.test(message) ||
+      /^Claude session \S* ?ready$/i.test(message))
   );
 }
 
@@ -5619,6 +5674,20 @@ function formatTerminalTimestamp(value) {
   }).replace(/\s+([AP]M)$/i, "$1").toLowerCase();
   const dateLabel = terminalDateLabel(date);
   return dateLabel ? `${time} (${dateLabel})` : time;
+}
+
+function formatTerminalElapsed(startValue, endValue) {
+  const start = Date.parse(startValue || "");
+  const end = Date.parse(endValue || "");
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "";
+  let remaining = Math.round((end - start) / 1000);
+  const hours = Math.floor(remaining / 3600);
+  remaining -= hours * 3600;
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining - minutes * 60;
+  if (hours) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 function usesTerminalBlockMarkdown(source) {
@@ -6251,7 +6320,8 @@ function appendTerminalTraceGroup(fragment, group, options = {}) {
 
   const label = document.createElement("span");
   label.className = "terminal-entry-label";
-  label.textContent = meta.label;
+  const elapsed = formatTerminalElapsed(group.createdAt, group.lastAt);
+  label.textContent = elapsed ? `${meta.label} (${elapsed})` : meta.label;
 
   const time = document.createElement("time");
   time.className = "terminal-entry-time";

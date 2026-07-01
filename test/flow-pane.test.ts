@@ -7,6 +7,7 @@ const server = await Bun.file("src/server.ts").text();
 const packageJson = await Bun.file("package.json").json();
 const markdown = await Bun.file("public/linear-markdown.js").text();
 const linearInEngStatusIcon = await Bun.file("public/linear-status-icons/in-eng.svg").text();
+const linearInQaStatusIcon = await Bun.file("public/linear-status-icons/in-qa.svg").text();
 const linearStartedStatusIcon = await Bun.file("public/linear-status-icons/started.svg").text();
 const linearDoneStatusIcon = await Bun.file("public/linear-status-icons/done.svg").text();
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
@@ -419,6 +420,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("checkoutLoadFrame = requestAnimationFrame");
     expect(app).toContain("state.checkoutsLoading = true;");
     expect(app).toContain("function renderLinearStatusIcon(status)");
+    expect(app).toContain('if (key === "in-qa" || key === "qa") return "in-qa";');
     expect(app).toContain('if (key === "in-eng") return "in-eng";');
     expect(app).toContain('if (typeKey === "unstarted") return "todo";');
     expect(app).toContain('if (typeKey === "started") return "started";');
@@ -438,9 +440,11 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-status-icon");
     expect(css).toContain(".linear-status-icon-glyph");
     expect(css).toContain('url("/linear-status-icons/in-eng.svg")');
+    expect(css).toContain('url("/linear-status-icons/in-qa.svg")');
     expect(css).toContain('url("/linear-status-icons/started.svg")');
     expect(css).toContain('url("/linear-status-icons/done.svg")');
     expect(linearInEngStatusIcon).toContain("M8 4a4 4 0 1 1-4 4h4z");
+    expect(linearInQaStatusIcon).toContain("M8 4a4 4 0 1 1-3.236 1.649L8 8z");
     expect(linearStartedStatusIcon).toContain("M8 1a7 7 0 1 1 0 14");
     expect(linearDoneStatusIcon).toContain("M8 1a7 7 0 1 0 0 14");
     expect(css).toContain(".checkout-card:hover .checkout-delete");
@@ -857,8 +861,8 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain("function timeStep");
     expect(server).not.toContain("function insertTimingLogs");
     expect(server).toContain("function createWorktree(flowId: string, issueId: string)");
-    expect(server).toContain("id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier,");
-    expect(server).toContain(") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    expect(server).toContain("id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier, agentProvider,");
+    expect(server).toContain(") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     expect(server).toContain('body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",\n      "",');
     expect(server).toContain('const repoCheckoutDir = join(dataDir, "repo");');
     expect(server).toContain("function ensureRepoCheckout(repoUrl: string)");
@@ -2227,7 +2231,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("await Promise.all([stdoutDone, stderrDone]);");
     expect(server).toContain("const resultLogId = insertLog(\n        flow.id,\n        \"shell:result\",");
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
-    expect(server).toContain('runtime.proc.stdin?.write("\\x03");');
+    expect(server).toContain('runtime.proc?.stdin?.write("\\x03");');
     expect(server).toContain('signalRuntimeProcess(runtime, "SIGINT");');
     expect(server).toContain("scheduleShellInterruptEscalation(flowId, runtime);");
     expect(server).toContain("function interruptShellCommand(flowId: string)");
@@ -2543,6 +2547,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("requestAnimationFrame(() =>");
     expect(app).toContain("terminal.scrollTop = terminal.scrollHeight;");
     expect(app).toContain("function formatTerminalTimestamp(value)");
+    expect(app).toContain("function formatTerminalElapsed(startValue, endValue)");
+    expect(app).toContain('if (hours) return `${hours}h ${minutes}m ${seconds}s`;');
+    expect(app).toContain('if (minutes) return `${minutes}m ${seconds}s`;');
+    expect(app).toContain('return `${seconds}s`;');
     expect(app).toContain("function terminalDateLabel(date, now = new Date())");
     expect(app).toContain("return `${days}d ago`;");
     expect(app).toContain('return dateLabel ? `${time} (${dateLabel})` : time;');
@@ -2715,6 +2723,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("openTraceGroups: new Map()");
     expect(app).toContain("traceKey: traceRange.key,");
     expect(app).toContain("flowId: log.flowId,");
+    expect(app).toContain('const elapsed = formatTerminalElapsed(group.createdAt, group.lastAt);');
+    expect(app).toContain('label.textContent = elapsed ? `${meta.label} (${elapsed})` : meta.label;');
     expect(app).toContain('details.dataset.traceKey = group.traceKey || "";');
     expect(app).toContain("details._traceChildren = group.children || [];");
     expect(app).toContain("if (isTerminalTraceGroupOpen(group)) {");

@@ -1255,6 +1255,11 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   color: #d4a600;
 }
 
+.linear-status-icon-in-qa {
+  --linear-status-icon-url: url("/linear-status-icons/in-qa.svg");
+  color: #f2790f;
+}
+
 .linear-status-icon-started {
   --linear-status-icon-url: url("/linear-status-icons/started.svg");
   color: #d4a600;
@@ -4408,6 +4413,23 @@ body.theme-dark .agent-context-diff:focus-visible {
 .agent-context-branch {
   padding-left: 6px;
   border-left: 1px solid var(--line-strong);
+}
+
+.agent-context .agent-provider-icon {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  vertical-align: -2px;
+  background: currentColor;
+  -webkit-mask: url("provider-icons/openai.svg") no-repeat center / contain;
+  mask: url("provider-icons/openai.svg") no-repeat center / contain;
+}
+
+.agent-context .agent-provider-icon[data-provider="claude"] {
+  background: #d97757;
+  -webkit-mask-image: url("provider-icons/claude.svg");
+  mask-image: url("provider-icons/claude.svg");
 }
 
 .diff-modal-backdrop {
