@@ -351,6 +351,9 @@ export function applyTerminalMessageClamps(root) {
   const bodies = root.matches?.(".terminal-entry-body")
     ? [root]
     : Array.from(root.querySelectorAll(".terminal-entry-body"));
+  // Batch DOM writes and reads into phases so clamping N entries costs a
+  // constant number of reflows instead of one forced reflow per entry.
+  const targets = [];
   for (const body of bodies) {
     const entry = body.closest(".terminal-entry");
     if (
@@ -364,19 +367,25 @@ export function applyTerminalMessageClamps(root) {
     }
     const content = terminalMessageContent(body);
     body.querySelectorAll(":scope > .terminal-entry-overflow-marker").forEach((marker) => marker.remove());
-    const style = getComputedStyle(body);
-    const lineHeight = Number.parseFloat(style.lineHeight);
-    if (Number.isFinite(lineHeight) && lineHeight > 0) {
-      content.style.setProperty("--terminal-message-max-height", `${lineHeight * maxLines}px`);
+    targets.push({ body, entry, content, lineHeight: 0 });
+  }
+  for (const target of targets) {
+    target.lineHeight = Number.parseFloat(getComputedStyle(target.body).lineHeight);
+  }
+  for (const target of targets) {
+    if (Number.isFinite(target.lineHeight) && target.lineHeight > 0) {
+      target.content.style.setProperty("--terminal-message-max-height", `${target.lineHeight * maxLines}px`);
     }
-    for (const image of content.querySelectorAll("img")) {
-      if (!image.complete) image.addEventListener("load", () => applyTerminalMessageClamps(entry), { once: true });
+    for (const image of target.content.querySelectorAll("img")) {
+      if (!image.complete) image.addEventListener("load", () => applyTerminalMessageClamps(target.entry), { once: true });
     }
-    if (content.scrollHeight <= content.clientHeight + 1) continue;
+  }
+  const overflowing = targets.filter((target) => target.content.scrollHeight > target.content.clientHeight + 1);
+  for (const target of overflowing) {
     const marker = document.createElement("div");
     marker.className = "terminal-entry-overflow-marker";
     marker.textContent = ". . .";
-    body.appendChild(marker);
+    target.body.appendChild(marker);
   }
 }
 

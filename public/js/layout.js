@@ -10,9 +10,28 @@ import {
 } from "./constants.js";
 import { focusInputPane, focusedInputPaneKind } from "./prompt.js";
 import { clampFlowSplitSize, clampShellOutputSplitSize, clampTicketDrawerSize, els, state } from "./state.js";
-import { renderShellOutputPane, terminalBottomRestorer } from "./terminal-render.js";
+import {
+  followTerminalToLatestDuringLayout,
+  renderShellOutputPane,
+  terminalAtLatest,
+  terminalBottomRestorer,
+} from "./terminal-render.js";
+
+// The pane splits animate via the --motion-pane transition (110ms), so a
+// one-shot scroll restore lands on pre-transition geometry; follow the bottom
+// for the whole animation instead when the terminal is anchored there.
+const PANE_MOTION_FOLLOW_MS = 160;
+
+function terminalBottomKeeper() {
+  const terminal = els.flowPane.querySelector(".terminal");
+  if (terminal && terminalAtLatest(terminal)) {
+    return () => followTerminalToLatestDuringLayout(terminal, PANE_MOTION_FOLLOW_MS);
+  }
+  return terminalBottomRestorer();
+}
 
 export function setTicketDrawerHidden(hidden) {
+  const restoreTerminalBottom = terminalBottomKeeper();
   state.ticketDrawerHidden = hidden;
   document.body.classList.toggle("tickets-collapsed", hidden);
   els.ticketDrawer.setAttribute("aria-label", hidden ? "Expand tickets" : "Tickets");
@@ -20,6 +39,7 @@ export function setTicketDrawerHidden(hidden) {
   else els.ticketDrawer.removeAttribute("tabindex");
   applyTicketDrawerSize();
   applyFlowSplitSize();
+  restoreTerminalBottom();
 }
 
 export function toggleTicketDrawerHidden() {
@@ -40,7 +60,7 @@ export function setTicketDrawerSize(value) {
 }
 
 export function setLinearPaneHidden(hidden) {
-  const restoreTerminalBottom = terminalBottomRestorer();
+  const restoreTerminalBottom = terminalBottomKeeper();
   if (!hidden && state.flowSplitSize <= 1) state.flowSplitSize = 50;
   state.linearPaneHidden = hidden;
   document.body.classList.toggle("linear-pane-hidden", hidden);
@@ -58,7 +78,7 @@ export function toggleLinearPaneHidden() {
 }
 
 export function setShellPaneHidden(hidden) {
-  const restoreTerminalBottom = terminalBottomRestorer();
+  const restoreTerminalBottom = terminalBottomKeeper();
   state.shellPaneHidden = hidden;
   document.body.classList.toggle("shell-pane-hidden", hidden);
   const shellPanel = els.flowPane.querySelector(".shell-command-panel");
