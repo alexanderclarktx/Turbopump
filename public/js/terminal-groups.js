@@ -1,11 +1,17 @@
 import { flowAgentRunning, flowShellRunning } from "./flows.js";
-import { activeAgentProviderKind } from "./slash-commands.js";
 import { state } from "./state.js";
 import { formatTerminalMessage } from "./terminal-render.js";
 
+export function agentSenderLabel() {
+  const flow = state.flows.find((item) => item.id === state.selectedFlowId) || null;
+  const model = String(flow?.agentModel || "").trim();
+  if (!model) return flow?.agentProvider === "claude" ? "claude" : "codex";
+  return model.replace(/^claude-/, "");
+}
+
 export function logMeta(source) {
   const userLabel = state.linearViewer?.name || state.linearViewerName || "user";
-  const agentLabel = activeAgentProviderKind();
+  const agentLabel = agentSenderLabel();
   if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };
   const map = {
     user: { label: userLabel, marker: ">", tone: "user" },
@@ -302,6 +308,7 @@ export function appendTerminalGroup(groups, log, options = {}) {
     createdAt: log.createdAt,
     lastAt: log.lastCreatedAt || log.createdAt,
     boundaryBefore: Boolean(options.forceNew),
+    traceContent: Boolean(options.traceContent),
   };
   groups.push(group);
   return group;
@@ -470,7 +477,7 @@ export function terminalGroups(logs, flow) {
         traceGroups.set(traceRange.key, traceGroup);
         groups.push(traceGroup);
       }
-      appendTerminalGroup(traceGroup.children, log, { forceNew: forceTerminalGroupBoundary });
+      appendTerminalGroup(traceGroup.children, log, { forceNew: forceTerminalGroupBoundary, traceContent: true });
       forceTerminalGroupBoundary = false;
       traceGroup.lastAt = log.createdAt;
       continue;

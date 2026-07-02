@@ -98,6 +98,7 @@ import {
   flushDeferredTerminalLogRender,
   pauseTerminalFollow,
   resumeTerminalFollow,
+  renderLogs,
   scheduleMarkdownCodeCopyPositionUpdate,
   startMarkdownTableColumnResize,
   terminalAtLatest,
@@ -109,6 +110,9 @@ import {
   handleLinearDetailClick,
   handleLinearOptionsClose,
   handleLinearOptionsOpen,
+  handleLinearTitleKeydown,
+  handleLinearTitleOutsidePointerDown,
+  handleLinearTitleSubmit,
   handleTicketGridDragOver,
   hideFloatingLinearOptions,
   loadLinearTickets,
@@ -137,6 +141,7 @@ async function bootstrap() {
   state.lastSavedRepoConfig = repoConfigSignature();
   els.agentDeveloperInstructions.value = data.agents.developerInstructions || "";
   state.defaultAgentDeveloperInstructions = data.agents.defaultDeveloperInstructions || "";
+  state.defaultAgentProvider = data.agents.defaultProvider === "claude" ? "claude" : "codex";
   state.lastSavedAgentConfig = agentConfigSignature();
   state.linearSignedIn = data.linear.signedIn;
   setDefaultSettingsState(data.linear);
@@ -307,7 +312,20 @@ els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => 
 
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 
+els.agentTraceToggle.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  state.agentTraceHidden = !state.agentTraceHidden;
+  els.agentTraceToggle.setAttribute("aria-pressed", String(state.agentTraceHidden));
+  els.agentTraceToggle.setAttribute("aria-label", state.agentTraceHidden ? "Show tool output messages" : "Hide tool output messages");
+  renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });
+});
+
 els.flowPane.addEventListener("click", handleLinearDetailClick);
+
+els.flowPane.addEventListener("submit", handleLinearTitleSubmit);
+
+els.flowPane.addEventListener("keydown", handleLinearTitleKeydown);
 
 els.flowPane.addEventListener("mouseover", handleLinearOptionsOpen);
 
@@ -323,6 +341,8 @@ els.flowPane.addEventListener("scroll", (event) => {
   scheduleMarkdownCodeCopyPositionUpdate();
   if (shouldHideFloatingLinearOptionsForScroll(event)) hideFloatingLinearOptions();
 }, { capture: true, passive: true });
+
+document.addEventListener("pointerdown", handleLinearTitleOutsidePointerDown);
 
 window.addEventListener("resize", () => {
   scheduleMarkdownCodeCopyPositionUpdate();

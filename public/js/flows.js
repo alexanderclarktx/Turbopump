@@ -34,6 +34,10 @@ import {
 } from "./tickets.js";
 import { escapeAttribute, toast } from "./ui.js";
 
+const defaultCodexModel = "gpt-5.5";
+const defaultClaudeModel = "claude-fable-5";
+const defaultCodexReasoningEffort = "medium";
+
 export function githubCiStatus(flow) {
   const status = String(flow?.githubCiStatus || "unknown").toLowerCase();
   if (status === "success" || status === "pending" || status === "failure" || status === "merged") return status;
@@ -297,11 +301,24 @@ export function tokenUsageOnlyFlowChanges(previousFlows, nextFlows) {
 
 export function agentModelLabel(flow) {
   if (!flow) return "unknown";
+  const provider = agentProviderKindForFlow(flow);
   return [
-    flow.agentModel || "unknown",
-    flow.agentReasoningEffort || "",
+    flow.agentModel || (provider === "claude" ? defaultClaudeModel : defaultCodexModel),
+    provider === "codex" ? flow.agentReasoningEffort || defaultCodexReasoningEffort : "",
     flow.agentServiceTier === "fast" ? "fast" : "",
   ].filter(Boolean).join(" ");
+}
+
+export function wouldBeAgentContext(ticket) {
+  if (!ticket?.identifier) return null;
+  const provider = state.defaultAgentProvider === "claude" ? "claude" : "codex";
+  const issueSlug = ticket.identifier.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return {
+    agentProvider: provider,
+    agentModel: provider === "claude" ? defaultClaudeModel : defaultCodexModel,
+    agentReasoningEffort: provider === "codex" ? defaultCodexReasoningEffort : "",
+    branchName: issueSlug ? `turbo/${issueSlug}` : "",
+  };
 }
 
 export function agentProviderIcon(flow) {
@@ -518,7 +535,7 @@ export function renderFlowPane(options = {}) {
   syncTicketInputState(issueId);
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
-  renderAgentContext(flow);
+  renderAgentContext(flow || wouldBeAgentContext(ticket));
   renderAgentImageContext();
   if (!issueId) {
     return;

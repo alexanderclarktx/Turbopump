@@ -206,6 +206,21 @@
               aria-label="Expand Shell pane"
               ></button>
               <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
+              <div class="agent-output-toolbar" role="toolbar" aria-label="Agent output controls">
+                <button
+                  id="agentTraceToggle"
+                  class="icon-button agent-output-button"
+                  type="button"
+                  aria-pressed="true"
+                  aria-label="Show tool output messages"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6" />
+                    <path d="m16 16 4 4" />
+                    <path class="agent-output-slash" d="M4 20 20 4" />
+                  </svg>
+                </button>
+              </div>
               <div class="terminal" role="log" aria-live="polite"></div>
               <div
                 class="shell-output-resizer"

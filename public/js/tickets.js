@@ -707,6 +707,20 @@ export function handleLinearDetailClick(event) {
     return;
   }
 
+  const editTitleButton = event.target.closest("[data-linear-title-edit]");
+  if (editTitleButton && els.flowPane.contains(editTitleButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    state.editingLinearTitleIssueId = editTitleButton.dataset.issue || "";
+    renderFlowPane();
+    requestAnimationFrame(() => {
+      const input = els.flowPane.querySelector(".linear-title-input");
+      input?.focus();
+      input?.select?.();
+    });
+    return;
+  }
+
   const priorityButton = event.target.closest("[data-linear-priority-option]");
   if (priorityButton && floatingLinearOptionsTarget(priorityButton)) {
     event.preventDefault();
@@ -733,6 +747,34 @@ export function handleLinearDetailClick(event) {
     return;
   }
   void moveTicketToLinearStatus(issueId, { stateId, status });
+}
+
+export function handleLinearTitleSubmit(event) {
+  const form = event.target instanceof Element ? event.target.closest("[data-linear-title-form]") : null;
+  if (!form || !els.flowPane.contains(form)) return;
+  event.preventDefault();
+  const input = form.querySelector("[name='title']");
+  const issueId = form.dataset.issue || "";
+  if (!(input instanceof HTMLInputElement) || !issueId) return;
+  void updateLinearIssueTitle(issueId, input.value);
+}
+
+export function handleLinearTitleKeydown(event) {
+  if (event.key !== "Escape") return;
+  const input = event.target instanceof Element ? event.target.closest(".linear-title-input") : null;
+  if (!input || !els.flowPane.contains(input)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.editingLinearTitleIssueId = "";
+  renderFlowPane();
+}
+
+export function handleLinearTitleOutsidePointerDown(event) {
+  if (!state.editingLinearTitleIssueId) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest("[data-linear-title-form], [data-linear-title-edit]")) return;
+  state.editingLinearTitleIssueId = "";
+  renderFlowPane();
 }
 
 export function isLinearIssuePinned(identifier) {
@@ -968,6 +1010,50 @@ export function replaceLinearIssue(issue) {
       loading: false,
       issue: mergeLinearIssue(cached.issue, issue),
     });
+  }
+}
+
+export async function updateLinearIssueTitle(issueId, title) {
+  const ticket = state.linearTickets.find((item) => item.identifier === issueId);
+  const detailIssue = state.linearDetails.get(issueId)?.issue;
+  const flow = flowForLinearIssue(issueId);
+  const issue = ticket || detailIssue || (flow ? { id: "", identifier: issueId, title: flow.title, url: flow.linearIssueUrl } : null);
+  const nextTitle = title.trim();
+  if (!issue || !nextTitle || nextTitle === issue.title) {
+    state.editingLinearTitleIssueId = "";
+    renderFlowPane();
+    return;
+  }
+
+  const previousTickets = state.linearTickets;
+  const previousDetail = state.linearDetails.get(issueId);
+  const previousFlows = state.flows;
+  if (ticket || detailIssue) replaceLinearIssue({ ...issue, title: nextTitle });
+  if (flow) upsertFlow({ ...flow, title: nextTitle });
+  state.editingLinearTitleIssueId = "";
+  renderTickets();
+  renderFlowPane();
+  els.ticketState.textContent = `Renaming ${issueId}.`;
+
+  try {
+    const data = await api(`/api/linear/issues/${encodeURIComponent(issueId)}/title`, {
+      method: "POST",
+      body: JSON.stringify({ issueId: issue.id, title: nextTitle }),
+    });
+    if (data.issue) replaceLinearIssue(data.issue);
+    if (data.flow) upsertFlow(data.flow);
+    syncLinearTicketsWithFlows();
+    renderTickets();
+    renderFlowPane();
+    els.ticketState.textContent = formatLastUpdated();
+  } catch (error) {
+    state.linearTickets = previousTickets;
+    state.flows = previousFlows;
+    if (previousDetail) state.linearDetails.set(issueId, previousDetail);
+    else state.linearDetails.delete(issueId);
+    renderTickets();
+    renderFlowPane();
+    els.ticketState.textContent = error.message;
   }
 }
 
@@ -1301,6 +1387,27 @@ export function renderLinearDetail(context, options = {}) {
   const statusControl = renderLinearStatusControl(issue, statusName);
   const githubCiPill = renderGithubCiPill(context.flow);
   const pinButton = renderLinearPinButton(issue);
+  const title = issue.title || context.title;
+  const issueId = issue.identifier || context.issueId;
+  const editingTitle = state.editingLinearTitleIssueId === issueId;
+  const titleHtml = editingTitle
+    ? `<form class="linear-title-form" data-linear-title-form="true" data-issue="${escapeAttribute(issueId)}">
+        <input class="linear-title-input" name="title" value="${escapeAttribute(title)}" autocomplete="off" required>
+        <button class="linear-title-edit linear-title-save" type="submit" aria-label="Save Linear title">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 13l4 4L19 7" />
+          </svg>
+        </button>
+      </form>`
+    : `<div class="linear-title-row">
+        <h3>${escapeHtml(title)}</h3>
+        <button class="linear-title-edit" type="button" data-linear-title-edit="true" data-issue="${escapeAttribute(issueId)}" aria-label="Edit Linear title">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 20h4L18.5 9.5l-4-4L4 16v4Z" />
+            <path d="m13.5 6.5 4 4" />
+          </svg>
+        </button>
+      </div>`;
   const issueDescription = issue.description || "";
   const descriptionHtml = issueDescription.trim()
     ? `<div class="linear-description linear-markdown">${options.light ? escapeHtml(issueDescription) : renderLinearMarkdown(issueDescription, "")}</div>`
@@ -1316,7 +1423,7 @@ export function renderLinearDetail(context, options = {}) {
             </a>
             ${pinButton}
           </div>
-          <h3>${escapeHtml(issue.title || context.title)}</h3>
+          ${titleHtml}
         </div>
       </div>
       <div class="linear-meta">
