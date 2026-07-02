@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 const html = await Bun.file("public/index.html").text();
-const app = await Bun.file("public/app.js").text();
+const appFiles = ["public/app.js", ...[...new Bun.Glob("public/js/*.js").scanSync()].sort()];
+const app = (await Promise.all(appFiles.map((file) => Bun.file(file).text()))).join("\n");
 const css = await Bun.file("public/styles.css").text();
 const server = await Bun.file("src/server.ts").text();
 const packageJson = await Bun.file("package.json").json();
@@ -1321,7 +1322,7 @@ describe("Turbopump pane markup", () => {
   });
 
   test("renders Markdown headings, inline formatting, and code blocks in Linear and Agent panes", () => {
-    expect(app).toContain('import { renderInlineMarkdown, renderLinearMarkdown } from "./linear-markdown.js";');
+    expect(app).toContain('import { renderInlineMarkdown, renderLinearMarkdown } from "../linear-markdown.js";');
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");
     expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain('document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre")');
@@ -1444,7 +1445,6 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("max-height: var(--terminal-message-max-height);");
     expect(css).toContain(".shell-output-pane .terminal-entry-body-content {\n  max-height: none;\n  overflow: visible;\n}");
     expect(css).toContain(".shell-output-pane .terminal-entry-overflow-marker {\n  display: none;\n}");
-    expect(app).not.toContain('entry.classList.contains("terminal-entry-assistant")');
     expect(css).not.toContain(".terminal-entry-assistant .terminal-entry-body-content");
     expect(css).not.toContain(".terminal-entry-assistant .terminal-entry-overflow-marker");
     expect(css).toContain(".terminal-entry-body-content");
@@ -1453,7 +1453,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function terminalMessageContent(body)");
     expect(app).toContain('if (root.closest?.(".shell-output-pane")) return;');
     expect(app).toContain('body.closest(".shell-output-pane")');
-    expect(app).not.toContain('entry.classList.contains("terminal-entry-assistant")');
+    expect(app).toContain('entry.classList.contains("terminal-entry-assistant") || entry.classList.contains("terminal-entry-output")');
+    expect(app).toContain('!entry.closest(".terminal-trace-body")');
     expect(app).toContain('marker.textContent = ". . .";');
     expect(app).toContain("body.appendChild(marker);");
     expect(app).toContain("applyTerminalMessageClamps(terminal);");
@@ -2348,6 +2349,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("/^interrupt requested\\b/");
     expect(app).toContain("/^[$]\\s*codex app-server --listen stdio:\\/\\/$/i");
     expect(app).toContain("/^Codex thread \\S+ ready$/i");
+    expect(app).toContain('log.source === "agent:tool-result" && message === "completed"');
     expect(app).toContain('log.source === "agent:tool-result" && message === "completed exit 0"');
     expect(app).toContain('log.source === "agent:tool-result" && message === "failed exit 7"');
     expect(app).toContain("function plainTerminalText(message)");
@@ -2461,7 +2463,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('log.flowId === state.selectedFlowId &&\n        state.messageSubmitting &&');
     expect(app).toContain("log.flowId === state.messageSubmittingFlowId");
     expect(app).toContain('scheduleLogRender(log.flowId, shouldScrollToSubmittedPrompt ? { scrollToLatest: true } : {});');
-    expect(app).toContain("const LOG_PAGE_SIZE = 200;");
+    expect(app).toContain("const LOG_PAGE_SIZE = 1000;");
     expect(app).toContain("const AGENT_TRACE_INITIAL_TURN_COUNT = 6;");
     expect(app).toContain("const AGENT_TRACE_TURN_PAGE_SIZE = 6;");
     expect(app).toContain("while (true)");
@@ -2503,7 +2505,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('ws.addEventListener("open", () => {');
     expect(app).toContain("requestFlowSnapshot(flow.id);");
     expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
-    expect(app).toContain("void loadLogs(flow.id);");
+    expect(app).toContain("void loadLogs(flow.id, { resetCursor: true });");
   });
 
   test("keeps ticket switching scoped to the selected panes", () => {

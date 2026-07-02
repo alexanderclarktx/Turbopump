@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-const app = await Bun.file("public/app.js").text();
+const appFiles = ["public/app.js", ...[...new Bun.Glob("public/js/*.js").scanSync()].sort()];
+const app = (await Promise.all(appFiles.map((file) => Bun.file(file).text()))).join("\n");
 const css = await Bun.file("public/styles.css").text();
 const server = await Bun.file("src/server.ts").text();
 const packageJson = await Bun.file("package.json").json();
@@ -32,6 +33,8 @@ describe("Agent providers", () => {
 
   test("keeps codex behavior behind the codex provider", () => {
     expect(server).toContain("const codexProvider: AgentProvider = {");
+    expect(server).toContain('const codexDefaultModel = "gpt-5.5";');
+    expect(server).toContain("model: flow.agentModel || codexDefaultModel,");
     expect(server).toContain("async function handleCodexSlashCommand(flow: Flow, command: string, message: string, userLogId: number)");
     expect(server).toContain("startRuntime: (flow) => startCodexAppServer(flow),");
     expect(server).toContain("async function interruptCodexTurn(runtime: RuntimeProcess)");
@@ -115,6 +118,8 @@ describe("Agent providers", () => {
     expect(server).toContain(
       "select source, message from logs where flowId = ? and source in ('user', 'agent:message', 'agent:message-boundary') order by id asc",
     );
+    expect(server).toContain('const claudeDefaultModel = "claude-fable-5";');
+    expect(server).toContain('agentModel: kind === "claude" ? claudeDefaultModel : codexDefaultModel,');
     expect(server).toContain("setSetting(handoffPendingSettingKey(flow.id), providerHandoffPrompt(flow, agentProviders[current].label));");
     expect(server).toContain("function composeTurnMessage(flowId: string, message: string)");
     expect(server).toContain("function takePendingHandoff(flowId: string)");
