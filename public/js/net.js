@@ -2,10 +2,12 @@ import { renderCheckouts, setCheckouts } from "./checkouts.js";
 import { loadFlowDiff } from "./diff.js";
 import {
   githubCiOnlyFlowChanges,
+  renderAgentContext,
   renderFlowPane,
   runtimeOnlyFlowChanges,
   selectedFlow,
   setFlows,
+  tokenUsageOnlyFlowChanges,
   upsertFlow,
 } from "./flows.js";
 import { appendLogEntry, loadLogs, removeLogEntries } from "./logs.js";
@@ -118,7 +120,9 @@ export function connectWs() {
       const flow = selectedFlow();
       if (flow) {
         requestFlowSnapshot(flow.id);
-        void loadLogs(flow.id);
+        // Reload the full recent window: rows already fetched can be compacted
+        // (merged into earlier ids) server-side while this client is offline.
+        void loadLogs(flow.id, { resetCursor: true });
       }
     }, { once: true });
     ws.addEventListener("error", () => {
@@ -139,6 +143,10 @@ export function connectWs() {
         renderTickets();
         const flow = selectedFlow();
         if (flow) scheduleLogRender(flow.id, { force: true });
+        return;
+      }
+      if (tokenUsageOnlyFlowChanges(previousFlows, state.flows)) {
+        renderAgentContext(selectedFlow());
         return;
       }
       if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {

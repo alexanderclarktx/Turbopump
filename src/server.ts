@@ -123,6 +123,7 @@ type GithubCiState = "success" | "pending" | "failure" | "merged" | "unknown";
 
 const rootDir = process.cwd();
 const agentHeartbeatSweepIntervalMs = 5000;
+const githubCiCheckedAtRefreshMs = 5 * 60 * 1000;
 const agentRuntimeStartGraceMs = 30000;
 const agentRuntimeStaleMs = 120000;
 const warmedRepoPullIntervalMs = 60000;
@@ -182,6 +183,8 @@ if (!existsSync(dbPath) && existsSync(legacyDbPath)) copyFileSync(legacyDbPath, 
 
 const db = new Database(dbPath);
 db.exec("pragma busy_timeout = 5000");
+db.exec("pragma journal_mode = WAL");
+db.exec("pragma synchronous = normal");
 
 function tryMigration(sql: string) {
   try {
@@ -448,6 +451,50 @@ function getStoredSetting(key: string) {
 function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
 }
+
+const compactableLogSources = new Set(["agent:message", "agent:reasoning", "agent:thinking"]);
+const streamingLogsCompactedSettingKey = "streamingLogsCompactedV1";
+const logsForCompactionStmt = db.query("select id, source, message from logs where flowId = ? and id > ? order by id asc");
+const updateLogMessageStmt = db.query("update logs set message = ? where id = ?");
+const logFlowIdsStmt = db.query("select distinct flowId from logs");
+
+function compactFlowStreamingLogs(flowId: string, afterId = 0) {
+  const rows = logsForCompactionStmt.all(flowId, afterId) as Array<{ id: number; source: string; message: string }>;
+  let removed = 0;
+  const applyRun = (start: number, end: number) => {
+    if (end - start < 2 || !compactableLogSources.has(rows[start].source)) return;
+    let message = "";
+    for (let index = start; index < end; index += 1) message += rows[index].message;
+    updateLogMessageStmt.run(message, rows[start].id);
+    for (let index = start + 1; index < end; index += 1) deleteLogByIdStmt.run(rows[index].id);
+    removed += end - start - 1;
+  };
+  db.transaction(() => {
+    let start = 0;
+    for (let index = 1; index <= rows.length; index += 1) {
+      if (index < rows.length && rows[index].source === rows[start].source) continue;
+      applyRun(start, index);
+      start = index;
+    }
+  })();
+  return removed;
+}
+
+function compactAllStreamingLogs() {
+  if (getStoredSetting(streamingLogsCompactedSettingKey)) return;
+  const started = Date.now();
+  let removed = 0;
+  for (const row of logFlowIdsStmt.all() as Array<{ flowId: string }>) {
+    removed += compactFlowStreamingLogs(row.flowId);
+  }
+  setSetting(streamingLogsCompactedSettingKey, now());
+  if (removed) {
+    db.exec("pragma wal_checkpoint(truncate)");
+    console.log(`compacted streaming logs: removed ${removed} rows in ${Date.now() - started}ms`);
+  }
+}
+
+compactAllStreamingLogs();
 
 function persistedServePid() {
   const value = Number(getSetting(serveProcessPidSettingKey));
@@ -1049,6 +1096,7 @@ function setSelectedGithubCiFlow(flowId: string) {
 
 async function pollSelectedGithubCiStatus() {
   if (githubCiPolling) return;
+  if (clients.size === 0) return;
   const flowId = selectedGithubCiFlowId;
   const flow = flowId ? getFlow(flowId) : null;
   if (!flow?.prUrl) return;
@@ -1057,11 +1105,20 @@ async function pollSelectedGithubCiStatus() {
     const ci = await getGithubCiStatus(flow);
     const current = getFlow(flowId);
     if (!current || current.prUrl !== flow.prUrl || selectedGithubCiFlowId !== flowId) return;
+    const targetUrl = ci.targetUrl || flow.prUrl;
+    const description = ci.description || "";
+    const changed =
+      ci.state !== current.githubCiStatus ||
+      targetUrl !== current.githubCiTargetUrl ||
+      description !== current.githubCiDescription;
+    const checkedAtMs = Date.parse(current.githubCiCheckedAt || "");
+    const checkedAtStale = !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs > githubCiCheckedAtRefreshMs;
+    if (!changed && !checkedAtStale) return;
     updateFlow(flowId, {
       githubCiStatus: ci.state,
       githubCiCheckedAt: ci.checkedAt || now(),
-      githubCiTargetUrl: ci.targetUrl || flow.prUrl,
-      githubCiDescription: ci.description || "",
+      githubCiTargetUrl: targetUrl,
+      githubCiDescription: description,
     });
   } finally {
     githubCiPolling = false;
@@ -2040,6 +2097,8 @@ function createCompletedTurnTraceGroup(flowId: string, beforeId: number) {
 }
 
 function createCompletedTurnTraceGroupAfterLog(flowId: string, afterId: number | undefined, beforeId: number) {
+  const turnStartId = afterId || (latestUserLogBeforeStmt.get(flowId, beforeId) as { id: number } | null)?.id || 0;
+  if (turnStartId) compactFlowStreamingLogs(flowId, turnStartId);
   if (afterId) {
     createTraceGroupBetweenLogs(flowId, afterId, beforeId);
     return;
@@ -4361,7 +4420,9 @@ function serveStatic(url: URL) {
     const file = Bun.file(resolvedVendor);
     return file.exists().then((exists) => {
       if (!exists) return new Response("Not found", { status: 404 });
-      return new Response(file, { headers: { "content-type": "text/javascript; charset=utf-8" } });
+      return new Response(file, {
+        headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+      });
     });
   }
 
@@ -4370,7 +4431,7 @@ function serveStatic(url: URL) {
   const file = Bun.file(resolved);
   return file.exists().then((exists) => {
     if (!exists) return new Response("Not found", { status: 404 });
-    return new Response(file);
+    return new Response(file, { headers: { "cache-control": "no-cache" } });
   });
 }
 

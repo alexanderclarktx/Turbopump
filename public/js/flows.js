@@ -274,6 +274,27 @@ export function githubCiOnlyFlowChanges(previousFlows, nextFlows) {
   return true;
 }
 
+export function tokenUsageOnlyFlowChanges(previousFlows, nextFlows) {
+  const ignoredKeys = new Set([
+    "agentContextTokensUsed",
+    "agentContextWindow",
+    "agentTotalTokensUsed",
+    "updatedAt",
+  ]);
+  if ((previousFlows || []).length !== (nextFlows || []).length) return false;
+  const previousById = new Map((previousFlows || []).map((flow) => [flow.id, flow]));
+  for (const next of nextFlows || []) {
+    const previous = previousById.get(next.id);
+    if (!previous) return false;
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+    for (const key of keys) {
+      if (ignoredKeys.has(key)) continue;
+      if (previous[key] !== next[key]) return false;
+    }
+  }
+  return true;
+}
+
 export function agentModelLabel(flow) {
   if (!flow) return "unknown";
   return [

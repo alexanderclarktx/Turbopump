@@ -20,6 +20,8 @@ import {
 } from "./terminal-render.js";
 import { sortedLinearTickets } from "./tickets.js";
 
+const coalescedStreamingSources = new Set(["agent:message", "agent:reasoning", "agent:thinking"]);
+
 export function appendLogEntry(log) {
   const flowId = log.flowId;
   const id = Number(log.id || Date.now());
@@ -39,7 +41,12 @@ export function appendLogEntry(log) {
   };
   const lastEntry = list[list.length - 1];
   if (!lastEntry || Number(lastEntry.id) < id) {
-    list.push(entry);
+    if (lastEntry && lastEntry.source === entry.source && coalescedStreamingSources.has(entry.source)) {
+      lastEntry.message += entry.message;
+      lastEntry.lastCreatedAt = entry.createdAt;
+    } else {
+      list.push(entry);
+    }
   } else {
     const insertAt = list.findIndex((item) => Number(item.id) > id);
     list.splice(insertAt === -1 ? list.length : insertAt, 0, entry);
@@ -61,6 +68,7 @@ export async function loadLogs(id, options = {}) {
 
   const appendedLogs = [];
   if (shouldLoadRecent) {
+    let renderedFirstPage = false;
     while (true) {
       const before = state.firstLogId.get(id) || Number.MAX_SAFE_INTEGER;
       const data = await wsRequest("logs", { flowId: id, before, limit: LOG_PAGE_SIZE });
@@ -68,6 +76,11 @@ export async function loadLogs(id, options = {}) {
         if (appendLogEntry(log)) appendedLogs.push(log);
       }
       rememberLoadedLogBounds(id, data.logs);
+      if (!renderedFirstPage && !options.shellOnly && data.logs.length) {
+        // Paint the newest page immediately; older pages keep loading behind.
+        renderedFirstPage = true;
+        renderLogs(id, { ...options, suppressIncoming: true });
+      }
       if (data.logs.length < LOG_PAGE_SIZE) {
         state.logOlderCompleteFlowIds.add(id);
         break;

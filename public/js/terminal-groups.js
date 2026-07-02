@@ -289,7 +289,7 @@ export function appendTerminalGroup(groups, log, options = {}) {
   const previous = groups[groups.length - 1];
   if (!options.forceNew && previous && previous.source === log.source && isStreamingSource(log.source)) {
     previous.message += log.message;
-    previous.lastAt = log.createdAt;
+    previous.lastAt = log.lastCreatedAt || log.createdAt;
     previous.logIds.push(log.id);
     return previous;
   }
@@ -300,7 +300,7 @@ export function appendTerminalGroup(groups, log, options = {}) {
     source: log.source,
     message: log.message,
     createdAt: log.createdAt,
-    lastAt: log.createdAt,
+    lastAt: log.lastCreatedAt || log.createdAt,
     boundaryBefore: Boolean(options.forceNew),
   };
   groups.push(group);

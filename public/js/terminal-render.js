@@ -815,6 +815,12 @@ export function terminalGroupsSignature(groups) {
   return groups.map((group) => terminalGroupSignaturePart(group)).join("\u001f");
 }
 
+export function terminalGroupNodeSignature(group) {
+  const logIds = group.logIds || [group.id];
+  const deleting = logIds.some((logId) => state.deletingOutputLogIds.has(logId));
+  return [terminalGroupSignaturePart(group), Boolean(group.liveStreaming), Boolean(group.turnPending), deleting].join(":");
+}
+
 export function syncClosedTerminalTraceChildren(terminal, groups) {
   const childrenByKey = new Map(
     groups
@@ -908,12 +914,24 @@ export function renderLogs(id, options = {}) {
   const scrollTopBeforeRender = terminal.scrollTop;
   const animateIncoming = !options.suppressIncoming && !agentWorking;
   const previousKeys = terminal._flowLogFlowId === id ? terminal._flowLogRenderedKeys : null;
+  const nodeCache = terminal._flowLogFlowId === id && terminal._flowLogNodeCache instanceof Map ? terminal._flowLogNodeCache : new Map();
   const nextKeys = new Set(groups.map((group) => terminalGroupRenderKey(group)));
+  const nextNodeCache = new Map();
   const fragment = document.createDocumentFragment();
   if (canLoadMore) appendTerminalLoadMoreButton(fragment, { loading: loadMoreLoading });
   for (const group of groups) {
     const renderKey = terminalGroupRenderKey(group);
+    const nodeSignature = terminalGroupNodeSignature(group);
+    const cached = nodeCache.get(renderKey);
+    if (cached && cached.signature === nodeSignature && !nextNodeCache.has(renderKey)) {
+      cached.node.classList.remove("terminal-entry-incoming");
+      fragment.appendChild(cached.node);
+      nextNodeCache.set(renderKey, cached);
+      continue;
+    }
     appendTerminalBlock(fragment, group, { incoming: Boolean(animateIncoming && previousKeys && !previousKeys.has(renderKey)) });
+    const node = fragment.lastElementChild;
+    if (node && !nextNodeCache.has(renderKey)) nextNodeCache.set(renderKey, { signature: nodeSignature, node });
   }
   if (agentWorking) appendTerminalWorkingBlock(fragment);
   terminal.replaceChildren(fragment);
@@ -921,6 +939,7 @@ export function renderLogs(id, options = {}) {
   terminal._flowLogFlowId = id;
   terminal._flowLogSignature = signature;
   terminal._flowLogRenderedKeys = nextKeys;
+  terminal._flowLogNodeCache = nextNodeCache;
   terminal._flowLogPending = "";
   terminal._flowLogPendingOptions = null;
   if (atLatest) scrollTerminalToLatestNow(terminal);

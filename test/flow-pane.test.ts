@@ -2463,7 +2463,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('log.flowId === state.selectedFlowId &&\n        state.messageSubmitting &&');
     expect(app).toContain("log.flowId === state.messageSubmittingFlowId");
     expect(app).toContain('scheduleLogRender(log.flowId, shouldScrollToSubmittedPrompt ? { scrollToLatest: true } : {});');
-    expect(app).toContain("const LOG_PAGE_SIZE = 200;");
+    expect(app).toContain("const LOG_PAGE_SIZE = 1000;");
     expect(app).toContain("const AGENT_TRACE_INITIAL_TURN_COUNT = 6;");
     expect(app).toContain("const AGENT_TRACE_TURN_PAGE_SIZE = 6;");
     expect(app).toContain("while (true)");
@@ -2505,7 +2505,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('ws.addEventListener("open", () => {');
     expect(app).toContain("requestFlowSnapshot(flow.id);");
     expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
-    expect(app).toContain("void loadLogs(flow.id);");
+    expect(app).toContain("void loadLogs(flow.id, { resetCursor: true });");
   });
 
   test("keeps ticket switching scoped to the selected panes", () => {
