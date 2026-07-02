@@ -141,9 +141,11 @@ const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
 const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
+const codexDefaultModel = "gpt-5.5";
 const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
 const defaultAgentProviderSettingKey = "defaultAgentProvider";
 const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]);
+const claudeDefaultModel = "claude-fable-5";
 // Sonnet keeps the 1M context window (haiku's 200k can overflow on the large
 // sessions that need compacting) while staying much faster than fable/opus.
 const claudeCompactModel = "claude-sonnet-5";
@@ -1790,7 +1792,7 @@ function flowDeveloperInstructions(flow: Flow) {
 
 function codexThreadOverrides(flow: Flow) {
   return {
-    ...(flow.agentModel ? { model: flow.agentModel } : {}),
+    model: flow.agentModel || codexDefaultModel,
     ...(reasoningEfforts.has(flow.agentReasoningEffort as ReasoningEffort)
       ? { reasoningEffort: flow.agentReasoningEffort as ReasoningEffort }
       : {}),
@@ -3245,7 +3247,7 @@ async function switchFlowProvider(flow: Flow, target: string) {
   setSetting(handoffPendingSettingKey(flow.id), providerHandoffPrompt(flow, agentProviders[current].label));
   updateFlow(flow.id, {
     agentProvider: kind,
-    agentModel: "",
+    agentModel: kind === "claude" ? claudeDefaultModel : codexDefaultModel,
     agentContextTokensUsed: 0,
     agentContextWindow: 0,
     agentTotalTokensUsed: 0,
