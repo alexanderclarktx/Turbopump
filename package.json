@@ -7,7 +7,9 @@
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "check": "bun build src/server.ts --target=bun --outfile=/tmp/turbopump-server.js",
-    "test": "bun test"
+    "test": "bun test",
+    "branch": "git checkout main && git pull && git branch -D $(whoami) ; git checkout -b $(whoami)",
+    "b": "bun branch"
   },
   "engines": {
     "bun": ">=1.3.0"
