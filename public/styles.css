@@ -2551,7 +2551,7 @@ body.theme-dark .linear-pin-toggle.active {
   margin: 2px 0 0;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: 2px;
   background: transparent;
   color: var(--ink);
   font: inherit;
@@ -2561,7 +2561,7 @@ body.theme-dark .linear-pin-toggle.active {
   outline: 0;
   overflow: hidden;
   box-shadow: none;
-  clip-path: inset(0 round 5px);
+  clip-path: inset(0 round 2px);
   transition: none;
 }
 
