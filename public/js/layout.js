@@ -103,6 +103,8 @@ export function revealShellPaneForInputFocus() {
 export function applyTheme(theme) {
   state.theme = theme;
   const dark = theme === "dark";
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  document.documentElement.style.backgroundColor = dark ? "#111418" : "#eef0f3";
   document.body.classList.toggle("theme-dark", dark);
   document.body.classList.toggle("theme-light", !dark);
   els.themeToggle.setAttribute("aria-pressed", String(dark));

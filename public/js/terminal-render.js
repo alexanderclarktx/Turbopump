@@ -533,7 +533,7 @@ export function appendTerminalTraceGroup(fragment, group, options = {}) {
 
   const label = document.createElement("span");
   label.className = "terminal-entry-label";
-  const elapsed = formatTerminalElapsed(group.createdAt, group.lastAt);
+  const elapsed = formatTerminalElapsed(group.displayCreatedAt || group.createdAt, group.displayLastAt || group.lastAt);
   label.textContent = elapsed ? `${meta.label} (${elapsed})` : meta.label;
 
   const time = document.createElement("time");

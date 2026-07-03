@@ -56,6 +56,7 @@ import {
   saveActiveTicketInputState,
   setAgentImageDragActive,
   shellInput,
+  submitPromptCommand,
   submitPromptMessage,
   submitShellCommand,
   updateMessageInputMode,
@@ -392,6 +393,7 @@ els.flowPane.querySelector(".terminal").addEventListener(
 promptInput().addEventListener("input", () => {
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  state.slashMenuCommands = null;
   state.slashCommandIndex = 0;
   updateMessageInputMode();
   resizeMessageInput();
@@ -545,6 +547,10 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   const command = event.target.closest(".slash-command")?.dataset.command;
   if (!command) return;
   event.preventDefault();
+  if (command.startsWith("/model ")) {
+    void submitPromptCommand(command);
+    return;
+  }
   promptInput().value = command;
   resizeMessageInput();
   saveActiveTicketInputState();

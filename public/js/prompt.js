@@ -301,18 +301,19 @@ export function clearQueuedPrompt(options = {}) {
 export async function queuePromptMessage(input) {
   const flow = selectedFlow();
   if (!flow?.id || promptQueuedForFlow(flow) || !input) return false;
-  const queuedImages = [...state.pendingAgentImages];
-  const queuedMessage = agentMessageWithImages(
-    input.value.trim() || (queuedImages.length ? "Use the attached image context." : ""),
-    queuedImages,
-  );
+  const message = input.value.trim();
+  const slashCommand = message.startsWith("/");
+  const queuedImages = slashCommand ? [] : [...state.pendingAgentImages];
+  const queuedMessage = slashCommand
+    ? message
+    : agentMessageWithImages(message || (queuedImages.length ? "Use the attached image context." : ""), queuedImages);
   if (!queuedMessage.trim()) return false;
   const queued = {
     flowId: flow.id,
     message: queuedMessage,
   };
   state.queuedPrompt = queued;
-  state.pendingAgentImages = [];
+  if (!slashCommand) state.pendingAgentImages = [];
   cancelHistorySearch();
   resetInputHistoryNavigation();
   updateMessageInputMode();
@@ -328,7 +329,7 @@ export async function queuePromptMessage(input) {
     if (state.queuedPrompt === queued) state.queuedPrompt = null;
     if (data.flow) upsertFlow(data.flow);
   } catch (error) {
-    state.pendingAgentImages = [...queuedImages, ...state.pendingAgentImages];
+    if (!slashCommand) state.pendingAgentImages = [...queuedImages, ...state.pendingAgentImages];
     if (state.queuedPrompt === queued) clearQueuedPrompt({ persist: false });
     throw error;
   }
@@ -818,8 +819,9 @@ export async function submitPromptMessage() {
     flashBlockedInput(input);
     return;
   }
-  const submittedImages = [...state.pendingAgentImages];
-  const agentMessage = agentMessageWithImages(message || "Use the attached image context.", submittedImages);
+  const slashCommand = message.startsWith("/");
+  const submittedImages = slashCommand ? [] : [...state.pendingAgentImages];
+  const agentMessage = slashCommand ? message : agentMessageWithImages(message || "Use the attached image context.", submittedImages);
   rememberInputHistory(message, "prompt");
   cancelHistorySearch();
   resetInputHistoryNavigation();
@@ -827,7 +829,7 @@ export async function submitPromptMessage() {
   state.messageSubmitting = true;
   state.messageSubmittingFlowId = initialFlow?.id || "";
   input.value = "";
-  state.pendingAgentImages = [];
+  if (!slashCommand) state.pendingAgentImages = [];
   updateMessageInputMode();
   resizeMessageInput();
   saveActiveTicketInputState();
@@ -849,7 +851,7 @@ export async function submitPromptMessage() {
     });
     if (data.flow) upsertFlow(data.flow);
   } catch (error) {
-    state.pendingAgentImages = [...submittedImages, ...state.pendingAgentImages];
+    if (!slashCommand) state.pendingAgentImages = [...submittedImages, ...state.pendingAgentImages];
     throw error;
   } finally {
     state.messageSubmitting = false;
@@ -859,5 +861,48 @@ export async function submitPromptMessage() {
     renderTickets();
     renderFlowPane();
     promptInput().focus();
+  }
+}
+
+export async function submitPromptCommand(command) {
+  const message = String(command || "").trim();
+  const input = promptInput();
+  if (!message.startsWith("/") || state.messageSubmitting) return false;
+  if (message.startsWith("/model ") && flowAgentRunning(selectedFlow())) {
+    hideSlashMenu();
+    return false;
+  }
+  if (!repoUrlConfigured()) {
+    flashBlockedInput(input);
+    return false;
+  }
+  const initialFlow = selectedFlow();
+  state.messageSubmitting = true;
+  state.messageSubmittingFlowId = initialFlow?.id || "";
+  hideSlashMenu();
+  renderTickets();
+  renderFlowPane();
+  let submittedFlowId = "";
+  try {
+    const flow = await ensureSelectedFlow();
+    if (!flow) return false;
+    submittedFlowId = flow.id;
+    state.messageSubmittingFlowId = flow.id;
+    requestFlowSnapshot(flow.id);
+    renderFlowPane();
+    renderLogs(flow.id, { force: true, scrollToLatest: true });
+    const data = await api(`/api/flows/${encodeURIComponent(flow.id)}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    });
+    if (data.flow) upsertFlow(data.flow);
+    return true;
+  } finally {
+    state.messageSubmitting = false;
+    state.messageSubmittingFlowId = "";
+    scheduleQueuedPromptFlush();
+    if (submittedFlowId) await loadLogs(submittedFlowId, { scrollToLatest: true });
+    renderTickets();
+    renderFlowPane();
   }
 }

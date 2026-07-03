@@ -4,10 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Turbopump</title>
+    <script>
+      try {
+        const storedTheme = localStorage.getItem("flow.theme");
+        const initialDark = storedTheme === "dark" || (storedTheme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.style.colorScheme = initialDark ? "dark" : "light";
+        document.documentElement.style.backgroundColor = initialDark ? "#111418" : "#eef0f3";
+      } catch {}
+    </script>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="settings-collapsed app-booting">
+    <script>
+      document.body.classList.add(document.documentElement.style.colorScheme === "dark" ? "theme-dark" : "theme-light");
+    </script>
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
     <main>
       <aside class="sidebar" id="settingsPane">
@@ -249,7 +260,7 @@
                 </div>
                 <div class="agent-context" aria-label="Current flow context" hidden>
                   <span class="agent-context-window"></span>
-                  <span class="agent-context-model"></span>
+                  <span class="agent-context-model" role="button" tabindex="0" aria-haspopup="listbox" aria-label="Change agent model"></span>
                   <button class="agent-context-diff" type="button" hidden>diff</button>
                   <a class="agent-context-branch"></a>
                 </div>

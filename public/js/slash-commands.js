@@ -6,12 +6,9 @@ const AGENT_MODELS = [
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
-  "gpt-5.3-codex",
-  "gpt-5.2",
   "claude-fable-5",
   "claude-opus-4-8",
   "claude-sonnet-5",
-  "claude-haiku-4-5",
 ];
 
 export const SLASH_COMMANDS = [
@@ -131,18 +128,13 @@ export function slashCommandMatches(value) {
 
 export function hideSlashMenu() {
   const menu = els.flowPane.querySelector(".slash-menu");
+  state.slashMenuCommands = null;
   menu.hidden = true;
   menu.replaceChildren();
 }
 
-export function renderSlashMenu() {
-  const input = promptInput();
+function renderSlashMenuItems(matches) {
   const menu = els.flowPane.querySelector(".slash-menu");
-  if (!input || document.activeElement === shellInput() || promptQueuedForSelectedFlow()) {
-    hideSlashMenu();
-    return;
-  }
-  const matches = slashCommandMatches(input.value);
   if (!matches.length) {
     hideSlashMenu();
     return;
@@ -178,6 +170,24 @@ export function renderSlashMenu() {
   });
   menu.replaceChildren(fragment);
   menu.hidden = false;
+}
+
+export function renderSlashMenuCommands(commands) {
+  state.slashMenuCommands = commands;
+  renderSlashMenuItems(commands);
+}
+
+export function renderSlashMenu() {
+  if (state.slashMenuCommands) {
+    renderSlashMenuItems(state.slashMenuCommands);
+    return;
+  }
+  const input = promptInput();
+  if (!input || document.activeElement === shellInput() || promptQueuedForSelectedFlow()) {
+    hideSlashMenu();
+    return;
+  }
+  renderSlashMenuItems(slashCommandMatches(input.value));
 }
 
 export function selectSlashCommand(index = state.slashCommandIndex) {

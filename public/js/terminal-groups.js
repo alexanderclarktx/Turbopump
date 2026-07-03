@@ -234,12 +234,35 @@ export function sortedTraceRanges(ranges) {
   return [...ranges].sort((a, b) => a.afterId - b.afterId || a.beforeId - b.beforeId);
 }
 
+export function traceRangeStartAt(logs, afterId) {
+  const startLog = logs.find((log) => Number(log.id) === afterId);
+  if (startLog) return startLog.lastCreatedAt || startLog.createdAt || "";
+  const firstLog = logs.find((log) => Number(log.id) > afterId && isTraceContentLog(log));
+  return firstLog?.lastCreatedAt || firstLog?.createdAt || "";
+}
+
+export function traceRangeEndAt(logs, beforeId) {
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const log = logs[index];
+    if (Number(log.id) < beforeId && isTraceContentLog(log)) return log.lastCreatedAt || log.createdAt || "";
+  }
+  return "";
+}
+
 export function addSanitizedTraceRange(result, seen, logs, range, afterId, beforeId, countRange = traceRangeLogCounter(logs)) {
   const key = `${afterId}:${beforeId}`;
   if (seen.has(key)) return;
   const count = countRange(afterId, beforeId);
   if (count <= 1) return;
-  result.push({ ...range, afterId, beforeId, key, count });
+  result.push({
+    ...range,
+    afterId,
+    beforeId,
+    key,
+    count,
+    displayCreatedAt: traceRangeStartAt(logs, afterId),
+    displayLastAt: traceRangeEndAt(logs, range.beforeId),
+  });
   seen.add(key);
 }
 
@@ -469,6 +492,8 @@ export function terminalGroups(logs, flow) {
           message: "",
           createdAt: log.createdAt,
           lastAt: log.createdAt,
+          displayCreatedAt: traceRange.displayCreatedAt,
+          displayLastAt: traceRange.displayLastAt,
           traceAfterId: traceRange.afterId,
           traceKind: traceRange.kind,
           defaultOpen: false,

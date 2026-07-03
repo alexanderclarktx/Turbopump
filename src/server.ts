@@ -141,11 +141,11 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
-const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
+const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
 const codexDefaultModel = "gpt-5.5";
 const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
 const defaultAgentProviderSettingKey = "defaultAgentProvider";
-const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]);
+const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"]);
 const allAgentModels = [...agentModels, ...claudeAgentModels];
 const claudeDefaultModel = "claude-fable-5";
 const claudeCompactModel = "claude-haiku-4-5";
@@ -162,7 +162,7 @@ const defaultAgentDeveloperInstructions = [
   "",
   "Update flow metadata when appropriate by POSTing JSON to:",
   "{flowMetaApiUrl}",
-  'Example body: {"prUrl":"https://github.com/org/repo/pull/123"}',
+  'Example body: {"prUrl":"https://github.com/org/repo/pull/123","linearIssueId":"ENG-123"}',
   'Each field in the body is optional.',
   "",
   "Flow ID: {flowId}",
@@ -280,6 +280,7 @@ tryMigration("alter table flows add column githubCiCheckedAt text not null defau
 tryMigration("alter table flows add column githubCiTargetUrl text not null default ''");
 tryMigration("alter table flows add column githubCiDescription text not null default ''");
 tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWindow > 0 and agentContextTokensUsed > agentContextWindow");
+tryMigration("alter table linear_issues add column assigned integer not null default 0");
 
 const clients = new Set<ServerWebSocket>();
 const agentProcesses = new Map<string, RuntimeProcess>();
@@ -421,7 +422,9 @@ const upsertLinearIssueStmt = db.query(`
 `);
 const deleteLinearIssueStmt = db.query("delete from linear_issues where identifier = ?");
 const linearIssueByIdentifierStmt = db.query("select issueJson from linear_issues where identifier = ?");
-const allLinearIssuesStmt = db.query("select issueJson from linear_issues order by updatedAt desc");
+const allLinearIssuesStmt = db.query("select identifier, issueJson, assigned from linear_issues order by updatedAt desc");
+const setLinearIssueAssignedStmt = db.query("update linear_issues set assigned = ? where identifier = ?");
+const assignedLinearIssueIdentifiersStmt = db.query("select identifier from linear_issues where assigned = 1");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -1009,7 +1012,15 @@ function normalizePrUrl(value: unknown) {
   return prUrl;
 }
 
-function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow> {
+function normalizeLinearIssueId(value: unknown) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error("linearIssueId must be a string.");
+  const parsed = parseLinearIssue(value);
+  if (!parsed.identifier) throw new Error("linearIssueId must be a Linear issue key or URL.");
+  return parsed;
+}
+
+async function flowMetaUpdate(flow: Flow, body: Record<string, unknown>): Promise<Partial<Flow>> {
   const fields: Partial<Flow> = {};
   if ("prUrl" in body) {
     fields.prUrl = normalizePrUrl(body.prUrl);
@@ -1017,6 +1028,19 @@ function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow> {
     fields.githubCiCheckedAt = "";
     fields.githubCiTargetUrl = "";
     fields.githubCiDescription = "";
+  }
+  if ("linearIssueId" in body) {
+    const parsed = normalizeLinearIssueId(body.linearIssueId);
+    if (parsed) {
+      const existing = getFlowByIssue(parsed.identifier);
+      if (existing && existing.id !== flow.id) throw new Error(`Linear issue ${parsed.identifier} already has an agent session.`);
+      const issue = await fetchLinearIssue(parsed.identifier);
+      if (!issue) throw new Error(`Linear issue ${parsed.identifier} not found.`);
+      fields.linearIssueId = parsed.identifier;
+      fields.linearIssueUrl = issue.url || parsed.url || flow.linearIssueUrl;
+      fields.title = issue.title || parsed.identifier;
+      fields.linearStatus = issue.state?.name || "";
+    }
   }
   return fields;
 }
@@ -1451,16 +1475,26 @@ function parseLinearIssue(input: string) {
   };
 }
 
-function cacheLinearIssue(issue: LinearIssue | null | undefined) {
+function cacheLinearIssue(issue: LinearIssue | null | undefined, options: { assigned?: boolean } = {}) {
   if (!issue?.identifier) return;
   const identifier = issue.identifier.toUpperCase();
   if (isDeletedLinearIssue(issue)) {
-    linearIssueCache.delete(identifier);
-    deleteLinearIssueStmt.run(identifier);
+    invalidateLinearIssue(identifier);
     return;
   }
   linearIssueCache.set(identifier, issue);
   upsertLinearIssueStmt.run(identifier, JSON.stringify(issue), issue.updatedAt || now());
+  if (options.assigned !== undefined) setLinearIssueAssignedStmt.run(options.assigned ? 1 : 0, identifier);
+}
+
+function invalidateLinearIssue(identifier: string) {
+  const issueId = identifier.toUpperCase();
+  linearIssueCache.delete(issueId);
+  deleteLinearIssueStmt.run(issueId);
+  for (const flow of listFlows()) {
+    if (flow.linearIssueId !== issueId) continue;
+    updateFlow(flow.id, { linearIssueUrl: "", linearStatus: "" });
+  }
 }
 
 function cachedLinearIssue(identifier: string) {
@@ -3616,10 +3650,14 @@ async function fetchLinearIssue(identifier: string) {
       { id: identifier },
     );
   } catch (error) {
-    if (isLinearIssueNotFoundError(error)) return null;
+    if (isLinearIssueNotFoundError(error)) {
+      invalidateLinearIssue(identifier);
+      return null;
+    }
     throw error;
   }
   const issue = body.issue ?? null;
+  if (!issue) invalidateLinearIssue(identifier);
   cacheLinearIssue(issue);
   return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
@@ -3664,10 +3702,14 @@ async function fetchLinearIssueDetail(identifier: string) {
       { id: identifier },
     );
   } catch (error) {
-    if (isLinearIssueNotFoundError(error)) return null;
+    if (isLinearIssueNotFoundError(error)) {
+      invalidateLinearIssue(identifier);
+      return null;
+    }
     throw error;
   }
   const issue = body.issue ?? null;
+  if (!issue) invalidateLinearIssue(identifier);
   cacheLinearIssue(issue);
   return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
@@ -3902,7 +3944,7 @@ async function createBlankInEngLinearIssue() {
   );
   const issue = created.issueCreate?.issue;
   if (!created.issueCreate?.success || !issue) throw new Error("Linear did not create the issue.");
-  cacheLinearIssue(issue);
+  cacheLinearIssue(issue, { assigned: true });
   return { issue, viewer: { id: data.viewer.id, name: data.viewer.name } };
 }
 
@@ -3910,68 +3952,52 @@ function isDeletedLinearIssue(issue: LinearIssue) {
   return Boolean(issue.archivedAt);
 }
 
-function isDoneLinearIssue(issue: LinearIssue) {
-  const stateName = linearWorkflowKey(issue.state?.name ?? "");
-  const stateType = linearWorkflowKey(issue.state?.type ?? "");
-  return stateType === "completed" || stateName === "done" || stateName === "completed";
-}
-
-function isDuplicateLinearIssue(issue: LinearIssue) {
-  return linearWorkflowKey(issue.state?.name ?? "") === "duplicate";
-}
-
 function isLinearIssueNotFoundError(error: unknown) {
   return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
 
-function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false, workflowStates: LinearWorkflowState[] = []) {
+// The single definition of "what tickets do we display": every issue in the db
+// marked assigned, plus flow-linked issues we know enough about to render.
+function linearTicketsFromDb() {
   const flowsByIssue = new Map(listFlows().map((flow) => [flow.linearIssueId, flow]));
-  return {
-    viewer,
-    cached,
-    workflowStates,
-    issues: issues.flatMap((issue) => {
-      const flow = flowsByIssue.get(issue.identifier);
-      if (isDeletedLinearIssue(issue)) return [];
-      if (!flow && (isDoneLinearIssue(issue) || isDuplicateLinearIssue(issue))) return [];
-      return [
-        {
-          ...issue,
-          flowId: flow?.id ?? "",
-        },
-      ];
-    }),
-  };
-}
-
-function cachedLinearIssuesFromDb() {
-  const issues: LinearIssue[] = [];
-  for (const row of allLinearIssuesStmt.all() as { issueJson: string }[]) {
+  const tickets: (LinearIssue & { flowId: string; turbopumpFlowOnly?: boolean })[] = [];
+  for (const row of allLinearIssuesStmt.all() as { identifier: string; issueJson: string; assigned: number }[]) {
+    let issue: LinearIssue | null = null;
     try {
-      const issue = JSON.parse(row.issueJson) as LinearIssue;
-      if (!issue?.identifier || isDeletedLinearIssue(issue)) continue;
-      linearIssueCache.set(issue.identifier.toUpperCase(), issue);
-      issues.push(issue);
+      issue = JSON.parse(row.issueJson) as LinearIssue;
     } catch {
       continue;
     }
+    if (!issue?.identifier || isDeletedLinearIssue(issue)) continue;
+    linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+    const flow = flowsByIssue.get(issue.identifier);
+    if (row.assigned) {
+      tickets.push({ ...issue, flowId: flow?.id ?? "" });
+      continue;
+    }
+    if (!flow) continue;
+    if (!cachedIssueLooksValid(issue)) {
+      invalidateLinearIssue(issue.identifier);
+      continue;
+    }
+    tickets.push({ ...issue, flowId: flow.id, turbopumpFlowOnly: true });
   }
-  return issues;
+  return tickets;
 }
 
-function cachedAssignedLinearIssuesPayload() {
-  return assignedLinearIssuesPayload(
-    { id: "", name: getSetting("linearViewerName") || "Cached Linear" },
-    cachedLinearIssuesFromDb(),
-    true,
-  );
+function linearTicketsPayload(viewer: { id: string; name: string }, cached = false, workflowStates: LinearWorkflowState[] = []) {
+  return { viewer, cached, workflowStates, issues: linearTicketsFromDb() };
 }
 
-function hasCachedAssignedLinearIssues() {
-  return Boolean((allLinearIssuesStmt.get() as { issueJson: string } | null)?.issueJson);
+function cachedIssueLooksValid(issue: LinearIssue) {
+  return Boolean(issue.url && issue.title && issue.title !== "Untitled");
 }
 
-async function listAssignedLinearIssues(apiKey?: string) {
+function cachedLinearTicketsPayload() {
+  return linearTicketsPayload({ id: "", name: getSetting("linearViewerName") || "Cached Linear" }, true);
+}
+
+async function syncAssignedLinearIssues(apiKey?: string) {
   let viewer: { id: string; name: string } | null = null;
   const issues: LinearIssue[] = [];
   let workflowStates: LinearWorkflowState[] = [];
@@ -4030,16 +4056,26 @@ async function listAssignedLinearIssues(apiKey?: string) {
       after = pageInfo?.hasNextPage ? pageInfo.endCursor ?? null : null;
     } while (after);
   } catch (error) {
-    if (!apiKey && hasCachedAssignedLinearIssues()) {
-      if (error instanceof LinearUnavailableError) logLinearUnavailable(error);
-      else console.warn(error instanceof Error ? error.message : String(error));
-      return cachedAssignedLinearIssuesPayload();
+    if (!apiKey) {
+      const payload = cachedLinearTicketsPayload();
+      if (payload.issues.length) {
+        if (error instanceof LinearUnavailableError) logLinearUnavailable(error);
+        else console.warn(error instanceof Error ? error.message : String(error));
+        return payload;
+      }
     }
     throw error;
   }
-  for (const issue of issues) cacheLinearIssue(issue);
   if (!viewer) throw new Error("Linear did not return the viewer.");
-  return assignedLinearIssuesPayload(viewer, issues, false, workflowStates);
+  const fetchedIdentifiers = new Set<string>();
+  for (const issue of issues) {
+    cacheLinearIssue(issue, { assigned: true });
+    if (!isDeletedLinearIssue(issue)) fetchedIdentifiers.add(issue.identifier.toUpperCase());
+  }
+  for (const row of assignedLinearIssueIdentifiersStmt.all() as { identifier: string }[]) {
+    if (!fetchedIdentifiers.has(row.identifier)) setLinearIssueAssignedStmt.run(0, row.identifier);
+  }
+  return linearTicketsPayload(viewer, false, workflowStates);
 }
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
@@ -4218,7 +4254,7 @@ async function handleApi(request: Request, url: URL) {
     const body = await readJson<{ apiKey: string }>(request);
     const apiKey = body.apiKey?.trim() ?? "";
     if (!apiKey) return json({ error: "Linear API key is required." }, { status: 400 });
-    const assigned = await listAssignedLinearIssues(apiKey);
+    const assigned = await syncAssignedLinearIssues(apiKey);
     setSetting("linearViewerName", assigned.viewer.name);
     setSetting("linearApiKey", apiKey);
     return json({ ok: true, viewer: assigned.viewer, issueCount: assigned.issues.length });
@@ -4367,7 +4403,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "meta" && request.method === "POST") {
       let fields: Partial<Flow>;
       try {
-        fields = flowMetaUpdate(await readJson<Record<string, unknown>>(request));
+        fields = await flowMetaUpdate(flow, await readJson<Record<string, unknown>>(request));
       } catch (error) {
         return json({ error: String(error) }, { status: 400 });
       }
@@ -4379,6 +4415,7 @@ async function handleApi(request: Request, url: URL) {
         insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
         if (selectedGithubCiFlowId === id) void pollSelectedGithubCiStatus();
       }
+      if (fields.linearIssueId !== undefined) insertLog(id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
@@ -4464,8 +4501,8 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/linear/issues" && request.method === "GET") {
-    if (url.searchParams.get("cached") === "1") return json(cachedAssignedLinearIssuesPayload());
-    const assigned = await listAssignedLinearIssues();
+    if (url.searchParams.get("cached") === "1") return json(cachedLinearTicketsPayload());
+    const assigned = await syncAssignedLinearIssues();
     if (!assigned.cached) setSetting("linearViewerName", assigned.viewer.name);
     return json(assigned);
   }

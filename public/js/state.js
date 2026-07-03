@@ -163,6 +163,7 @@ export const state = {
   ticketSearchQuery: "",
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
   slashCommandIndex: 0,
+  slashMenuCommands: null,
   messageSubmitting: false,
   messageSubmittingFlowId: "",
   creatingFlowIssueIds: new Set(),

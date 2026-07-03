@@ -229,14 +229,36 @@ export function mergeLinearIssue(existing, incoming) {
 }
 
 export function syncLinearTicketsWithFlows() {
-  if (!state.linearTickets.length) return;
   const flowsByIssue = new Map(state.flows.map((flow) => [flow.linearIssueId, flow]));
-  state.linearTickets = state.linearTickets.map((ticket) => {
+  const baseTickets = state.linearTickets.filter((ticket) => !ticket.turbopumpFlowOnly || flowCanRenderTicket(flowsByIssue.get(ticket.identifier)));
+  const ticketIds = new Set(baseTickets.map((ticket) => ticket.identifier));
+  const tickets = baseTickets.map((ticket) => {
     const flow = flowsByIssue.get(ticket.identifier);
     const flowId = flow?.id || "";
     if (ticket.flowId === flowId) return ticket;
     return { ...ticket, flowId };
   });
+  const canAddFlowOnlyTickets = state.linearTicketsLoaded || state.linearTickets.length > 0;
+  if (!canAddFlowOnlyTickets) {
+    state.linearTickets = tickets;
+    return;
+  }
+  for (const flow of state.flows) {
+    if (!flowCanRenderTicket(flow) || ticketIds.has(flow.linearIssueId)) continue;
+    tickets.push({
+      identifier: flow.linearIssueId,
+      title: flow.title || flow.linearIssueId,
+      url: flow.linearIssueUrl || "",
+      state: flow.linearStatus ? { name: flow.linearStatus } : null,
+      flowId: flow.id,
+      turbopumpFlowOnly: true,
+    });
+  }
+  state.linearTickets = tickets;
+}
+
+function flowCanRenderTicket(flow) {
+  return Boolean(flow?.linearIssueId && flow.linearIssueUrl && flow.title && flow.title !== "Untitled");
 }
 
 export function clearSelectedLinearIssue(identifier) {
@@ -262,7 +284,9 @@ export function removeLinearIssueFromTurbopump(identifier) {
 export function reconcileRemovedLinearTickets(previousTickets, nextTickets) {
   const nextIssueIds = new Set(nextTickets.map((ticket) => ticket.identifier));
   for (const ticket of previousTickets) {
-    if (!nextIssueIds.has(ticket.identifier)) removeLinearIssueFromTurbopump(ticket.identifier);
+    if (nextIssueIds.has(ticket.identifier)) continue;
+    if (flowCanRenderTicket(flowForLinearIssue(ticket.identifier))) continue;
+    removeLinearIssueFromTurbopump(ticket.identifier);
   }
 }
 
@@ -326,9 +350,11 @@ export function applyLinearTicketsPayload(data, options = {}) {
   state.logPrefetchedFlowCount = 0;
   if (options.refreshDetails) state.linearDetails.clear();
   syncLinearTicketsWithFlows();
-  els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
-  els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
-  els.linearState.classList.toggle("live", !data.cached);
+  if (state.linearTicketsLoaded) {
+    els.ticketState.textContent = data.cached ? "Showing cached tickets." : formatLastUpdated();
+    els.linearState.textContent = data.cached ? "Linear unavailable; using cached tickets" : `Linear connected: ${data.viewer.name}`;
+    els.linearState.classList.toggle("live", !data.cached);
+  }
   renderTickets();
   renderFlowPane();
   if (options.prefetchLogs !== false) scheduleTicketLogPrefetch();

@@ -3363,7 +3363,7 @@ body.markdown-table-resizing {
   align-content: start;
   gap: 10px;
   min-height: 0;
-  padding: 14px 14px 42px;
+  padding: 14px;
   contain: layout paint style;
   overflow: auto;
   overflow-anchor: none;
@@ -3376,19 +3376,30 @@ body.markdown-table-resizing {
 
 .agent-output-toolbar {
   grid-area: terminal;
-  position: relative;
+  position: absolute;
   z-index: 5;
   align-self: end;
   justify-self: end;
   display: flex;
   gap: 4px;
-  margin-right: 22px;
+  right: 22px;
+  bottom: 0;
   padding: 3px;
   border: 1px solid var(--line);
   border-bottom: 0;
   border-radius: 6px 6px 0 0;
-  background: color-mix(in srgb, var(--terminal) 88%, var(--panel));
-  box-shadow: 0 2px 8px rgb(15 23 42 / 8%);
+  background: var(--panel);
+}
+
+.agent-output-toolbar::after {
+  content: "";
+  position: absolute;
+  right: 1px;
+  bottom: -1px;
+  left: 1px;
+  height: 1px;
+  background: var(--panel);
+  pointer-events: none;
 }
 
 .agent-output-button {
@@ -4549,6 +4560,15 @@ body.theme-dark .agent-context-diff:focus-visible {
 .agent-context-branch {
   padding-left: 6px;
   border-left: 1px solid var(--line-strong);
+}
+
+.agent-context-model[role="button"] {
+  cursor: pointer;
+}
+
+.agent-context-model[role="button"]:hover,
+.agent-context-model[role="button"]:focus-visible {
+  color: var(--text);
 }
 
 .agent-context .agent-provider-icon {

@@ -6,6 +6,7 @@ import { api, isGitCloneError, requestFlowSnapshot, wsRequest } from "./net.js";
 import { clearLinearIssueNotification } from "./notifications.js";
 import {
   clearPromptDraftForIssue,
+  flashBlockedInput,
   promptInput,
   renderAgentImageContext,
   resizeMessageInput,
@@ -18,7 +19,7 @@ import {
 } from "./prompt.js";
 import { render } from "./render.js";
 import { repoUrlConfigured } from "./settings.js";
-import { agentProviderKindForFlow } from "./slash-commands.js";
+import { agentProviderKindForFlow, renderSlashMenuCommands, slashCommandExpansionMatches } from "./slash-commands.js";
 import { els, state } from "./state.js";
 import { copyAgentBranchName, renderLogs, renderShellOutputPane, resumeTerminalFollow } from "./terminal-render.js";
 import {
@@ -165,6 +166,11 @@ export function setFlows(flows, options = {}) {
     if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
   }
   state.flows = nextFlows;
+  const selected = state.flows.find((flow) => flow.id === state.selectedFlowId);
+  if (selected?.linearIssueId && state.selectedLinearIssueId !== selected.linearIssueId) {
+    state.selectedLinearIssueId = selected.linearIssueId;
+    localStorage.setItem("flow.selectedLinearIssueId", selected.linearIssueId);
+  }
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
   scheduleQueuedPromptFlush();
@@ -341,12 +347,18 @@ export function agentContextWindowLabel(flow) {
 export function renderAgentContext(flow) {
   const context = els.flowPane.querySelector(".agent-context");
   const branch = context.querySelector(".agent-context-branch");
+  const model = context.querySelector(".agent-context-model");
   const diffButton = context.querySelector(".agent-context-diff");
   const diff = flow?.id ? state.flowDiffs.get(flow.id) : null;
   context.hidden = !flow;
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
-  context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
-  context.querySelector(".agent-context-model").prepend(agentProviderIcon(flow));
+  model.textContent = agentModelLabel(flow);
+  model.prepend(agentProviderIcon(flow));
+  const modelDisabled = !flow || flowAgentRunning(flow);
+  model.setAttribute("aria-disabled", String(modelDisabled));
+  model.tabIndex = flow ? 0 : -1;
+  model.onclick = flow ? () => (modelDisabled ? flashBlockedInput(promptInput()) : openModelMenu()) : null;
+  model.onkeydown = flow ? (event) => handleModelMenuKeydown(event, modelDisabled) : null;
   diffButton.hidden = !flow || !diffHasChanges(diff);
   renderDiffIndicator(diffButton, flow?.id || "", diff);
   diffButton.disabled = !flow;
@@ -377,6 +389,21 @@ export function renderAgentContext(flow) {
     };
   }
   if (flow?.id && !diff && !state.flowDiffLoadingIds.has(diffLoadingKey(flow.id))) void loadFlowDiff(flow.id);
+}
+
+export function openModelMenu() {
+  state.slashCommandIndex = 0;
+  renderSlashMenuCommands(slashCommandExpansionMatches("/model"));
+}
+
+export function handleModelMenuKeydown(event, blocked = false) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  if (blocked) {
+    flashBlockedInput(promptInput());
+    return;
+  }
+  openModelMenu();
 }
 
 export function upsertFlow(flow) {

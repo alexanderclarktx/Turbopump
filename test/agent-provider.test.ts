@@ -146,14 +146,16 @@ describe("Agent providers", () => {
     expect(app).toContain("function activeSlashCommandExpansions()");
     expect(app).toContain('"agent:message": { label: agentLabel, marker: ">", tone: "assistant" },');
     expect(app).toContain('{ name: "/model", description: "Set the agent model for this flow" }');
-    expect(app).toContain('{ name: `/model ${model}`,');
+    expect(app).toContain('name: `/model ${model}`,');
     expect(app).toContain("/^(starting|resuming) Claude session\\b/i.test(message)");
   });
 
   test("shows the active provider icon next to the model name in the flow status bar", () => {
     expect(app).toContain("function agentProviderIcon(flow)");
     expect(app).toContain("icon.dataset.provider = agentProviderKindForFlow(flow);");
-    expect(app).toContain('context.querySelector(".agent-context-model").prepend(agentProviderIcon(flow));');
+    expect(app).toContain("model.prepend(agentProviderIcon(flow));");
+    expect(app).toContain("const modelDisabled = !flow || flowAgentRunning(flow);");
+    expect(app).toContain("model.onclick = flow ? () => (modelDisabled ? flashBlockedInput(promptInput()) : openModelMenu()) : null;");
     expect(css).toContain(".agent-context .agent-provider-icon {");
     expect(css).toContain('mask: url("provider-icons/openai.svg") no-repeat center / contain;');
     expect(css).toContain('.agent-context .agent-provider-icon[data-provider="claude"]');
