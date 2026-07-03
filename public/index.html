@@ -4,10 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Turbopump</title>
+    <script>
+      try {
+        const storedTheme = localStorage.getItem("flow.theme");
+        const initialDark = storedTheme === "dark" || (storedTheme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.style.colorScheme = initialDark ? "dark" : "light";
+        document.documentElement.style.backgroundColor = initialDark ? "#111418" : "#eef0f3";
+      } catch {}
+    </script>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="settings-collapsed app-booting">
+    <script>
+      document.body.classList.add(document.documentElement.style.colorScheme === "dark" ? "theme-dark" : "theme-light");
+    </script>
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
     <main>
       <aside class="sidebar" id="settingsPane">
@@ -206,6 +217,21 @@
               aria-label="Expand Shell pane"
               ></button>
               <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
+              <div class="agent-output-toolbar" role="toolbar" aria-label="Agent output controls">
+                <button
+                  id="agentTraceToggle"
+                  class="icon-button agent-output-button"
+                  type="button"
+                  aria-pressed="true"
+                  aria-label="Show tool output messages"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6" />
+                    <path d="m16 16 4 4" />
+                    <path class="agent-output-slash" d="M4 20 20 4" />
+                  </svg>
+                </button>
+              </div>
               <div class="terminal" role="log" aria-live="polite"></div>
               <div
                 class="shell-output-resizer"
@@ -234,7 +260,7 @@
                 </div>
                 <div class="agent-context" aria-label="Current flow context" hidden>
                   <span class="agent-context-window"></span>
-                  <span class="agent-context-model"></span>
+                  <span class="agent-context-model" role="button" tabindex="0" aria-haspopup="listbox" aria-label="Change agent model"></span>
                   <button class="agent-context-diff" type="button" hidden>diff</button>
                   <a class="agent-context-branch"></a>
                 </div>

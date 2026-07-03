@@ -141,16 +141,14 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
-const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]);
+const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
 const codexDefaultModel = "gpt-5.5";
 const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
 const defaultAgentProviderSettingKey = "defaultAgentProvider";
-const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]);
+const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"]);
+const allAgentModels = [...agentModels, ...claudeAgentModels];
 const claudeDefaultModel = "claude-fable-5";
-// Sonnet keeps the 1M context window (haiku's 200k can overflow on the large
-// sessions that need compacting) while staying much faster than fable/opus.
-const claudeCompactModel = "claude-sonnet-5";
-const claudeCompactFastModels = new Set(["claude-sonnet-5", "claude-haiku-4-5"]);
+const claudeCompactModel = "claude-haiku-4-5";
 const claudeDefaultContextWindow = 200000;
 const claudeRuntimeStaleMs = 600000;
 const reviewFindingInstructions =
@@ -164,7 +162,7 @@ const defaultAgentDeveloperInstructions = [
   "",
   "Update flow metadata when appropriate by POSTing JSON to:",
   "{flowMetaApiUrl}",
-  'Example body: {"prUrl":"https://github.com/org/repo/pull/123"}',
+  'Example body: {"prUrl":"https://github.com/org/repo/pull/123","linearIssueId":"ENG-123"}',
   'Each field in the body is optional.',
   "",
   "Flow ID: {flowId}",
@@ -282,6 +280,7 @@ tryMigration("alter table flows add column githubCiCheckedAt text not null defau
 tryMigration("alter table flows add column githubCiTargetUrl text not null default ''");
 tryMigration("alter table flows add column githubCiDescription text not null default ''");
 tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWindow > 0 and agentContextTokensUsed > agentContextWindow");
+tryMigration("alter table linear_issues add column assigned integer not null default 0");
 
 const clients = new Set<ServerWebSocket>();
 const agentProcesses = new Map<string, RuntimeProcess>();
@@ -423,7 +422,9 @@ const upsertLinearIssueStmt = db.query(`
 `);
 const deleteLinearIssueStmt = db.query("delete from linear_issues where identifier = ?");
 const linearIssueByIdentifierStmt = db.query("select issueJson from linear_issues where identifier = ?");
-const allLinearIssuesStmt = db.query("select issueJson from linear_issues order by updatedAt desc");
+const allLinearIssuesStmt = db.query("select identifier, issueJson, assigned from linear_issues order by updatedAt desc");
+const setLinearIssueAssignedStmt = db.query("update linear_issues set assigned = ? where identifier = ?");
+const assignedLinearIssueIdentifiersStmt = db.query("select identifier from linear_issues where assigned = 1");
 const flowByIdStmt = db.query("select * from flows where id = ?");
 const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
@@ -1011,7 +1012,15 @@ function normalizePrUrl(value: unknown) {
   return prUrl;
 }
 
-function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow> {
+function normalizeLinearIssueId(value: unknown) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error("linearIssueId must be a string.");
+  const parsed = parseLinearIssue(value);
+  if (!parsed.identifier) throw new Error("linearIssueId must be a Linear issue key or URL.");
+  return parsed;
+}
+
+async function flowMetaUpdate(flow: Flow, body: Record<string, unknown>): Promise<Partial<Flow>> {
   const fields: Partial<Flow> = {};
   if ("prUrl" in body) {
     fields.prUrl = normalizePrUrl(body.prUrl);
@@ -1019,6 +1028,19 @@ function flowMetaUpdate(body: Record<string, unknown>): Partial<Flow> {
     fields.githubCiCheckedAt = "";
     fields.githubCiTargetUrl = "";
     fields.githubCiDescription = "";
+  }
+  if ("linearIssueId" in body) {
+    const parsed = normalizeLinearIssueId(body.linearIssueId);
+    if (parsed) {
+      const existing = getFlowByIssue(parsed.identifier);
+      if (existing && existing.id !== flow.id) throw new Error(`Linear issue ${parsed.identifier} already has an agent session.`);
+      const issue = await fetchLinearIssue(parsed.identifier);
+      if (!issue) throw new Error(`Linear issue ${parsed.identifier} not found.`);
+      fields.linearIssueId = parsed.identifier;
+      fields.linearIssueUrl = issue.url || parsed.url || flow.linearIssueUrl;
+      fields.title = issue.title || parsed.identifier;
+      fields.linearStatus = issue.state?.name || "";
+    }
   }
   return fields;
 }
@@ -1355,6 +1377,12 @@ function providerForRuntime(runtime: RuntimeProcess): AgentProvider {
   return agentProviders[runtime.provider ?? "codex"];
 }
 
+function providerKindForAgentModel(model: string): AgentProviderKind | "" {
+  if (agentModels.has(model)) return "codex";
+  if (claudeAgentModels.has(model)) return "claude";
+  return "";
+}
+
 function takePendingHandoff(flowId: string) {
   const pending = getSetting(handoffPendingSettingKey(flowId));
   if (pending) deleteSettingByKeyStmt.run(handoffPendingSettingKey(flowId));
@@ -1447,16 +1475,26 @@ function parseLinearIssue(input: string) {
   };
 }
 
-function cacheLinearIssue(issue: LinearIssue | null | undefined) {
+function cacheLinearIssue(issue: LinearIssue | null | undefined, options: { assigned?: boolean } = {}) {
   if (!issue?.identifier) return;
   const identifier = issue.identifier.toUpperCase();
   if (isDeletedLinearIssue(issue)) {
-    linearIssueCache.delete(identifier);
-    deleteLinearIssueStmt.run(identifier);
+    invalidateLinearIssue(identifier);
     return;
   }
   linearIssueCache.set(identifier, issue);
   upsertLinearIssueStmt.run(identifier, JSON.stringify(issue), issue.updatedAt || now());
+  if (options.assigned !== undefined) setLinearIssueAssignedStmt.run(options.assigned ? 1 : 0, identifier);
+}
+
+function invalidateLinearIssue(identifier: string) {
+  const issueId = identifier.toUpperCase();
+  linearIssueCache.delete(issueId);
+  deleteLinearIssueStmt.run(issueId);
+  for (const flow of listFlows()) {
+    if (flow.linearIssueId !== issueId) continue;
+    updateFlow(flow.id, { linearIssueUrl: "", linearStatus: "" });
+  }
 }
 
 function cachedLinearIssue(identifier: string) {
@@ -2768,12 +2806,7 @@ function claudeContentBlocks(message: ClaudeSdkMessage) {
   return Array.isArray(inner?.content) ? (inner.content as Array<Record<string, unknown>>) : [];
 }
 
-function claudeTokenUsageMetadata(message: ClaudeSdkMessage): Partial<Flow> {
-  // Per-request usage from an assistant message reflects the current context
-  // size; the result message's `usage` sums every request in the turn and can
-  // exceed the context window.
-  const inner = message.message as { usage?: Record<string, unknown> } | undefined;
-  const usage = inner?.usage;
+function claudeContextTokenUsageMetadata(usage: Record<string, unknown> | undefined): Partial<Flow> {
   if (!usage) return {};
   const contextTokensUsed =
     optionalInteger(usage.input_tokens) +
@@ -2781,6 +2814,14 @@ function claudeTokenUsageMetadata(message: ClaudeSdkMessage): Partial<Flow> {
     optionalInteger(usage.cache_creation_input_tokens);
   if (!contextTokensUsed) return {};
   return { agentContextTokensUsed: contextTokensUsed };
+}
+
+function claudeTokenUsageMetadata(message: ClaudeSdkMessage): Partial<Flow> {
+  // Per-request usage from an assistant message reflects the current context
+  // size; the result message's `usage` sums every request in the turn and can
+  // exceed the context window.
+  const inner = message.message as { usage?: Record<string, unknown> } | undefined;
+  return claudeContextTokenUsageMetadata(inner?.usage);
 }
 
 function claudeTurnTotalTokens(message: ClaudeSdkMessage) {
@@ -2806,9 +2847,16 @@ function restoreClaudeCompactModel(runtime: RuntimeProcess) {
   const claude = runtime.claude;
   const restoreModel = claude?.compactRestoreModel;
   if (!claude || !restoreModel) return;
-  claude.compactRestoreModel = undefined;
-  void claude.query.setModel(restoreModel).catch(() => {});
+  void claude.query.setModel(restoreModel).catch(() => {
+    if (claude.compactRestoreModel === restoreModel) claude.compactRestoreModel = undefined;
+  });
   updateFlow(runtime.flowId, { agentModel: restoreModel });
+}
+
+function claudeContextUsageFlowUpdate(runtime: RuntimeProcess, usage: Partial<Flow>) {
+  if (!usage.agentContextTokensUsed) return {};
+  const contextWindow = getFlow(runtime.flowId)?.agentContextWindow || 0;
+  return contextWindow ? usage : { ...usage, agentContextWindow: claudeDefaultContextWindow };
 }
 
 function finishClaudeCompaction(runtime: RuntimeProcess, succeeded: boolean) {
@@ -2823,7 +2871,11 @@ function finishClaudeCompaction(runtime: RuntimeProcess, succeeded: boolean) {
   const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", succeeded ? "context compacted" : "compact failed");
   deleteQueuedAgentMessagePlaceholders(runtime);
   if (compactionPromptLogId) createTraceGroupBetweenLogs(runtime.flowId, compactionPromptLogId, contextCompactedLogId + 1, "compact");
-  updateFlow(runtime.flowId, { agentStatus: succeeded ? "idle" : "failed" });
+  const contextWindow = getFlow(runtime.flowId)?.agentContextWindow || claudeDefaultContextWindow;
+  updateFlow(runtime.flowId, {
+    ...(succeeded ? { agentContextTokensUsed: 0, agentContextWindow: contextWindow } : {}),
+    agentStatus: succeeded ? "idle" : "failed",
+  });
   if (succeeded) void startNextQueuedAgentMessage(runtime);
 }
 
@@ -2871,7 +2923,9 @@ function handleClaudeMessage(runtime: RuntimeProcess, message: ClaudeSdkMessage)
         setSetting(claudeSessionSettingKey(runtime.flowId), sessionId);
       }
       const model = typeof message.model === "string" ? message.model : "";
-      if (model) updateFlow(runtime.flowId, { agentModel: model });
+      const restoreModel = runtime.claude?.compactRestoreModel;
+      if (model && !(restoreModel && model === claudeCompactModel)) updateFlow(runtime.flowId, { agentModel: model });
+      if (restoreModel && model === restoreModel && runtime.claude) runtime.claude.compactRestoreModel = undefined;
       insertLog(runtime.flowId, "agent:status", `Claude session ${sessionId} ready`);
       return;
     }
@@ -2884,10 +2938,7 @@ function handleClaudeMessage(runtime: RuntimeProcess, message: ClaudeSdkMessage)
   if (type === "assistant") {
     if (!message.parent_tool_use_id) {
       const usage = claudeTokenUsageMetadata(message);
-      if (usage.agentContextTokensUsed) {
-        const contextWindow = getFlow(runtime.flowId)?.agentContextWindow || 0;
-        updateFlow(runtime.flowId, contextWindow ? usage : { ...usage, agentContextWindow: claudeDefaultContextWindow });
-      }
+      updateFlow(runtime.flowId, claudeContextUsageFlowUpdate(runtime, usage));
     }
     for (const block of claudeContentBlocks(message)) {
       if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
@@ -2974,8 +3025,8 @@ async function compactClaudeSession(flow: Flow, promptLogId?: number) {
   const claude = runtime.claude;
   if (!claude) throw new Error("Claude session is not ready.");
   if (runtime.activeTurnId) throw new Error("Cannot compact while a Claude turn is running.");
-  const flowModel = flow.agentModel;
-  const swapModel = Boolean(flowModel && claudeAgentModels.has(flowModel) && !claudeCompactFastModels.has(flowModel));
+  const flowModel = claudeAgentModels.has(flow.agentModel) ? flow.agentModel : claudeDefaultModel;
+  const swapModel = flowModel !== claudeCompactModel;
   runtime.compacting = true;
   runtime.compactingStartedAt = Date.now();
   runtime.compactionPromptLogId = promptLogId;
@@ -2983,10 +3034,11 @@ async function compactClaudeSession(flow: Flow, promptLogId?: number) {
   insertLog(flow.id, "agent:status", swapModel ? `compact requested (using ${claudeCompactModel})` : "compact requested");
   updateFlow(flow.id, { agentStatus: "running" });
   if (swapModel) {
+    claude.compactRestoreModel = flowModel;
     try {
       await claude.query.setModel(claudeCompactModel);
-      claude.compactRestoreModel = flowModel;
     } catch {
+      claude.compactRestoreModel = undefined;
       // Compact on the flow's own model if the switch fails.
     }
   }
@@ -3084,14 +3136,6 @@ function stopIdleClaudeRuntimeForSettingChange(flow: Flow) {
 }
 
 async function handleClaudeSlashCommand(flow: Flow, command: string, message: string, userLogId: number) {
-  if (command === "/model") {
-    const model = slashCommandArgs(message).toLowerCase();
-    if (!claudeAgentModels.has(model)) throw new Error(`Usage: /model ${[...claudeAgentModels].join("|")}`);
-    stopIdleClaudeRuntimeForSettingChange(flow);
-    updateFlow(flow.id, { agentModel: model });
-    insertLog(flow.id, "agent:status", `model set to ${model}`);
-    return true;
-  }
   if (command === "/permissions") {
     const agentSandbox = agentSandboxForSlashCommand(slashCommandArgs(message));
     if (!agentSandbox) throw new Error("Usage: /permissions read-only|workspace-write|full-access");
@@ -3127,13 +3171,6 @@ async function handleCodexSlashCommand(flow: Flow, command: string, message: str
     if (!reasoningEfforts.has(reasoningEffort)) throw new Error("Usage: /effort high|medium|low|xhigh");
     updateFlow(flow.id, { agentReasoningEffort: reasoningEffort });
     insertLog(flow.id, "agent:status", `reasoning effort set to ${reasoningEffort}`);
-    return true;
-  }
-  if (command === "/model") {
-    const model = slashCommandArgs(message).toLowerCase();
-    if (!agentModels.has(model)) throw new Error("Usage: /model gpt-5.5|gpt-5.4|gpt-5.4-mini|gpt-5.3-codex|gpt-5.2");
-    updateFlow(flow.id, { agentModel: model });
-    insertLog(flow.id, "agent:status", `model set to ${model}`);
     return true;
   }
   if (command === "/plugins") {
@@ -3180,7 +3217,7 @@ async function interruptCodexTurn(runtime: RuntimeProcess) {
 }
 
 const sharedSlashCommands: AgentSlashCommandSpec[] = [
-  { name: "/provider", description: "Switch the agent provider for this flow", args: ["codex", "claude"] },
+  { name: "/model", description: "Set the agent model for this flow", args: allAgentModels },
   { name: "/review", description: "Ask the agent to review the current changes" },
 ];
 
@@ -3192,7 +3229,6 @@ const codexProvider: AgentProvider = {
     { name: "/compact", description: "Compact the current Codex thread context" },
     { name: "/effort", description: "Set Codex reasoning effort", args: ["xhigh", "high", "medium", "low"] },
     { name: "/fast", description: "Toggle fast mode for this flow" },
-    { name: "/model", description: "Set the Codex model for this flow", args: [...agentModels] },
     { name: "/permissions", description: "Set Codex permissions for this flow", args: ["read-only", "workspace-write", "full-access"] },
     { name: "/plugins", description: "List Codex plugins" },
     { name: "/status", description: "Show current flow status" },
@@ -3210,7 +3246,6 @@ const claudeProvider: AgentProvider = {
   label: "claude",
   slashCommands: [
     { name: "/clear", description: "Start a fresh Claude session for this flow" },
-    { name: "/model", description: "Set the Claude model for this flow", args: [...claudeAgentModels] },
     { name: "/permissions", description: "Set Claude permissions for this flow", args: ["read-only", "workspace-write", "full-access"] },
     { name: "/status", description: "Show current flow status" },
     ...sharedSlashCommands,
@@ -3282,12 +3317,10 @@ function providerHandoffPrompt(flow: Flow, fromLabel: string) {
   ].join("\n\n");
 }
 
-async function switchFlowProvider(flow: Flow, target: string) {
-  const kind = normalizeAgentProviderKind(target);
-  if (!kind) throw new Error("Usage: /provider codex|claude");
+async function switchFlowProvider(flow: Flow, kind: AgentProviderKind, model: string) {
   const current = flowProviderKind(flow);
   if (kind === current) {
-    insertLog(flow.id, "agent:status", `provider already set to ${agentProviders[kind].label}`);
+    insertLog(flow.id, "agent:status", `model set to ${model}`);
     return;
   }
 
@@ -3297,7 +3330,7 @@ async function switchFlowProvider(flow: Flow, target: string) {
   }
   if (runtime) {
     agentProcesses.delete(flow.id);
-    providerForRuntime(runtime).stop(runtime, "provider switched");
+    providerForRuntime(runtime).stop(runtime, "model changed");
   }
 
   // Every switch starts the target provider fresh; the handoff transcript carries the context.
@@ -3306,17 +3339,26 @@ async function switchFlowProvider(flow: Flow, target: string) {
   setSetting(handoffPendingSettingKey(flow.id), providerHandoffPrompt(flow, agentProviders[current].label));
   updateFlow(flow.id, {
     agentProvider: kind,
-    agentModel: kind === "claude" ? claudeDefaultModel : codexDefaultModel,
+    agentModel: model,
     agentContextTokensUsed: 0,
     agentContextWindow: 0,
     agentTotalTokensUsed: 0,
     agentStatus: "idle",
   });
-  insertLog(
-    flow.id,
-    "agent:status",
-    `provider switched to ${agentProviders[kind].label}; the next message starts a fresh session seeded with the flow transcript`,
-  );
+  insertLog(flow.id, "agent:status", `model set to ${model}; the next message starts a fresh session seeded with the flow transcript`);
+}
+
+async function switchFlowModel(flow: Flow, target: string) {
+  const model = target.trim().toLowerCase();
+  const kind = providerKindForAgentModel(model);
+  if (!kind) throw new Error(`Usage: /model ${allAgentModels.join("|")}`);
+  if (kind !== flowProviderKind(flow)) {
+    await switchFlowProvider(flow, kind, model);
+    return;
+  }
+  if (kind === "claude") stopIdleClaudeRuntimeForSettingChange(flow);
+  updateFlow(flow.id, { agentModel: model });
+  insertLog(flow.id, "agent:status", `model set to ${model}`);
 }
 
 async function startAgentTurnAfterUserLog(flow: Flow, userLogId: number, agentMessage: string) {
@@ -3406,8 +3448,8 @@ async function handleSlashCommand(flow: Flow, message: string) {
     await startAgentTurnAfterUserLog(flow, userLogId, reviewPromptForSlashCommand(message));
     return true;
   }
-  if (command === "/provider") {
-    await switchFlowProvider(flow, slashCommandArgs(message));
+  if (command === "/model") {
+    await switchFlowModel(flow, slashCommandArgs(message));
     return true;
   }
   if (await provider.handleSlashCommand(flow, command, message, userLogId)) return true;
@@ -3608,10 +3650,14 @@ async function fetchLinearIssue(identifier: string) {
       { id: identifier },
     );
   } catch (error) {
-    if (isLinearIssueNotFoundError(error)) return null;
+    if (isLinearIssueNotFoundError(error)) {
+      invalidateLinearIssue(identifier);
+      return null;
+    }
     throw error;
   }
   const issue = body.issue ?? null;
+  if (!issue) invalidateLinearIssue(identifier);
   cacheLinearIssue(issue);
   return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
@@ -3656,10 +3702,14 @@ async function fetchLinearIssueDetail(identifier: string) {
       { id: identifier },
     );
   } catch (error) {
-    if (isLinearIssueNotFoundError(error)) return null;
+    if (isLinearIssueNotFoundError(error)) {
+      invalidateLinearIssue(identifier);
+      return null;
+    }
     throw error;
   }
   const issue = body.issue ?? null;
+  if (!issue) invalidateLinearIssue(identifier);
   cacheLinearIssue(issue);
   return issue && !isDeletedLinearIssue(issue) ? issue : null;
 }
@@ -3762,6 +3812,52 @@ async function updateLinearIssuePriority(identifier: string, issueId: string, pr
   return { issue };
 }
 
+async function updateLinearIssueTitle(identifier: string, issueId: string, title: string) {
+  const nextTitle = title.trim();
+  if (!nextTitle) throw new Error("Linear title is required.");
+  const data = await linearGraphql<{
+    issueUpdate?: {
+      success: boolean;
+      issue?: LinearIssue;
+    };
+  }>(
+    `
+      mutation UpdateIssueTitle($id: String!, $title: String!) {
+        issueUpdate(id: $id, input: { title: $title }) {
+          success
+          issue {
+            id
+            identifier
+            title
+            url
+            priority
+            estimate
+            createdAt
+            updatedAt
+            state { id name color type }
+            team { id key name }
+            project { name }
+            labels { nodes { name color } }
+          }
+        }
+      }
+    `,
+    { id: issueId || identifier, title: nextTitle },
+  );
+  const issue = data.issueUpdate?.issue;
+  if (!data.issueUpdate?.success || !issue) throw new Error("Linear did not update the issue title.");
+  cacheLinearIssue(issue);
+
+  const flow = getFlowByIssue(issue.identifier);
+  if (flow) {
+    updateFlow(flow.id, {
+      title: issue.title || flow.title,
+      linearIssueUrl: issue.url || flow.linearIssueUrl,
+    });
+  }
+  return { issue, flow: flow ? getFlow(flow.id) : null };
+}
+
 function linearWorkflowKey(name = "") {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -3848,7 +3944,7 @@ async function createBlankInEngLinearIssue() {
   );
   const issue = created.issueCreate?.issue;
   if (!created.issueCreate?.success || !issue) throw new Error("Linear did not create the issue.");
-  cacheLinearIssue(issue);
+  cacheLinearIssue(issue, { assigned: true });
   return { issue, viewer: { id: data.viewer.id, name: data.viewer.name } };
 }
 
@@ -3856,68 +3952,52 @@ function isDeletedLinearIssue(issue: LinearIssue) {
   return Boolean(issue.archivedAt);
 }
 
-function isDoneLinearIssue(issue: LinearIssue) {
-  const stateName = linearWorkflowKey(issue.state?.name ?? "");
-  const stateType = linearWorkflowKey(issue.state?.type ?? "");
-  return stateType === "completed" || stateName === "done" || stateName === "completed";
-}
-
-function isDuplicateLinearIssue(issue: LinearIssue) {
-  return linearWorkflowKey(issue.state?.name ?? "") === "duplicate";
-}
-
 function isLinearIssueNotFoundError(error: unknown) {
   return /not found|does not exist|not accessible|Could not find/i.test(String((error as Error)?.message || error));
 }
 
-function assignedLinearIssuesPayload(viewer: { id: string; name: string }, issues: LinearIssue[], cached = false, workflowStates: LinearWorkflowState[] = []) {
+// The single definition of "what tickets do we display": every issue in the db
+// marked assigned, plus flow-linked issues we know enough about to render.
+function linearTicketsFromDb() {
   const flowsByIssue = new Map(listFlows().map((flow) => [flow.linearIssueId, flow]));
-  return {
-    viewer,
-    cached,
-    workflowStates,
-    issues: issues.flatMap((issue) => {
-      const flow = flowsByIssue.get(issue.identifier);
-      if (isDeletedLinearIssue(issue)) return [];
-      if (!flow && (isDoneLinearIssue(issue) || isDuplicateLinearIssue(issue))) return [];
-      return [
-        {
-          ...issue,
-          flowId: flow?.id ?? "",
-        },
-      ];
-    }),
-  };
-}
-
-function cachedLinearIssuesFromDb() {
-  const issues: LinearIssue[] = [];
-  for (const row of allLinearIssuesStmt.all() as { issueJson: string }[]) {
+  const tickets: (LinearIssue & { flowId: string; turbopumpFlowOnly?: boolean })[] = [];
+  for (const row of allLinearIssuesStmt.all() as { identifier: string; issueJson: string; assigned: number }[]) {
+    let issue: LinearIssue | null = null;
     try {
-      const issue = JSON.parse(row.issueJson) as LinearIssue;
-      if (!issue?.identifier || isDeletedLinearIssue(issue)) continue;
-      linearIssueCache.set(issue.identifier.toUpperCase(), issue);
-      issues.push(issue);
+      issue = JSON.parse(row.issueJson) as LinearIssue;
     } catch {
       continue;
     }
+    if (!issue?.identifier || isDeletedLinearIssue(issue)) continue;
+    linearIssueCache.set(issue.identifier.toUpperCase(), issue);
+    const flow = flowsByIssue.get(issue.identifier);
+    if (row.assigned) {
+      tickets.push({ ...issue, flowId: flow?.id ?? "" });
+      continue;
+    }
+    if (!flow) continue;
+    if (!cachedIssueLooksValid(issue)) {
+      invalidateLinearIssue(issue.identifier);
+      continue;
+    }
+    tickets.push({ ...issue, flowId: flow.id, turbopumpFlowOnly: true });
   }
-  return issues;
+  return tickets;
 }
 
-function cachedAssignedLinearIssuesPayload() {
-  return assignedLinearIssuesPayload(
-    { id: "", name: getSetting("linearViewerName") || "Cached Linear" },
-    cachedLinearIssuesFromDb(),
-    true,
-  );
+function linearTicketsPayload(viewer: { id: string; name: string }, cached = false, workflowStates: LinearWorkflowState[] = []) {
+  return { viewer, cached, workflowStates, issues: linearTicketsFromDb() };
 }
 
-function hasCachedAssignedLinearIssues() {
-  return Boolean((allLinearIssuesStmt.get() as { issueJson: string } | null)?.issueJson);
+function cachedIssueLooksValid(issue: LinearIssue) {
+  return Boolean(issue.url && issue.title && issue.title !== "Untitled");
 }
 
-async function listAssignedLinearIssues(apiKey?: string) {
+function cachedLinearTicketsPayload() {
+  return linearTicketsPayload({ id: "", name: getSetting("linearViewerName") || "Cached Linear" }, true);
+}
+
+async function syncAssignedLinearIssues(apiKey?: string) {
   let viewer: { id: string; name: string } | null = null;
   const issues: LinearIssue[] = [];
   let workflowStates: LinearWorkflowState[] = [];
@@ -3976,16 +4056,26 @@ async function listAssignedLinearIssues(apiKey?: string) {
       after = pageInfo?.hasNextPage ? pageInfo.endCursor ?? null : null;
     } while (after);
   } catch (error) {
-    if (!apiKey && hasCachedAssignedLinearIssues()) {
-      if (error instanceof LinearUnavailableError) logLinearUnavailable(error);
-      else console.warn(error instanceof Error ? error.message : String(error));
-      return cachedAssignedLinearIssuesPayload();
+    if (!apiKey) {
+      const payload = cachedLinearTicketsPayload();
+      if (payload.issues.length) {
+        if (error instanceof LinearUnavailableError) logLinearUnavailable(error);
+        else console.warn(error instanceof Error ? error.message : String(error));
+        return payload;
+      }
     }
     throw error;
   }
-  for (const issue of issues) cacheLinearIssue(issue);
   if (!viewer) throw new Error("Linear did not return the viewer.");
-  return assignedLinearIssuesPayload(viewer, issues, false, workflowStates);
+  const fetchedIdentifiers = new Set<string>();
+  for (const issue of issues) {
+    cacheLinearIssue(issue, { assigned: true });
+    if (!isDeletedLinearIssue(issue)) fetchedIdentifiers.add(issue.identifier.toUpperCase());
+  }
+  for (const row of assignedLinearIssueIdentifiersStmt.all() as { identifier: string }[]) {
+    if (!fetchedIdentifiers.has(row.identifier)) setLinearIssueAssignedStmt.run(0, row.identifier);
+  }
+  return linearTicketsPayload(viewer, false, workflowStates);
 }
 
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
@@ -4164,7 +4254,7 @@ async function handleApi(request: Request, url: URL) {
     const body = await readJson<{ apiKey: string }>(request);
     const apiKey = body.apiKey?.trim() ?? "";
     if (!apiKey) return json({ error: "Linear API key is required." }, { status: 400 });
-    const assigned = await listAssignedLinearIssues(apiKey);
+    const assigned = await syncAssignedLinearIssues(apiKey);
     setSetting("linearViewerName", assigned.viewer.name);
     setSetting("linearApiKey", apiKey);
     return json({ ok: true, viewer: assigned.viewer, issueCount: assigned.issues.length });
@@ -4195,6 +4285,16 @@ async function handleApi(request: Request, url: URL) {
   if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && parts[4] === "status" && request.method === "POST") {
     const body = await readJson<{ issueId?: string; stateId?: string }>(request);
     const result = await updateLinearIssueStatus(decodeURIComponent(parts[3]), body.issueId || "", body.stateId || "");
+    if (result.flow) {
+      broadcast("flows", listClientFlows());
+      broadcast("checkouts", listWorktrees());
+    }
+    return json({ ok: true, ...result, flow: result.flow ? clientFlow(result.flow) : null });
+  }
+
+  if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && parts[4] === "title" && request.method === "POST") {
+    const body = await readJson<{ issueId?: string; title?: string }>(request);
+    const result = await updateLinearIssueTitle(decodeURIComponent(parts[3]), body.issueId || "", String(body.title || ""));
     if (result.flow) {
       broadcast("flows", listClientFlows());
       broadcast("checkouts", listWorktrees());
@@ -4303,7 +4403,7 @@ async function handleApi(request: Request, url: URL) {
     if (parts[3] === "meta" && request.method === "POST") {
       let fields: Partial<Flow>;
       try {
-        fields = flowMetaUpdate(await readJson<Record<string, unknown>>(request));
+        fields = await flowMetaUpdate(flow, await readJson<Record<string, unknown>>(request));
       } catch (error) {
         return json({ error: String(error) }, { status: 400 });
       }
@@ -4315,6 +4415,7 @@ async function handleApi(request: Request, url: URL) {
         insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
         if (selectedGithubCiFlowId === id) void pollSelectedGithubCiStatus();
       }
+      if (fields.linearIssueId !== undefined) insertLog(id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 
@@ -4400,8 +4501,8 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/linear/issues" && request.method === "GET") {
-    if (url.searchParams.get("cached") === "1") return json(cachedAssignedLinearIssuesPayload());
-    const assigned = await listAssignedLinearIssues();
+    if (url.searchParams.get("cached") === "1") return json(cachedLinearTicketsPayload());
+    const assigned = await syncAssignedLinearIssues();
     if (!assigned.cached) setSetting("linearViewerName", assigned.viewer.name);
     return json(assigned);
   }

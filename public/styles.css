@@ -2326,6 +2326,7 @@ body.shell-output-resizing .terminal-panel {
 }
 
 .agent-panel.disabled .terminal,
+.agent-panel.disabled .agent-output-toolbar,
 .agent-panel.disabled .shell-output-resizer,
 .agent-panel.disabled .shell-output-pane,
 .agent-panel.disabled .message-form {
@@ -2477,6 +2478,91 @@ body.theme-dark .linear-pin-toggle.active {
   color: var(--ink);
   font-size: 16px;
   line-height: 1.25;
+}
+
+.linear-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.linear-title-edit {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.linear-title-row:hover .linear-title-edit,
+.linear-title-row:focus-within .linear-title-edit,
+.linear-title-form .linear-title-edit,
+.linear-title-edit:hover,
+.linear-title-edit:focus-visible {
+  opacity: 1;
+  color: var(--ink);
+  pointer-events: auto;
+}
+
+.linear-title-form .linear-title-edit {
+  pointer-events: auto;
+}
+
+.linear-title-edit svg {
+  width: 14px;
+  height: 14px;
+}
+
+.linear-title-edit path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.linear-title-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.linear-title-input {
+  appearance: none;
+  field-sizing: content;
+  width: auto;
+  min-width: 1ch;
+  max-width: min(520px, 52vw);
+  min-height: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+  outline: 0;
+  overflow: hidden;
+  box-shadow: none;
+  clip-path: inset(0 round 2px);
+  transition: none;
 }
 
 .linear-meta {
@@ -3279,7 +3365,7 @@ body.markdown-table-resizing {
   align-content: start;
   gap: 10px;
   min-height: 0;
-  padding: 14px 14px 6px;
+  padding: 14px;
   contain: layout paint style;
   overflow: auto;
   overflow-anchor: none;
@@ -3288,6 +3374,64 @@ body.markdown-table-resizing {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.agent-output-toolbar {
+  grid-area: terminal;
+  position: absolute;
+  z-index: 5;
+  align-self: end;
+  justify-self: end;
+  display: flex;
+  gap: 4px;
+  right: 22px;
+  bottom: 0;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: var(--panel);
+}
+
+.agent-output-toolbar::after {
+  content: "";
+  position: absolute;
+  right: 1px;
+  bottom: -1px;
+  left: 1px;
+  height: 1px;
+  background: var(--panel);
+  pointer-events: none;
+}
+
+.agent-output-button {
+  width: 26px;
+  min-width: 26px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.agent-output-button:hover,
+.agent-output-button:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.agent-output-button[aria-pressed="true"] {
+  background: transparent;
+}
+
+.agent-output-slash {
+  opacity: 0;
+}
+
+.agent-output-button[aria-pressed="true"] .agent-output-slash {
+  opacity: 1;
 }
 
 .flow-creating-message {
@@ -3473,6 +3617,11 @@ body.markdown-table-resizing {
   flex: 1 1 auto;
   padding-left: 0;
   font-size: 10px;
+}
+
+.terminal-entry-tool-preview .terminal-entry-body-content {
+  max-height: calc(1.55em * 3);
+  overflow: hidden;
 }
 
 .terminal-entry-overflow-marker {
@@ -4413,6 +4562,15 @@ body.theme-dark .agent-context-diff:focus-visible {
 .agent-context-branch {
   padding-left: 6px;
   border-left: 1px solid var(--line-strong);
+}
+
+.agent-context-model[role="button"] {
+  cursor: pointer;
+}
+
+.agent-context-model[role="button"]:hover,
+.agent-context-model[role="button"]:focus-visible {
+  color: var(--text);
 }
 
 .agent-context .agent-provider-icon {

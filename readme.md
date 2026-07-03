@@ -2,7 +2,7 @@
 
 Turbopump is a local-first agent workflow app.
 
-It accepts one repo, creates isolated Git worktrees for Linear tickets, runs Codex inside each worktree, and stores agent traces.
+It accepts one repo, creates isolated Git worktrees for Linear tickets, runs Codex/Claude inside each worktree, and stores agent traces.
 
 ## Setup
 
@@ -26,4 +26,4 @@ then in settings:
 - keeps a warmed copy of your repo in `.flow/repo` and pulls it in the background
 - creates each ticket session as an isolated Git worktree under `.flow/worktrees`
 - starts prompts and shell commands from that ticket's worktree directory
-- does not provide any credentials for Codex (configure separately)
+- does not provide any credentials for Codex/Claude (configure separately)

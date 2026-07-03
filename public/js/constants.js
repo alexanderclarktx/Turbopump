@@ -44,9 +44,9 @@ export const GITHUB_CI_RECENT_MS = 30 * 60 * 1000;
 
 export const LOG_PAGE_SIZE = 1000;
 
-export const AGENT_TRACE_INITIAL_TURN_COUNT = 6;
+export const AGENT_TRACE_INITIAL_TURN_COUNT = 12;
 
-export const AGENT_TRACE_TURN_PAGE_SIZE = 6;
+export const AGENT_TRACE_TURN_PAGE_SIZE = 12;
 
 export const TERMINAL_TRACE_INITIAL_RENDER_COUNT = 18;
 

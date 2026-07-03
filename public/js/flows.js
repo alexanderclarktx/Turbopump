@@ -6,6 +6,7 @@ import { api, isGitCloneError, requestFlowSnapshot, wsRequest } from "./net.js";
 import { clearLinearIssueNotification } from "./notifications.js";
 import {
   clearPromptDraftForIssue,
+  flashBlockedInput,
   promptInput,
   renderAgentImageContext,
   resizeMessageInput,
@@ -18,7 +19,7 @@ import {
 } from "./prompt.js";
 import { render } from "./render.js";
 import { repoUrlConfigured } from "./settings.js";
-import { agentProviderKindForFlow } from "./slash-commands.js";
+import { agentProviderKindForFlow, renderSlashMenuCommands, slashCommandExpansionMatches } from "./slash-commands.js";
 import { els, state } from "./state.js";
 import { copyAgentBranchName, renderLogs, renderShellOutputPane, resumeTerminalFollow } from "./terminal-render.js";
 import {
@@ -33,6 +34,10 @@ import {
   updateTicketSelectionCards,
 } from "./tickets.js";
 import { escapeAttribute, toast } from "./ui.js";
+
+const defaultCodexModel = "gpt-5.5";
+const defaultClaudeModel = "claude-fable-5";
+const defaultCodexReasoningEffort = "medium";
 
 export function githubCiStatus(flow) {
   const status = String(flow?.githubCiStatus || "unknown").toLowerCase();
@@ -161,6 +166,11 @@ export function setFlows(flows, options = {}) {
     if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
   }
   state.flows = nextFlows;
+  const selected = state.flows.find((flow) => flow.id === state.selectedFlowId);
+  if (selected?.linearIssueId && state.selectedLinearIssueId !== selected.linearIssueId) {
+    state.selectedLinearIssueId = selected.linearIssueId;
+    localStorage.setItem("flow.selectedLinearIssueId", selected.linearIssueId);
+  }
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
   scheduleQueuedPromptFlush();
@@ -297,11 +307,24 @@ export function tokenUsageOnlyFlowChanges(previousFlows, nextFlows) {
 
 export function agentModelLabel(flow) {
   if (!flow) return "unknown";
+  const provider = agentProviderKindForFlow(flow);
   return [
-    flow.agentModel || "unknown",
-    flow.agentReasoningEffort || "",
+    flow.agentModel || (provider === "claude" ? defaultClaudeModel : defaultCodexModel),
+    provider === "codex" ? flow.agentReasoningEffort || defaultCodexReasoningEffort : "",
     flow.agentServiceTier === "fast" ? "fast" : "",
   ].filter(Boolean).join(" ");
+}
+
+export function wouldBeAgentContext(ticket) {
+  if (!ticket?.identifier) return null;
+  const provider = state.defaultAgentProvider === "claude" ? "claude" : "codex";
+  const issueSlug = ticket.identifier.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return {
+    agentProvider: provider,
+    agentModel: provider === "claude" ? defaultClaudeModel : defaultCodexModel,
+    agentReasoningEffort: provider === "codex" ? defaultCodexReasoningEffort : "",
+    branchName: issueSlug ? `turbo/${issueSlug}` : "",
+  };
 }
 
 export function agentProviderIcon(flow) {
@@ -324,12 +347,18 @@ export function agentContextWindowLabel(flow) {
 export function renderAgentContext(flow) {
   const context = els.flowPane.querySelector(".agent-context");
   const branch = context.querySelector(".agent-context-branch");
+  const model = context.querySelector(".agent-context-model");
   const diffButton = context.querySelector(".agent-context-diff");
   const diff = flow?.id ? state.flowDiffs.get(flow.id) : null;
   context.hidden = !flow;
   context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);
-  context.querySelector(".agent-context-model").textContent = agentModelLabel(flow);
-  context.querySelector(".agent-context-model").prepend(agentProviderIcon(flow));
+  model.textContent = agentModelLabel(flow);
+  model.prepend(agentProviderIcon(flow));
+  const modelDisabled = !flow || flowAgentRunning(flow);
+  model.setAttribute("aria-disabled", String(modelDisabled));
+  model.tabIndex = flow ? 0 : -1;
+  model.onclick = flow ? () => (modelDisabled ? flashBlockedInput(promptInput()) : openModelMenu()) : null;
+  model.onkeydown = flow ? (event) => handleModelMenuKeydown(event, modelDisabled) : null;
   diffButton.hidden = !flow || !diffHasChanges(diff);
   renderDiffIndicator(diffButton, flow?.id || "", diff);
   diffButton.disabled = !flow;
@@ -360,6 +389,21 @@ export function renderAgentContext(flow) {
     };
   }
   if (flow?.id && !diff && !state.flowDiffLoadingIds.has(diffLoadingKey(flow.id))) void loadFlowDiff(flow.id);
+}
+
+export function openModelMenu() {
+  state.slashCommandIndex = 0;
+  renderSlashMenuCommands(slashCommandExpansionMatches("/model"));
+}
+
+export function handleModelMenuKeydown(event, blocked = false) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  if (blocked) {
+    flashBlockedInput(promptInput());
+    return;
+  }
+  openModelMenu();
 }
 
 export function upsertFlow(flow) {
@@ -518,7 +562,7 @@ export function renderFlowPane(options = {}) {
   syncTicketInputState(issueId);
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
-  renderAgentContext(flow);
+  renderAgentContext(flow || wouldBeAgentContext(ticket));
   renderAgentImageContext();
   if (!issueId) {
     return;

@@ -414,6 +414,7 @@ export function appendTerminalBlock(fragment, group, options = {}) {
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
   if (options.incoming) block.classList.add("terminal-entry-incoming");
+  if (group.latestVisibleToolOutput) block.classList.add("terminal-entry-tool-preview");
 
   if (group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command") {
     block.classList.add("terminal-entry-command");
@@ -532,7 +533,7 @@ export function appendTerminalTraceGroup(fragment, group, options = {}) {
 
   const label = document.createElement("span");
   label.className = "terminal-entry-label";
-  const elapsed = formatTerminalElapsed(group.createdAt, group.lastAt);
+  const elapsed = formatTerminalElapsed(group.displayCreatedAt || group.createdAt, group.displayLastAt || group.lastAt);
   label.textContent = elapsed ? `${meta.label} (${elapsed})` : meta.label;
 
   const time = document.createElement("time");
@@ -577,6 +578,11 @@ export function materializeTerminalTraceGroup(details) {
     if ((details._traceRenderIndex || 0) > 0) scheduleTerminalTraceRender(details);
     return details._traceBody;
   }
+  const children = details._traceChildren || [];
+  if (!children.length) {
+    details._traceRenderIndex = 0;
+    return null;
+  }
 
   const body = document.createElement("div");
   body.className = "terminal-trace-body";
@@ -596,7 +602,7 @@ export function materializeTerminalTraceGroup(details) {
   details._traceBodyContent = content;
   body.replaceChildren(collapseButton, content);
   details.appendChild(body);
-  details._traceRenderIndex = (details._traceChildren || []).length;
+  details._traceRenderIndex = children.length;
   if (details.open) {
     renderTerminalTraceChunk(details, { maxItems: TERMINAL_TRACE_INITIAL_RENDER_COUNT, scheduleNext: false });
     scheduleTerminalTraceRender(details, { delay: TERMINAL_TRACE_OPEN_DURATION_MS });
@@ -852,6 +858,59 @@ export function visibleTerminalGroups(flowId, groups) {
   return groups.slice(startIndex);
 }
 
+export function isAgentToolOutputGroup(group) {
+  return [
+    "agent:tool",
+    "agent:tool-result",
+    "agent:output",
+    "agent:cmd",
+    "agent:stderr",
+    "agent:error",
+    "agent:approval",
+    "agent:input",
+    "agent:protocol",
+  ].includes(group.source);
+}
+
+export function latestAgentToolOutputGroupIndex(groups) {
+  let latestUserIndex = -1;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    if (isSubmittedUserLogSource(groups[index].source)) {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  for (let index = groups.length - 1; index > latestUserIndex; index -= 1) {
+    if (isAgentToolOutputGroup(groups[index])) return index;
+  }
+  return -1;
+}
+
+export function hasLiveAgentReplyGroup(groups) {
+  return groups.some((group) => group.liveStreaming && (group.source === "agent" || group.source === "agent:message"));
+}
+
+export function traceThoughtGroups(groups) {
+  return (groups || []).filter((group) => !isAgentToolOutputGroup(group));
+}
+
+export function renderableTerminalGroups(groups, options = {}) {
+  if (!state.agentTraceHidden) return groups;
+  const latestToolIndex = options.agentWorking && !hasLiveAgentReplyGroup(groups) ? latestAgentToolOutputGroupIndex(groups) : -1;
+  const result = [];
+  for (const [index, group] of groups.entries()) {
+    group.latestVisibleToolOutput = index === latestToolIndex && isAgentToolOutputGroup(group);
+    if (group.source === "agent:trace-group") {
+      result.push({ ...group, children: traceThoughtGroups(group.children), defaultOpen: false });
+      continue;
+    }
+    if (group.traceContent && index !== latestToolIndex) continue;
+    if (isAgentToolOutputGroup(group) && index !== latestToolIndex) continue;
+    result.push(group);
+  }
+  return result;
+}
+
 export function terminalTraceCanLoadMore(flowId, groups) {
   return terminalVisibleTurnStartIndex(flowId, groups) > 0 || !state.logOlderCompleteFlowIds.has(flowId);
 }
@@ -894,11 +953,11 @@ export function renderLogs(id, options = {}) {
   const flow = state.flows.find((item) => item.id === id) || null;
   const logs = state.logs.get(id) || [];
   const allGroups = terminalGroups(logs, flow);
-  const groups = visibleTerminalGroups(id, allGroups);
+  const agentWorking = agentWorkingForFlow(flow);
+  const groups = renderableTerminalGroups(visibleTerminalGroups(id, allGroups), { agentWorking });
   syncClosedTerminalTraceChildren(terminal, groups);
   const canLoadMore = terminalTraceCanLoadMore(id, allGroups);
   const loadMoreLoading = state.logOlderLoadingFlowIds.has(id);
-  const agentWorking = agentWorkingForFlow(flow);
   const agentWorkingKind = agentWorking ? "agent" : "idle";
   syncAgentWorkingPushState(id, agentWorking);
   const signature = `${terminalGroupsSignature(groups)}\u001fworking:${agentWorking}:${agentWorkingKind}\u001fload-more:${canLoadMore}:${loadMoreLoading}`;

@@ -73,6 +73,8 @@ describe("Agent providers", () => {
     expect(handler).toContain("setSetting(claudeSessionSettingKey(runtime.flowId), sessionId);");
     expect(handler).toContain("finishClaudeTurn(runtime, message);");
     expect(server).toContain("function claudeTokenUsageMetadata(message: ClaudeSdkMessage): Partial<Flow>");
+    expect(server).toContain("function claudeContextTokenUsageMetadata(usage: Record<string, unknown> | undefined): Partial<Flow>");
+    expect(server).toContain("function claudeContextUsageFlowUpdate(runtime: RuntimeProcess, usage: Partial<Flow>)");
     expect(server).toContain("function claudeContextWindowMetadata(message: ClaudeSdkMessage): Partial<Flow>");
     expect(server).toContain("function claudeTurnTotalTokens(message: ClaudeSdkMessage)");
     expect(server).toContain('agentTotalTokensUsed: (flowBefore?.agentTotalTokensUsed || 0) + claudeTurnTotalTokens(message),');
@@ -82,7 +84,7 @@ describe("Agent providers", () => {
     expect(server).toContain("rows.push([claudeUsageLimitLabel(limit), claudeUsageLimitValue(limit)]);");
     expect(server).toContain('tryMigration("alter table flows add column agentTotalTokensUsed integer not null default 0");');
     expect(server).toContain("...claudeContextWindowMetadata(message),");
-    expect(server).toContain("if (usage.agentContextTokensUsed) {");
+    expect(server).toContain("updateFlow(runtime.flowId, claudeContextUsageFlowUpdate(runtime, usage));");
     expect(server).toContain("function finishClaudeTurn(runtime: RuntimeProcess, message: ClaudeSdkMessage)");
     expect(server).toContain("createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);");
   });
@@ -93,25 +95,31 @@ describe("Agent providers", () => {
       server.indexOf("async function startAgent("),
     );
     expect(slashRouter).toContain("const provider = providerForFlow(flow);");
-    expect(slashRouter).toContain('if (command === "/provider") {');
+    expect(slashRouter).toContain('if (command === "/model") {');
+    expect(slashRouter).toContain("await switchFlowModel(flow, slashCommandArgs(message));");
     expect(slashRouter).toContain("if (await provider.handleSlashCommand(flow, command, message, userLogId)) return true;");
     expect(slashRouter).toContain("throw new Error(`Unknown slash command: ${command}`);");
     expect(server).toContain("async function handleClaudeSlashCommand(flow: Flow, command: string, message: string, userLogId: number)");
     expect(server).toContain("async function clearClaudeSession(flow: Flow)");
     expect(server).toContain("async function compactClaudeSession(flow: Flow, promptLogId?: number)");
     expect(server).toContain('const compactingStaleMs = runtime.provider === "claude" ? claudeRuntimeStaleMs : agentRuntimeStaleMs;');
-    expect(server).toContain('const claudeCompactModel = "claude-sonnet-5";');
+    expect(server).toContain('const claudeCompactModel = "claude-haiku-4-5";');
     expect(server).toContain("function restoreClaudeCompactModel(runtime: RuntimeProcess)");
     expect(server).toContain("await claude.query.setModel(claudeCompactModel);");
     expect(server).toContain("claude.compactRestoreModel = flowModel;");
+    expect(server).toContain("const restoreModel = runtime.claude?.compactRestoreModel;");
+    expect(server).toContain("if (model && !(restoreModel && model === claudeCompactModel)) updateFlow(runtime.flowId, { agentModel: model });");
+    expect(server).toContain("if (restoreModel && model === restoreModel && runtime.claude) runtime.claude.compactRestoreModel = undefined;");
     expect(server).toContain("function finishClaudeCompaction(runtime: RuntimeProcess, succeeded: boolean)");
+    expect(server).toContain("agentContextTokensUsed: 0");
     expect(server).toContain("finishClaudeCompaction(runtime, subtype === \"success\");");
     expect(app).toContain('{ name: "/compact", description: "Compact the current Claude session context" }');
   });
 
   test("switches providers as a fresh-session handoff with the full transcript", () => {
-    expect(server).toContain("async function switchFlowProvider(flow: Flow, target: string)");
-    expect(server).toContain('throw new Error("Usage: /provider codex|claude");');
+    expect(server).toContain("async function switchFlowProvider(flow: Flow, kind: AgentProviderKind, model: string)");
+    expect(server).toContain("async function switchFlowModel(flow: Flow, target: string)");
+    expect(server).toContain('if (!kind) throw new Error(`Usage: /model ${allAgentModels.join("|")}`);');
     expect(server).toContain('throw new Error("Cannot switch providers while an agent turn is running.");');
     expect(server).toContain("function providerHandoffPrompt(flow: Flow, fromLabel: string)");
     expect(server).toContain("function flowTranscriptTurns(flowId: string)");
@@ -119,7 +127,8 @@ describe("Agent providers", () => {
       "select source, message from logs where flowId = ? and source in ('user', 'agent:message', 'agent:message-boundary') order by id asc",
     );
     expect(server).toContain('const claudeDefaultModel = "claude-fable-5";');
-    expect(server).toContain('agentModel: kind === "claude" ? claudeDefaultModel : codexDefaultModel,');
+    expect(server).toContain("agentModel: model,");
+    expect(server).toContain("await switchFlowProvider(flow, kind, model);");
     expect(server).toContain("setSetting(handoffPendingSettingKey(flow.id), providerHandoffPrompt(flow, agentProviders[current].label));");
     expect(server).toContain("function composeTurnMessage(flowId: string, message: string)");
     expect(server).toContain("function takePendingHandoff(flowId: string)");
@@ -136,15 +145,17 @@ describe("Agent providers", () => {
     expect(app).toContain("function activeSlashCommands()");
     expect(app).toContain("function activeSlashCommandExpansions()");
     expect(app).toContain('"agent:message": { label: agentLabel, marker: ">", tone: "assistant" },');
-    expect(app).toContain('{ name: "/provider", description: "Switch the agent provider for this flow" }');
-    expect(app).toContain('{ name: "/provider claude", description: "Use Claude for this flow" }');
+    expect(app).toContain('{ name: "/model", description: "Set the agent model for this flow" }');
+    expect(app).toContain('name: `/model ${model}`,');
     expect(app).toContain("/^(starting|resuming) Claude session\\b/i.test(message)");
   });
 
   test("shows the active provider icon next to the model name in the flow status bar", () => {
     expect(app).toContain("function agentProviderIcon(flow)");
     expect(app).toContain("icon.dataset.provider = agentProviderKindForFlow(flow);");
-    expect(app).toContain('context.querySelector(".agent-context-model").prepend(agentProviderIcon(flow));');
+    expect(app).toContain("model.prepend(agentProviderIcon(flow));");
+    expect(app).toContain("const modelDisabled = !flow || flowAgentRunning(flow);");
+    expect(app).toContain("model.onclick = flow ? () => (modelDisabled ? flashBlockedInput(promptInput()) : openModelMenu()) : null;");
     expect(css).toContain(".agent-context .agent-provider-icon {");
     expect(css).toContain('mask: url("provider-icons/openai.svg") no-repeat center / contain;');
     expect(css).toContain('.agent-context .agent-provider-icon[data-provider="claude"]');
