@@ -1048,6 +1048,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-title-edit");
     expect(css).toContain("field-sizing: content;");
     expect(css).toContain("border: 0;\n  background: transparent;\n  color: var(--ink);");
+    expect(css).toContain("border-radius: 5px;");
+    expect(css).toContain("clip-path: inset(0 round 5px);");
   });
 
   test("does not render the Linear team key as a redundant metadata pill", () => {

@@ -2551,7 +2551,7 @@ body.theme-dark .linear-pin-toggle.active {
   margin: 2px 0 0;
   padding: 0;
   border: 0;
-  border-radius: 0;
+  border-radius: 5px;
   background: transparent;
   color: var(--ink);
   font: inherit;
@@ -2559,7 +2559,9 @@ body.theme-dark .linear-pin-toggle.active {
   font-weight: 700;
   line-height: 1.25;
   outline: 0;
+  overflow: hidden;
   box-shadow: none;
+  clip-path: inset(0 round 5px);
   transition: none;
 }
 
