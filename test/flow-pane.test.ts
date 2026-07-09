@@ -31,7 +31,8 @@ Object.defineProperty(globalThis, "document", {
 });
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const { terminalGroups } = await import("../public/js/terminal-groups.js");
-const { formatTerminalElapsed } = await import("../public/js/terminal-render.js");
+const { state } = await import("../public/js/state.js");
+const { formatTerminalElapsed, renderableTerminalGroups } = await import("../public/js/terminal-render.js");
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
 describe("Turbopump pane markup", () => {
@@ -292,12 +293,16 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('els.agentTraceToggle.setAttribute("aria-label", state.agentTraceHidden ? "Show tool output messages" : "Hide tool output messages");');
     expect(app).toContain("renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });");
     expect(app).toContain("function renderableTerminalGroups(groups, options = {})");
+    expect(app).toContain("function agentOutputSimpleMode()");
     expect(app).toContain("function isAgentToolOutputGroup(group)");
     expect(app).toContain("function latestAgentToolOutputGroupIndex(groups)");
     expect(app).toContain("function hasLiveAgentReplyGroup(groups)");
+    expect(app).toContain("function toolCallCountSincePreviousThought(groups, index)");
     expect(app).toContain("const latestToolIndex = options.agentWorking && !hasLiveAgentReplyGroup(groups) ? latestAgentToolOutputGroupIndex(groups) : -1;");
     expect(app).toContain('block.classList.add("terminal-entry-tool-preview");');
-    expect(app).toContain("group.latestVisibleToolOutput = index === latestToolIndex && isAgentToolOutputGroup(group);");
+    expect(app).toContain("group.latestVisibleToolOutput = latestVisibleToolOutput;");
+    expect(app).toContain("if (latestVisibleToolOutput) group.simpleModeToolCallCount = latestToolCallCount;");
+    expect(app).toContain("group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;");
     expect(app).toContain("function traceThoughtGroups(groups)");
     expect(app).toContain("result.push({ ...group, children: traceThoughtGroups(group.children), defaultOpen: false });");
     expect(app).toContain("toggleTerminalTraceGroup(details);");
@@ -313,6 +318,32 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".agent-output-button[aria-pressed=\"true\"] .agent-output-slash");
     expect(css).toContain(".terminal-entry-tool-preview .terminal-entry-body-content");
     expect(css).toContain("max-height: calc(1.55em * 3);");
+    expect(css).toContain(".terminal-entry-tool-preview {\n  padding-left: 23px;\n}");
+    expect(css).toContain(".terminal-entry-tool-preview .terminal-entry-marker {\n  width: max-content;\n  white-space: nowrap;\n}");
+    expect(css).toContain(".terminal-entry-tool-preview .terminal-entry-body {\n  padding-left: 16px;\n}");
+  });
+
+  test("labels the simple-mode tool preview with tool calls since the previous thought", () => {
+    const previous = state.agentTraceHidden;
+    state.agentTraceHidden = true;
+    try {
+      const groups = renderableTerminalGroups(
+        [
+          { id: 1, source: "user", message: "go", createdAt: "2026-07-02T20:52:58.000Z" },
+          { id: 2, source: "agent:reasoning", message: "checking", createdAt: "2026-07-02T20:52:59.000Z" },
+          { id: 3, logIds: [3], source: "agent:tool", message: "one", createdAt: "2026-07-02T20:53:00.000Z" },
+          { id: 4, source: "agent:tool-result", message: "completed", createdAt: "2026-07-02T20:53:01.000Z" },
+          { id: 5, logIds: [5], source: "agent:tool", message: "two", createdAt: "2026-07-02T20:53:02.000Z" },
+          { id: 6, source: "agent:output", message: "latest", createdAt: "2026-07-02T20:53:03.000Z" },
+        ],
+        { agentWorking: true },
+      );
+      expect(groups.map((group) => group.id)).toEqual([1, 2, 6]);
+      expect(groups.at(-1)?.latestVisibleToolOutput).toBe(true);
+      expect(groups.at(-1)?.simpleModeToolCallCount).toBe(2);
+    } finally {
+      state.agentTraceHidden = previous;
+    }
   });
 
   test("persists environment settings in a dedicated db table", () => {
@@ -838,9 +869,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("const compactQueued = queued && flowAgentCompacting(flow);");
     expect(app).toContain("queuedHint.hidden = !queued || compactQueued;");
     expect(app).toContain('queuedHint.textContent = queuedCanSteer ? \'message queued — press "s" to steer\' : "message queued";');
-    expect(app).toContain("function queuedPromptIsCompact(queued)");
+    expect(app).toContain("function queuedPromptSlashCommand(queued)");
+    expect(app).toContain("function queuedPromptCanSteer(queued)");
     expect(app).toContain("promptQueuedCanSteer() &&");
-    expect(app).toContain("!queuedPromptIsCompact(queued)");
+    expect(app).toContain('!["/compact", "/model"].includes(queuedPromptSlashCommand(queued))');
     expect(app).toContain('event.key.toLowerCase() === "s" &&');
     expect(app).toContain("if (!event.repeat) void submitQueuedPromptSteer();");
     expect(app).toContain('if (event.key === "$" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing)');
@@ -1471,8 +1503,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function agentImagePreviewSource(image)");
     expect(app).toContain('data-image-preview data-image-preview-src="${escapeAttribute(previewSrc)}" data-image-preview-alt="${escapeAttribute(label)}"');
     expect(app).toContain('/context-images/preview?path=${encodeURIComponent(path)}');
-    expect(app).toContain('<span class="agent-image-chip"${previewAttrs}>');
+    expect(app).toContain('<img class="agent-image-chip-preview" src="${escapeAttribute(previewSrc)}" alt="${escapeAttribute(label)}" title="${escapeAttribute(label)}">');
     expect(css).toContain(".agent-image-chip[data-image-preview]");
+    expect(css).toContain("max-height: 100px;");
     expect(server).toContain("async function serveFlowContextImage(flow: Flow, rawPath: string)");
     expect(server).toContain('parts[3] === "context-images" && parts[4] === "preview" && request.method === "GET"');
     expect(css).toContain("cursor: pointer;");
@@ -1782,9 +1815,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("return `${Math.round((available / total) * 100)}%`;");
     expect(app).not.toContain("ctx ");
     expect(app).toContain('const defaultCodexReasoningEffort = "medium";');
-    expect(app).toContain('provider === "codex" ? flow.agentReasoningEffort || defaultCodexReasoningEffort : ""');
+    expect(app).toContain("flow.agentReasoningEffort || defaultCodexReasoningEffort");
     expect(app).toContain("function wouldBeAgentContext(ticket)");
     expect(app).toContain('agentModel: provider === "claude" ? defaultClaudeModel : defaultCodexModel,');
+    expect(app).toContain("agentReasoningEffort: defaultCodexReasoningEffort,");
     expect(app).toContain('branchName: issueSlug ? `turbo/${issueSlug}` : "",');
     expect(app).toContain('flow.agentServiceTier === "fast" ? "fast" : ""');
     expect(app).toContain("function renderAgentContext(flow)");
@@ -2181,6 +2215,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("focusPromptInputForImageDrag(event);\n  setAgentImageDragActive(true);");
     expect(css).not.toContain(".agent-image-drop-overlay");
     expect(css).toContain(".terminal-attached-images");
+    expect(css).toContain(".terminal-attached-images .agent-image-chip {\n  border-color: #6b7280;\n}");
     expect(css).toContain("  display: inline-grid;\n  place-items: center;\n  width: 20px;");
     expect(css).toContain("  margin-left: 2px;\n  padding: 0;\n  border: 0;\n  border-radius: 3px;");
     expect(server).toContain("async function saveFlowContextImages(flow: Flow, formData: FormData)");
@@ -2497,7 +2532,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command"');
     expect(app).toContain('block.classList.add("terminal-entry-command");');
     expect(app).toContain('row.className = "terminal-command-line";');
-    expect(app).toContain("marker.textContent = meta.marker;");
+    expect(app).toContain("group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;");
     expect(app).toContain("row.replaceChildren(marker, body);");
     expect(app).toContain("block.replaceChildren(row);");
     expect(app).toContain("renderInlineMarkdown(formatTerminalMessage(group.source, group.message)");
@@ -2999,6 +3034,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('name: "/review"');
     expect(app).toContain('"/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({');
     expect(app).toContain("const AGENT_MODELS = [");
+    expect(app).toContain('const defaultCodexModel = "gpt-5.6-sol";');
+    expect(app).toContain('"gpt-5.6-sol",');
+    expect(app).toContain('"gpt-5.6-terra",');
+    expect(app).toContain('"gpt-5.6-luna",');
     expect(app).not.toContain('"gpt-5.3-codex",');
     expect(app).not.toContain('"gpt-5.2",');
     expect(app).not.toContain('"claude-haiku-4-5",');
@@ -3026,6 +3065,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function renderSlashMenu()");
     expect(app).toContain("function renderSlashMenuCommands(commands)");
     expect(app).toContain("state.slashMenuCommands = commands;");
+    expect(app).toContain("function handleSlashMenuOutsideMouseDown(event)");
+    expect(app).toContain('document.addEventListener("mousedown", handleSlashMenuOutsideMouseDown);');
+    expect(app).toContain('target.closest(".agent-context-model")');
     expect(app).toContain("function selectSlashCommand");
     expect(app).toContain("function resizeMessageInput()");
     expect(app).toContain("const currentHeight = input.getBoundingClientRect().height;");
@@ -3110,7 +3152,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("async function startQueuedPromptIfReady(flowId: string)");
     expect(server).toContain("async function steerQueuedPrompt(flow: Flow)");
     expect(server).toContain("function isCompactSlashCommand(message: string)");
+    expect(server).toContain("function isModelSlashCommand(message: string)");
     expect(server).toContain('if (isCompactSlashCommand(queued.message)) throw new Error("Queued /compact cannot be steered.");');
+    expect(server).toContain('if (isModelSlashCommand(queued.message)) throw new Error("Queued /model cannot be steered.");');
     expect(server).toContain('parts[3] === "queued-prompt"');
     expect(server).toContain('parts[4] === "steer"');
     expect(server).toContain('parts[4] === "flush"');
@@ -3478,7 +3522,8 @@ describe("Turbopump pane markup", () => {
   });
 
   test("auto-approves sandboxed agent approvals", () => {
-    expect(server).toContain('approvalPolicy: "on-failure"');
+    expect(server).toContain('approvalPolicy: "on-request"');
+    expect(server).not.toContain('approvalPolicy: "on-failure"');
     expect(server).toContain('approvalsReviewer: "auto_review"');
     expect(server).toContain("sandbox: codexSandboxMode(flow)");
     expect(server).toContain("sandboxPolicy: codexSandboxPolicy(flow)");

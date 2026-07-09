@@ -33,7 +33,8 @@ describe("Agent providers", () => {
 
   test("keeps codex behavior behind the codex provider", () => {
     expect(server).toContain("const codexProvider: AgentProvider = {");
-    expect(server).toContain('const codexDefaultModel = "gpt-5.5";');
+    expect(server).toContain('["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]');
+    expect(server).toContain('const codexDefaultModel = "gpt-5.6-sol";');
     expect(server).toContain("model: flow.agentModel || codexDefaultModel,");
     expect(server).toContain("async function handleCodexSlashCommand(flow: Flow, command: string, message: string, userLogId: number)");
     expect(server).toContain("startRuntime: (flow) => startCodexAppServer(flow),");
@@ -107,6 +108,8 @@ describe("Agent providers", () => {
     expect(server).toContain("function restoreClaudeCompactModel(runtime: RuntimeProcess)");
     expect(server).toContain("await claude.query.setModel(claudeCompactModel);");
     expect(server).toContain("claude.compactRestoreModel = flowModel;");
+    expect(server).toContain("compact requested using ${claudeCompactModel}");
+    expect(server).not.toContain("compact requested (using ${claudeCompactModel})");
     expect(server).toContain("const restoreModel = runtime.claude?.compactRestoreModel;");
     expect(server).toContain("if (model && !(restoreModel && model === claudeCompactModel)) updateFlow(runtime.flowId, { agentModel: model });");
     expect(server).toContain("if (restoreModel && model === restoreModel && runtime.claude) runtime.claude.compactRestoreModel = undefined;");
@@ -120,6 +123,7 @@ describe("Agent providers", () => {
     expect(server).toContain("async function switchFlowProvider(flow: Flow, kind: AgentProviderKind, model: string)");
     expect(server).toContain("async function switchFlowModel(flow: Flow, target: string)");
     expect(server).toContain('if (!kind) throw new Error(`Usage: /model ${allAgentModels.join("|")}`);');
+    expect(server).toContain('throw new Error("Cannot switch models while an agent turn is running.");');
     expect(server).toContain('throw new Error("Cannot switch providers while an agent turn is running.");');
     expect(server).toContain("function providerHandoffPrompt(flow: Flow, fromLabel: string)");
     expect(server).toContain("function flowTranscriptTurns(flowId: string)");
@@ -147,6 +151,9 @@ describe("Agent providers", () => {
     expect(app).toContain('"agent:message": { label: agentLabel, marker: ">", tone: "assistant" },');
     expect(app).toContain('{ name: "/model", description: "Set the agent model for this flow" }');
     expect(app).toContain('name: `/model ${model}`,');
+    expect(app).toContain('"gpt-5.6-sol",');
+    expect(app).toContain('"gpt-5.6-terra",');
+    expect(app).toContain('"gpt-5.6-luna",');
     expect(app).toContain("/^(starting|resuming) Claude session\\b/i.test(message)");
   });
 

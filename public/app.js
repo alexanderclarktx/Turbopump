@@ -88,6 +88,7 @@ import {
   toggleSettingsSection,
 } from "./js/settings.js";
 import {
+  handleSlashMenuOutsideMouseDown,
   hideSlashMenu,
   renderSlashMenu,
   slashCommandHasExpansions,
@@ -519,6 +520,8 @@ promptInput().addEventListener("keydown", (event) => {
     input.form?.requestSubmit();
   }
 });
+
+document.addEventListener("mousedown", handleSlashMenuOutsideMouseDown);
 
 shellInput().addEventListener("keydown", (event) => {
   const input = event.currentTarget;

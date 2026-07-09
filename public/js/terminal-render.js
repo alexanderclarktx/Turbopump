@@ -423,7 +423,8 @@ export function appendTerminalBlock(fragment, group, options = {}) {
 
     const marker = document.createElement("span");
     marker.className = "terminal-entry-marker";
-    marker.textContent = meta.marker;
+    marker.textContent =
+      group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;
 
     const body = document.createElement("pre");
     body.className = "terminal-entry-body";
@@ -442,7 +443,8 @@ export function appendTerminalBlock(fragment, group, options = {}) {
 
   const marker = document.createElement("span");
   marker.className = "terminal-entry-marker";
-  marker.textContent = meta.marker;
+  marker.textContent =
+    group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;
 
   const label = document.createElement("span");
   label.className = "terminal-entry-label";
@@ -529,7 +531,8 @@ export function appendTerminalTraceGroup(fragment, group, options = {}) {
 
   const marker = document.createElement("span");
   marker.className = "terminal-entry-marker";
-  marker.textContent = meta.marker;
+  marker.textContent =
+    group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;
 
   const label = document.createElement("span");
   label.className = "terminal-entry-label";
@@ -822,6 +825,8 @@ export function terminalGroupSignaturePart(group) {
     group.createdAt,
     group.lastAt,
     String(group.message || "").length,
+    group.latestVisibleToolOutput ? "preview" : "",
+    group.simpleModeToolCallCount ?? "",
     children,
   ].join(":");
 }
@@ -894,12 +899,33 @@ export function traceThoughtGroups(groups) {
   return (groups || []).filter((group) => !isAgentToolOutputGroup(group));
 }
 
+export function agentOutputSimpleMode() {
+  return state.agentTraceHidden;
+}
+
+export function isAgentThoughtOrMessageGroup(group) {
+  return ["agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(group.source);
+}
+
+export function toolCallCountSincePreviousThought(groups, index) {
+  let count = 0;
+  for (let cursor = index; cursor >= 0; cursor -= 1) {
+    const group = groups[cursor];
+    if (cursor !== index && isAgentThoughtOrMessageGroup(group)) break;
+    if (group.source === "agent:tool") count += group.logIds?.length || 1;
+  }
+  return count;
+}
+
 export function renderableTerminalGroups(groups, options = {}) {
-  if (!state.agentTraceHidden) return groups;
+  if (!agentOutputSimpleMode()) return groups;
   const latestToolIndex = options.agentWorking && !hasLiveAgentReplyGroup(groups) ? latestAgentToolOutputGroupIndex(groups) : -1;
+  const latestToolCallCount = latestToolIndex === -1 ? 0 : toolCallCountSincePreviousThought(groups, latestToolIndex);
   const result = [];
   for (const [index, group] of groups.entries()) {
-    group.latestVisibleToolOutput = index === latestToolIndex && isAgentToolOutputGroup(group);
+    const latestVisibleToolOutput = index === latestToolIndex && isAgentToolOutputGroup(group);
+    group.latestVisibleToolOutput = latestVisibleToolOutput;
+    if (latestVisibleToolOutput) group.simpleModeToolCallCount = latestToolCallCount;
     if (group.source === "agent:trace-group") {
       result.push({ ...group, children: traceThoughtGroups(group.children), defaultOpen: false });
       continue;

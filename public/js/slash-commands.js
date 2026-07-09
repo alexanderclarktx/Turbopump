@@ -3,6 +3,9 @@ import { promptInput, promptQueuedForSelectedFlow, resizeMessageInput, shellInpu
 import { els, state } from "./state.js";
 
 const AGENT_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
@@ -175,6 +178,14 @@ function renderSlashMenuItems(matches) {
 export function renderSlashMenuCommands(commands) {
   state.slashMenuCommands = commands;
   renderSlashMenuItems(commands);
+}
+
+export function handleSlashMenuOutsideMouseDown(event) {
+  const menu = els.flowPane.querySelector(".slash-menu");
+  const target = event.target;
+  if (menu.hidden || !state.slashMenuCommands || !(target instanceof Element)) return;
+  if (menu.contains(target) || target.closest(".agent-context-model")) return;
+  hideSlashMenu();
 }
 
 export function renderSlashMenu() {

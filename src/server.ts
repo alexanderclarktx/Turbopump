@@ -141,8 +141,8 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
-const agentModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
-const codexDefaultModel = "gpt-5.5";
+const agentModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+const codexDefaultModel = "gpt-5.6-sol";
 const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
 const defaultAgentProviderSettingKey = "defaultAgentProvider";
 const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"]);
@@ -1950,7 +1950,7 @@ function codexThreadParams(flow: Flow, sessionStartSource: ThreadStartSource = "
   return {
     ...codexThreadOverrides(flow),
     cwd: flow.checkoutPath,
-    approvalPolicy: "on-failure",
+    approvalPolicy: "on-request",
     approvalsReviewer: "auto_review",
     sandbox: codexSandboxMode(flow),
     developerInstructions: flowDeveloperInstructions(flow),
@@ -1966,7 +1966,7 @@ function codexThreadResumeParams(flow: Flow, threadId: string) {
     ...codexThreadOverrides(flow),
     threadId,
     cwd: flow.checkoutPath,
-    approvalPolicy: "on-failure",
+    approvalPolicy: "on-request",
     approvalsReviewer: "auto_review",
     sandbox: codexSandboxMode(flow),
     developerInstructions: flowDeveloperInstructions(flow),
@@ -1980,7 +1980,7 @@ function codexTurnParams(runtime: RuntimeProcess, flow: Flow, message: string) {
     threadId: runtime.threadId,
     input: textInput(message),
     cwd: flow.checkoutPath,
-    approvalPolicy: "on-failure",
+    approvalPolicy: "on-request",
     approvalsReviewer: "auto_review",
     sandboxPolicy: codexSandboxPolicy(flow),
     ...codexTurnOverrides(flow),
@@ -2487,6 +2487,10 @@ function parseSlashCommand(message: string) {
 
 function isCompactSlashCommand(message: string) {
   return parseSlashCommand(message) === "/compact";
+}
+
+function isModelSlashCommand(message: string) {
+  return parseSlashCommand(message) === "/model";
 }
 
 function slashCommandArgs(message: string) {
@@ -3031,7 +3035,7 @@ async function compactClaudeSession(flow: Flow, promptLogId?: number) {
   runtime.compactingStartedAt = Date.now();
   runtime.compactionPromptLogId = promptLogId;
   runtime.lastSeenAt = Date.now();
-  insertLog(flow.id, "agent:status", swapModel ? `compact requested (using ${claudeCompactModel})` : "compact requested");
+  insertLog(flow.id, "agent:status", swapModel ? `compact requested using ${claudeCompactModel}` : "compact requested");
   updateFlow(flow.id, { agentStatus: "running" });
   if (swapModel) {
     claude.compactRestoreModel = flowModel;
@@ -3352,6 +3356,8 @@ async function switchFlowModel(flow: Flow, target: string) {
   const model = target.trim().toLowerCase();
   const kind = providerKindForAgentModel(model);
   if (!kind) throw new Error(`Usage: /model ${allAgentModels.join("|")}`);
+  const runtime = agentProcesses.get(flow.id);
+  if (runtime?.activeTurnId || runtime?.compacting) throw new Error("Cannot switch models while an agent turn is running.");
   if (kind !== flowProviderKind(flow)) {
     await switchFlowProvider(flow, kind, model);
     return;
@@ -3405,6 +3411,7 @@ async function steerQueuedPrompt(flow: Flow) {
   const queued = queuedPromptForFlow(flow.id);
   if (!queued) throw new Error("No queued message to steer.");
   if (isCompactSlashCommand(queued.message)) throw new Error("Queued /compact cannot be steered.");
+  if (isModelSlashCommand(queued.message)) throw new Error("Queued /model cannot be steered.");
   const runtime = agentProcesses.get(flow.id);
   if (!runtime?.activeTurnId || runtime.compacting) throw new Error("No active agent turn to steer.");
 
