@@ -214,16 +214,20 @@ export function promptQueuedForSelectedFlow() {
   return promptQueuedForFlow(selectedFlow());
 }
 
-export function queuedPromptIsCompact(queued) {
+export function queuedPromptSlashCommand(queued) {
   const trimmed = String(queued?.message || "").trim();
-  if (!trimmed.startsWith("/")) return false;
+  if (!trimmed.startsWith("/")) return "";
   const [command] = trimmed.split(/\s+/, 1);
-  return command.toLowerCase() === "/compact";
+  return command.toLowerCase();
+}
+
+export function queuedPromptCanSteer(queued) {
+  return !["/compact", "/model"].includes(queuedPromptSlashCommand(queued));
 }
 
 export function promptQueuedCanSteer(flow = selectedFlow()) {
   const queued = queuedPromptForFlow(flow);
-  return Boolean(queued && !queuedPromptIsCompact(queued) && flowAgentRunning(flow) && !flowAgentCompacting(flow));
+  return Boolean(queued && queuedPromptCanSteer(queued) && flowAgentRunning(flow) && !flowAgentCompacting(flow));
 }
 
 export function canSubmitPromptMessage() {
@@ -656,9 +660,12 @@ export function renderAgentImageChip(image, options = {}) {
   const previewAttrs = previewSrc
     ? ` data-image-preview data-image-preview-src="${escapeAttribute(previewSrc)}" data-image-preview-alt="${escapeAttribute(label)}"`
     : "";
+  const content = previewSrc
+    ? `<img class="agent-image-chip-preview" src="${escapeAttribute(previewSrc)}" alt="${escapeAttribute(label)}" title="${escapeAttribute(label)}">`
+    : `<span class="agent-image-chip-label">${escapeHtml(label)}</span>`;
   return `
     <span class="agent-image-chip"${previewAttrs}>
-      <span class="agent-image-chip-label">${escapeHtml(label)}</span>
+      ${content}
       ${removable ? `<button type="button" aria-label="Remove image" data-index="${options.index}">×</button>` : ""}
     </span>
   `;

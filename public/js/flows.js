@@ -35,7 +35,7 @@ import {
 } from "./tickets.js";
 import { escapeAttribute, toast } from "./ui.js";
 
-const defaultCodexModel = "gpt-5.5";
+const defaultCodexModel = "gpt-5.6-sol";
 const defaultClaudeModel = "claude-fable-5";
 const defaultCodexReasoningEffort = "medium";
 
@@ -310,7 +310,7 @@ export function agentModelLabel(flow) {
   const provider = agentProviderKindForFlow(flow);
   return [
     flow.agentModel || (provider === "claude" ? defaultClaudeModel : defaultCodexModel),
-    provider === "codex" ? flow.agentReasoningEffort || defaultCodexReasoningEffort : "",
+    flow.agentReasoningEffort || defaultCodexReasoningEffort,
     flow.agentServiceTier === "fast" ? "fast" : "",
   ].filter(Boolean).join(" ");
 }
@@ -322,7 +322,7 @@ export function wouldBeAgentContext(ticket) {
   return {
     agentProvider: provider,
     agentModel: provider === "claude" ? defaultClaudeModel : defaultCodexModel,
-    agentReasoningEffort: provider === "codex" ? defaultCodexReasoningEffort : "",
+    agentReasoningEffort: defaultCodexReasoningEffort,
     branchName: issueSlug ? `turbo/${issueSlug}` : "",
   };
 }
