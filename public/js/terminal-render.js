@@ -15,6 +15,7 @@ import { applyFlowSplitSize, applyShellOutputSplitSize } from "./layout.js";
 import { deleteOutputLogGroup } from "./logs.js";
 import { api } from "./net.js";
 import { renderAgentImageChip } from "./prompt.js";
+import { splitAgentPaneFlowId, splitShellOutputPane, splitShellPaneFlowId, splitTerminal } from "./split.js";
 import { els, state } from "./state.js";
 import { isSubmittedUserLogSource, logMeta, shellOutputGroups, terminalGroups } from "./terminal-groups.js";
 import { copyTextToClipboard, escapeAttribute, escapeHtml, toast } from "./ui.js";
@@ -23,7 +24,38 @@ export function shellOutputPane() {
   return els.flowPane.querySelector(".shell-output-pane");
 }
 
+export function terminalForFlowLogs(flowId) {
+  if (flowId && flowId === state.selectedFlowId) return els.flowPane.querySelector(".terminal");
+  if (flowId && flowId === splitAgentPaneFlowId()) return splitTerminal();
+  return null;
+}
+
+export function renderSplitShellOutputPane(flowId) {
+  const pane = splitShellOutputPane();
+  if (!pane || pane.hidden) return;
+  const flow = state.flows.find((item) => item.id === flowId) || null;
+  const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
+  const shellLive = flowShellLive(flow);
+  if (!groups.length && !shellLive) {
+    pane.replaceChildren();
+    pane._shellOutputSignature = "";
+    return;
+  }
+  const signature = `${terminalGroupsSignature(groups)}\u001fshell-live:${shellLive}`;
+  if (pane._shellOutputSignature === signature) return;
+  const fragment = document.createDocumentFragment();
+  for (const group of groups) appendTerminalBlock(fragment, group);
+  if (shellLive) appendTerminalWorkingBlock(fragment, "shell");
+  pane.replaceChildren(fragment);
+  pane._shellOutputSignature = signature;
+  pane.scrollTop = pane.scrollHeight;
+}
+
 export function renderShellOutputPane(flowId) {
+  if (flowId && flowId === splitShellPaneFlowId() && flowId !== state.selectedFlowId) {
+    renderSplitShellOutputPane(flowId);
+    return;
+  }
   const pane = shellOutputPane();
   const agentPanel = els.flowPane.querySelector(".agent-panel");
   if (!pane) return;
@@ -568,7 +600,7 @@ export function isTerminalTraceGroupOpen(group) {
 }
 
 export function setTerminalTraceGroupOpen(details, open) {
-  const flowId = state.selectedFlowId;
+  const flowId = details.closest(".terminal")?._flowLogFlowId || state.selectedFlowId;
   const traceKey = details.dataset.traceKey || "";
   if (!flowId || !traceKey) return;
   const openKeys = openTraceGroupKeys(flowId);
@@ -973,8 +1005,8 @@ export function scheduleLogRender(id, options = {}) {
 }
 
 export function renderLogs(id, options = {}) {
-  if (id !== state.selectedFlowId) return;
-  const terminal = els.flowPane.querySelector(".terminal");
+  const terminal = terminalForFlowLogs(id);
+  if (!terminal || terminal.hidden) return;
   renderShellOutputPane(id);
   const flow = state.flows.find((item) => item.id === id) || null;
   const logs = state.logs.get(id) || [];

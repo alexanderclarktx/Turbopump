@@ -20,6 +20,7 @@ import {
 import { render } from "./render.js";
 import { repoUrlConfigured } from "./settings.js";
 import { agentProviderKindForFlow, renderSlashMenuCommands, slashCommandExpansionMatches } from "./slash-commands.js";
+import { clearSplitPaneState, renderSplitPanes } from "./split.js";
 import { els, state } from "./state.js";
 import { copyAgentBranchName, renderLogs, renderShellOutputPane, resumeTerminalFollow } from "./terminal-render.js";
 import {
@@ -226,6 +227,7 @@ export function clearFlowClientState(flowId) {
     localStorage.removeItem("flow.selectedFlowId");
   }
   if (state.githubCiSelectedFlowId === flowId) state.githubCiSelectedFlowId = "";
+  clearSplitPaneState(flowId);
 }
 
 export function syncShellOutputClearState(flows) {
@@ -474,7 +476,7 @@ export function selectedTicket() {
 
 export function flowForLinearIssue(identifier) {
   if (!identifier) return null;
-  return state.flows.find((flow) => flow.linearIssueId === identifier) || null;
+  return state.flows.find((flow) => flow.linearIssueId === identifier && !flow.parentFlowId) || null;
 }
 
 export function flowForTicket(ticket) {
@@ -600,6 +602,7 @@ export function renderFlowPane(options = {}) {
       terminal.textContent = "No agent session yet.";
     }
   }
+  renderSplitPanes();
   if (!options.light) void loadLinearDetail(issueId);
   scheduleQueuedPromptFlush();
 }

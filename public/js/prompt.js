@@ -163,11 +163,12 @@ export function updateMessageInputMode() {
     queuedHint.hidden = !queued || compactQueued;
     queuedHint.textContent = queuedCanSteer ? 'message queued — press "s" to steer' : "message queued";
   }
-  if (prefix) {
-    if (queued && !prefix.querySelector(".queued-prompt-spinner")) {
-      prefix.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
-    } else if (!queued && prefix.textContent !== ">") {
-      prefix.textContent = ">";
+  const prefixGlyph = prefix?.querySelector(".input-pane-prefix-glyph");
+  if (prefixGlyph) {
+    if (queued && !prefixGlyph.querySelector(".queued-prompt-spinner")) {
+      prefixGlyph.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
+    } else if (!queued && prefixGlyph.textContent !== ">") {
+      prefixGlyph.textContent = ">";
     }
   }
   if (queued) {
