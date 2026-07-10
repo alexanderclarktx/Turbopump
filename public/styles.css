@@ -205,7 +205,7 @@ textarea {
   min-height: 210px;
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -213,7 +213,7 @@ label {
   display: grid;
   gap: 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -438,7 +438,7 @@ body.app-booting .ticket-drawer {
   background: var(--panel);
   box-shadow: 0 14px 34px rgb(15 23 42 / 16%);
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.3;
   opacity: 0;
   pointer-events: none;
@@ -464,7 +464,7 @@ body.app-booting .ticket-drawer {
 .hotkeys-pane strong {
   display: block;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: 13px;
   text-align: center;
 }
 
@@ -1127,7 +1127,7 @@ body.theme-dark .terminal-entry-stderr .terminal-entry-body {
   border-radius: 4px;
   background: var(--panel);
   color: #b45309;
-  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   opacity: 0;
   transform: translateY(-50%);
   transition: opacity var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
@@ -1193,7 +1193,7 @@ body.theme-dark .terminal-entry-stderr .terminal-entry-body {
 
 .checkout-ticket-name {
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.3;
   overflow-wrap: anywhere;
@@ -1348,7 +1348,7 @@ body.theme-dark .terminal-entry-stderr .terminal-entry-body {
 .note {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .workspace {
@@ -1499,7 +1499,7 @@ body.ticket-drawer-resizing main {
 .ticket-drawer p {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ticket-grid {
@@ -1804,7 +1804,7 @@ body.ticket-drawer-resizing main {
   background: transparent;
   color: var(--ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.25;
   text-align: left;
 }
@@ -1976,7 +1976,7 @@ body.theme-dark .ticket-flow-start:focus-visible {
   grid-row: 1;
   margin: 0;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.25;
   font-weight: 650;
   display: block;
@@ -2175,7 +2175,7 @@ body.theme-dark .ticket-flow-start:focus-visible {
   background: #fff;
   color: var(--muted);
   padding: 0 8px;
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   user-select: none;
   transition:
@@ -2454,7 +2454,7 @@ body.flow-resizing .flow-content {
 
 .linear-issue-header a {
   color: var(--accent);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-decoration: none;
   transition:
@@ -2836,7 +2836,7 @@ body.theme-dark .github-ci-pill-unknown .github-ci-dot {
   background: #fbfcfe;
   padding: 10px;
   color: #27313d;
-  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -3150,7 +3150,7 @@ body.markdown-table-resizing {
   border-radius: 0;
   background: transparent;
   padding: 0;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
   white-space: pre;
 }
@@ -3346,7 +3346,7 @@ body.markdown-table-resizing {
 }
 
 .linear-comment strong {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .linear-comment time,
@@ -3354,7 +3354,7 @@ body.markdown-table-resizing {
 .linear-error {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .linear-error {
@@ -3373,7 +3373,7 @@ body.markdown-table-resizing {
   background: var(--terminal);
   color: var(--terminal-ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.55;
 }
 
@@ -3389,14 +3389,25 @@ body.markdown-table-resizing {
   display: none;
 }
 
-.terminal-split-pane .prompt-input-pane-split {
-  border-top: 1px solid var(--line);
-  padding: 4px 14px;
-  background: var(--panel);
+.agent-session-output {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
 }
 
-.prompt-input-pane-split .prompt-input-prefix {
-  top: 22px;
+.agent-session-output > .terminal {
+  min-width: 0;
+  min-height: 0;
+}
+
+.message-form-split .prompt-input-pane-split {
+  grid-area: input;
+  padding-inline: 14px;
+}
+
+.message-form-split .agent-context-split {
+  grid-area: context;
 }
 
 .agent-output-toolbar {
@@ -3618,7 +3629,7 @@ body.markdown-table-resizing {
 
 .terminal-entry-shell.terminal-entry-command .terminal-command-line,
 .terminal-entry-shell.terminal-entry-command .terminal-entry-body {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .terminal-entry {
@@ -3675,7 +3686,7 @@ body.markdown-table-resizing {
 }
 
 .terminal-entry-shell.terminal-entry-command .terminal-entry-overflow-marker {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .terminal-trace-body .terminal-entry-assistant,
@@ -4091,7 +4102,7 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
   opacity: 0;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4172,7 +4183,7 @@ body.theme-dark .history-search-indicator[data-mode="prompt"] .history-search-la
   border-radius: 4px;
   background: var(--panel-muted);
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.2;
   overflow: hidden;
 }
@@ -4567,7 +4578,7 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
   background: var(--terminal);
   color: var(--terminal-ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.55;
   opacity: 1;
   transition: opacity var(--motion-pane);
@@ -4802,7 +4813,7 @@ body.theme-dark .agent-context-diff:focus-visible {
 .diff-modal-code {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -5153,7 +5164,7 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   min-width: 0;
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5169,7 +5180,7 @@ body.theme-dark .diff-modal-summary .diff-deletions {
 .slash-command-description {
   min-width: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   overflow: visible;
   white-space: normal;
 }

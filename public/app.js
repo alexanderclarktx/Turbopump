@@ -99,6 +99,7 @@ import {
   closeSplitPane,
   interruptSplitAgent,
   interruptSplitShell,
+  isSplitPaneOpen,
   openSplitPane,
   resizeSplitPromptInput,
   selectedCompanionFlow,
@@ -118,6 +119,7 @@ import {
   scheduleMarkdownCodeCopyPositionUpdate,
   startMarkdownTableColumnResize,
   terminalAtLatest,
+  toggleAgentOutput,
 } from "./js/terminal-render.js";
 import {
   closeTicketSearch,
@@ -327,22 +329,12 @@ els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => 
 
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 
-els.agentTraceToggle.addEventListener("click", (event) => {
+els.flowPane.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-agent-output]");
+  if (!button) return;
   event.preventDefault();
   event.stopPropagation();
-  state.agentTraceHidden = !state.agentTraceHidden;
-  els.agentTraceToggle.setAttribute("aria-pressed", String(state.agentTraceHidden));
-  els.agentTraceToggle.setAttribute("aria-label", state.agentTraceHidden ? "Show tool output messages" : "Hide tool output messages");
-  renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });
-});
-
-els.agentRawMarkdownToggle.addEventListener("click", (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  state.rawAgentMarkdown = !state.rawAgentMarkdown;
-  els.agentRawMarkdownToggle.setAttribute("aria-pressed", String(!state.rawAgentMarkdown));
-  els.agentRawMarkdownToggle.setAttribute("aria-label", state.rawAgentMarkdown ? "Show rendered agent responses" : "Show raw agent Markdown");
-  renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });
+  toggleAgentOutput(button.closest(".agent-output-toolbar")?.dataset.flowId, button.dataset.agentOutput);
 });
 
 els.flowPane.addEventListener("click", handleLinearDetailClick);
@@ -422,6 +414,23 @@ for (const button of els.flowPane.querySelectorAll(".input-pane-split-close")) {
   });
 }
 
+function handleSplitPaneShortcut(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key !== "/") return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!event.repeat) void openSplitPane(event.target?.closest?.(".shell-command-panel") ? "shell" : "agent");
+}
+
+function handleCloseSplitPaneShortcut(event) {
+  if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "d") return;
+  const kind = event.target?.closest?.(".shell-command-panel") ? "shell" : event.target?.closest?.(".prompt-input-pane") ? "agent" : "";
+  const flow = selectedFlow();
+  if (!kind || !flow || !isSplitPaneOpen(flow.id, kind)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!event.repeat) closeSplitPane(kind);
+}
+
 splitTerminal().addEventListener("scroll", (event) => {
   const terminal = event.currentTarget;
   if (terminalAtLatest(terminal)) resumeTerminalFollow();
@@ -450,6 +459,11 @@ splitTerminal().addEventListener(
 );
 
 splitPromptInput().addEventListener("input", resizeSplitPromptInput);
+
+els.flowPane.querySelector(".message-form-split").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitSplitPromptMessage();
+});
 
 splitPromptInput().addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -700,6 +714,10 @@ document.addEventListener("keydown", handleCommandK, true);
 document.addEventListener("keydown", handleCommandE, true);
 
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
+
+document.addEventListener("keydown", handleSplitPaneShortcut, true);
+
+document.addEventListener("keydown", handleCloseSplitPaneShortcut, true);
 
 document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
 

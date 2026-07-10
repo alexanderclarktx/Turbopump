@@ -203,6 +203,8 @@ export const state = {
   terminalFollowPaused: false,
   agentTraceHidden: true,
   rawAgentMarkdown: false,
+  agentTraceHiddenByFlow: new Map(),
+  rawAgentMarkdownByFlow: new Map(),
   flowDiffs: new Map(),
   flowDiffLoadingIds: new Set(),
   pendingFlowDiffRefreshes: new Map(),

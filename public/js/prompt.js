@@ -262,6 +262,19 @@ export function handleInputPaneTabKeydown(event) {
   if (!canSwitchInputPane()) return false;
   event.preventDefault();
   if (event.repeat) return true;
+  const primaryPrompt = promptInput();
+  const splitPrompt = els.flowPane.querySelector(".message-input-split");
+  const primaryShell = shellInput();
+  const splitShell = els.flowPane.querySelector(".shell-input-split");
+  const focused = document.activeElement;
+  if (!splitPrompt?.closest(".terminal-split-pane")?.hidden && (focused === primaryPrompt || focused === splitPrompt)) {
+    (focused === primaryPrompt ? splitPrompt : primaryPrompt)?.focus({ preventScroll: true });
+    return true;
+  }
+  if (!splitShell?.closest(".shell-output-split-pane")?.hidden && (focused === primaryShell || focused === splitShell)) {
+    (focused === primaryShell ? splitShell : primaryShell)?.focus({ preventScroll: true });
+    return true;
+  }
   if (focusedInputPaneKind() === "prompt" && state.shellPaneHidden) {
     revealShellPaneForInputFocus();
     return true;

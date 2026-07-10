@@ -30,6 +30,38 @@ export function terminalForFlowLogs(flowId) {
   return null;
 }
 
+export function agentTraceHiddenForFlow(flowId) {
+  return state.agentTraceHiddenByFlow.get(flowId) ?? state.agentTraceHidden;
+}
+
+export function rawAgentMarkdownForFlow(flowId) {
+  return state.rawAgentMarkdownByFlow.get(flowId) ?? state.rawAgentMarkdown;
+}
+
+export function syncAgentOutputToolbar(toolbar, flowId) {
+  if (!toolbar) return;
+  toolbar.dataset.flowId = flowId || "";
+  const traceHidden = agentTraceHiddenForFlow(flowId);
+  const rawMarkdown = rawAgentMarkdownForFlow(flowId);
+  const trace = toolbar.querySelector('[data-agent-output="trace"]');
+  const markdown = toolbar.querySelector('[data-agent-output="markdown"]');
+  trace?.setAttribute("aria-pressed", String(traceHidden));
+  trace?.setAttribute("aria-label", traceHidden ? "Show tool output messages" : "Hide tool output messages");
+  markdown?.setAttribute("aria-pressed", String(!rawMarkdown));
+  markdown?.setAttribute("aria-label", rawMarkdown ? "Show rendered agent responses" : "Show raw agent Markdown");
+}
+
+export function toggleAgentOutput(flowId, kind) {
+  if (!flowId) return;
+  if (kind === "trace") state.agentTraceHiddenByFlow.set(flowId, !agentTraceHiddenForFlow(flowId));
+  else if (kind === "markdown") state.rawAgentMarkdownByFlow.set(flowId, !rawAgentMarkdownForFlow(flowId));
+  else return;
+  for (const toolbar of els.flowPane.querySelectorAll(".agent-output-toolbar")) {
+    if (toolbar.dataset.flowId === flowId) syncAgentOutputToolbar(toolbar, flowId);
+  }
+  renderLogs(flowId, { force: true, preserveScrollTop: true });
+}
+
 export function renderSplitShellOutputPane(flowId) {
   const pane = splitShellOutputPane();
   if (!pane || pane.closest(".shell-output-split-pane")?.hidden) return;
@@ -482,7 +514,7 @@ export function appendTerminalBlock(fragment, group, options = {}) {
   });
   if (usesTerminalBlockMarkdown(group.source)) {
     body.classList.add("terminal-markdown-output");
-    if (state.rawAgentMarkdown && usesRawAgentMarkdown(group.source)) {
+    if (rawAgentMarkdownForFlow(group.flowId) && usesRawAgentMarkdown(group.source)) {
       body.innerHTML = renderTerminalMarkdownOutput(message, { raw: true });
     } else if (group.liveStreaming) {
       body.classList.add("terminal-streaming-output");
@@ -847,7 +879,7 @@ export function terminalGroupsSignature(groups) {
 export function terminalGroupNodeSignature(group) {
   const logIds = group.logIds || [group.id];
   const deleting = logIds.some((logId) => state.deletingOutputLogIds.has(logId));
-  return [terminalGroupSignaturePart(group), Boolean(group.liveStreaming), Boolean(group.turnPending), deleting, state.rawAgentMarkdown].join(":");
+  return [terminalGroupSignaturePart(group), Boolean(group.liveStreaming), Boolean(group.turnPending), deleting, rawAgentMarkdownForFlow(group.flowId)].join(":");
 }
 
 export function syncClosedTerminalTraceChildren(terminal, groups) {
@@ -908,8 +940,8 @@ export function traceThoughtGroups(groups) {
   return (groups || []).filter((group) => !isAgentToolOutputGroup(group));
 }
 
-export function agentOutputSimpleMode() {
-  return state.agentTraceHidden;
+export function agentOutputSimpleMode(flowId) {
+  return agentTraceHiddenForFlow(flowId);
 }
 
 export function isAgentThoughtOrMessageGroup(group) {
@@ -927,7 +959,7 @@ export function toolCallCountSincePreviousThought(groups, index) {
 }
 
 export function renderableTerminalGroups(groups, options = {}) {
-  if (!agentOutputSimpleMode()) return groups;
+  if (!agentOutputSimpleMode(options.flowId)) return groups;
   const latestToolIndex = options.agentWorking && !hasLiveAgentReplyGroup(groups) ? latestAgentToolOutputGroupIndex(groups) : -1;
   const latestToolCallCount = latestToolIndex === -1 ? 0 : toolCallCountSincePreviousThought(groups, latestToolIndex);
   const result = [];
@@ -989,7 +1021,7 @@ export function renderLogs(id, options = {}) {
   const logs = state.logs.get(id) || [];
   const allGroups = terminalGroups(logs, flow);
   const agentWorking = agentWorkingForFlow(flow);
-  const groups = renderableTerminalGroups(visibleTerminalGroups(id, allGroups), { agentWorking });
+  const groups = renderableTerminalGroups(visibleTerminalGroups(id, allGroups), { agentWorking, flowId: id });
   syncClosedTerminalTraceChildren(terminal, groups);
   const canLoadMore = terminalTraceCanLoadMore(id, allGroups);
   const loadMoreLoading = state.logOlderLoadingFlowIds.has(id);
