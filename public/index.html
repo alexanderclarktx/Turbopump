@@ -246,7 +246,16 @@
                 </button>
               </div>
               <div class="terminal" role="log" aria-live="polite"></div>
-              <div class="terminal terminal-split" role="log" aria-live="polite" hidden></div>
+              <div class="terminal-split-pane" hidden>
+                <div class="terminal terminal-split" role="log" aria-live="polite"></div>
+                <div class="prompt-input-pane prompt-input-pane-split">
+                  <button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-close" aria-label="Close second agent pane">
+                    <span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>
+                    <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
+                  </button>
+                  <textarea class="message-input message-input-split" rows="1"></textarea>
+                </div>
+              </div>
               <div
                 class="shell-output-resizer"
                 role="separator"
@@ -257,7 +266,18 @@
                 tabindex="0"
               ></div>
               <div class="shell-output-pane" role="log" aria-live="polite" hidden></div>
-              <div class="shell-output-pane shell-output-split" role="log" aria-live="polite" hidden></div>
+              <div class="shell-output-split-pane" hidden>
+                <div class="shell-output-pane shell-output-split" role="log" aria-live="polite"></div>
+                <div class="shell-command-panel shell-command-panel-split">
+                  <div class="shell-input-pane">
+                    <button type="button" class="input-pane-prefix shell-input-prefix input-pane-split-close" aria-label="Close second shell pane">
+                      <span class="input-pane-prefix-glyph" aria-hidden="true">$</span>
+                      <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
+                    </button>
+                    <input class="shell-input shell-input-split" autocomplete="off" />
+                  </div>
+                </div>
+              </div>
               <form class="message-form">
                 <div class="history-search-indicator" aria-live="polite" aria-hidden="true"></div>
                 <div class="queued-prompt-hint" aria-live="polite" hidden>
@@ -270,13 +290,6 @@
                   </button>
                   <textarea class="message-input" rows="1"></textarea>
                 </div>
-                <div class="prompt-input-pane prompt-input-pane-split" hidden>
-                  <button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-close" aria-label="Close second agent pane">
-                    <span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>
-                    <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
-                  </button>
-                  <textarea class="message-input message-input-split" rows="1"></textarea>
-                </div>
                 <div class="shell-command-panel">
                   <div class="shell-input-pane">
                     <button type="button" class="input-pane-prefix shell-input-prefix input-pane-split-toggle" aria-label="Open second shell pane">
@@ -284,15 +297,6 @@
                       <span class="input-pane-prefix-plus" aria-hidden="true">+</span>
                     </button>
                     <input class="shell-input" autocomplete="off" />
-                  </div>
-                </div>
-                <div class="shell-command-panel shell-command-panel-split" hidden>
-                  <div class="shell-input-pane">
-                    <button type="button" class="input-pane-prefix shell-input-prefix input-pane-split-close" aria-label="Close second shell pane">
-                      <span class="input-pane-prefix-glyph" aria-hidden="true">$</span>
-                      <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
-                    </button>
-                    <input class="shell-input shell-input-split" autocomplete="off" />
                   </div>
                 </div>
                 <div class="agent-context" aria-label="Current flow context" hidden>

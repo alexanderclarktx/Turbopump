@@ -2204,7 +2204,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('event.clipboardData?.files');
     expect(app).toContain('event.clipboardData?.items');
     expect(app).toContain("function eventTargetsPromptInputPane(event)");
-    expect(app).toContain('event.target?.closest?.(".prompt-input-pane")');
+    expect(app).toContain('event.target?.closest?.(".prompt-input-pane:not(.prompt-input-pane-split)")');
     expect(app).toContain("function focusPromptInputForImageDrag(event)");
     expect(app).toContain('if (eventTargetsPromptInputPane(event)) focusInputPane("prompt");');
     expect(app).toContain("function setAgentImageDragActive(active)");
@@ -3306,7 +3306,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function setShellPaneHidden(hidden)");
     expect(app).toContain("const restoreTerminalBottom = terminalBottomRestorer();");
     expect(app).toContain('document.body.classList.toggle("shell-pane-hidden", hidden);');
-    expect(app).toContain('const shellPanel = els.flowPane.querySelector(".shell-command-panel");');
+    expect(app).toContain('const shellPanel = els.flowPane.querySelector(".message-form .shell-command-panel");');
     expect(app).toContain('const shellRail = els.flowPane.querySelector(".shell-pane-rail");');
     expect(app).toContain('if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));');
     expect(app).toContain('if (shellRail) shellRail.setAttribute("aria-expanded", String(!hidden));');
@@ -3551,10 +3551,16 @@ describe("Turbopump pane markup", () => {
   });
 
   test("opens a second agent or shell pane from the input prefixes", () => {
-    expect(html).toContain('<div class="terminal terminal-split" role="log" aria-live="polite" hidden></div>');
-    expect(html).toContain('<div class="shell-output-pane shell-output-split" role="log" aria-live="polite" hidden></div>');
-    expect(html).toContain('<div class="prompt-input-pane prompt-input-pane-split" hidden>');
-    expect(html).toContain('<div class="shell-command-panel shell-command-panel-split" hidden>');
+    expect(html).toContain('<div class="terminal-split-pane" hidden>');
+    expect(html).toContain('<div class="terminal terminal-split" role="log" aria-live="polite"></div>');
+    expect(html).toContain('<div class="shell-output-split-pane" hidden>');
+    expect(html).toContain('<div class="shell-output-pane shell-output-split" role="log" aria-live="polite"></div>');
+    expect(html).toContain('<div class="prompt-input-pane prompt-input-pane-split">');
+    expect(html).toContain('<div class="shell-command-panel shell-command-panel-split">');
+    expect(html.indexOf('class="terminal terminal-split"')).toBeLessThan(html.indexOf('class="prompt-input-pane prompt-input-pane-split"'));
+    expect(html.indexOf('class="shell-output-pane shell-output-split"')).toBeLessThan(html.indexOf('class="shell-command-panel shell-command-panel-split"'));
+    expect(css).toContain(".terminal-split-pane {\n  grid-area: terminal-split;\n  display: grid;\n  grid-template-rows: minmax(0, 1fr) auto;");
+    expect(css).toContain(".shell-output-split-pane {\n  grid-area: shell-split;\n  display: grid;\n  grid-template-rows: minmax(0, 1fr) auto;");
     expect(html).toContain('aria-label="Open second agent pane"');
     expect(html).toContain('aria-label="Open second shell pane"');
     expect(html).toContain('aria-label="Close second agent pane"');
@@ -3570,7 +3576,6 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain('"terminal-split shell-resizer shell"');
     expect(css).toContain('"terminal shell-resizer shell-split"');
     expect(css).toContain('"terminal-split shell-resizer shell-split"');
-    expect(css).toContain('"input-split . shell-split"');
     expect(css).toContain(
       ".terminal-panel.agent-split-open .prompt-input-pane:not(.prompt-input-pane-split) .input-pane-split-toggle,\n.terminal-panel.shell-split-open .shell-command-panel:not(.shell-command-panel-split) .input-pane-split-toggle {\n  pointer-events: none;\n}",
     );

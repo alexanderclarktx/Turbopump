@@ -112,7 +112,9 @@ export function closeSplitPane(kind) {
   if (!flow || !isSplitPaneOpen(flow.id, kind)) return;
   setSplitPaneOpen(flow.id, kind, false);
   renderFlowPane();
-  const input = kind === "shell" ? els.flowPane.querySelector(".shell-input") : els.flowPane.querySelector(".message-input");
+  const input = kind === "shell"
+    ? els.flowPane.querySelector(".message-form .shell-input")
+    : els.flowPane.querySelector(".message-form .message-input");
   input?.focus({ preventScroll: true });
 }
 
@@ -128,12 +130,10 @@ export function renderSplitPanes() {
   panel.classList.toggle("shell-split-open", shellOpen);
   const terminal = splitTerminal();
   const shellPane = splitShellOutputPane();
-  const promptPane = els.flowPane.querySelector(".prompt-input-pane-split");
-  const shellPanel = els.flowPane.querySelector(".shell-command-panel-split");
-  if (terminal) terminal.hidden = !agentOpen;
-  if (shellPane) shellPane.hidden = !shellOpen;
-  if (promptPane) promptPane.hidden = !agentOpen;
-  if (shellPanel) shellPanel.hidden = !shellOpen;
+  const terminalPane = els.flowPane.querySelector(".terminal-split-pane");
+  const shellOutputPane = els.flowPane.querySelector(".shell-output-split-pane");
+  if (terminalPane) terminalPane.hidden = !agentOpen;
+  if (shellOutputPane) shellOutputPane.hidden = !shellOpen;
   if (terminal && !agentOpen) {
     terminal.replaceChildren();
     terminal._flowLogFlowId = "";

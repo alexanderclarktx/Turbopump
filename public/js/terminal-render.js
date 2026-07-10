@@ -32,7 +32,7 @@ export function terminalForFlowLogs(flowId) {
 
 export function renderSplitShellOutputPane(flowId) {
   const pane = splitShellOutputPane();
-  if (!pane || pane.hidden) return;
+  if (!pane || pane.closest(".shell-output-split-pane")?.hidden) return;
   const flow = state.flows.find((item) => item.id === flowId) || null;
   const groups = shellOutputGroups(state.logs.get(flowId) || [], flow);
   const shellLive = flowShellLive(flow);
@@ -983,7 +983,7 @@ export function scheduleLogRender(id, options = {}) {
 
 export function renderLogs(id, options = {}) {
   const terminal = terminalForFlowLogs(id);
-  if (!terminal || terminal.hidden) return;
+  if (!terminal || terminal.closest(".terminal-split-pane")?.hidden) return;
   renderShellOutputPane(id);
   const flow = state.flows.find((item) => item.id === id) || null;
   const logs = state.logs.get(id) || [];
