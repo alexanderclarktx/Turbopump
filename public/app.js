@@ -104,7 +104,6 @@ import {
   scheduleMarkdownCodeCopyPositionUpdate,
   startMarkdownTableColumnResize,
   terminalAtLatest,
-  toggleTerminalMarkdownOutput,
 } from "./js/terminal-render.js";
 import {
   closeTicketSearch,
@@ -323,6 +322,15 @@ els.agentTraceToggle.addEventListener("click", (event) => {
   renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });
 });
 
+els.agentRawMarkdownToggle.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  state.rawAgentMarkdown = !state.rawAgentMarkdown;
+  els.agentRawMarkdownToggle.setAttribute("aria-pressed", String(!state.rawAgentMarkdown));
+  els.agentRawMarkdownToggle.setAttribute("aria-label", state.rawAgentMarkdown ? "Show rendered agent responses" : "Show raw agent Markdown");
+  renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });
+});
+
 els.flowPane.addEventListener("click", handleLinearDetailClick);
 
 els.flowPane.addEventListener("submit", handleLinearTitleSubmit);
@@ -366,13 +374,6 @@ els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
     if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true });
     return;
   }
-
-  const toggle = event.target.closest(".terminal-markdown-toggle");
-  if (!toggle) return;
-  event.preventDefault();
-  event.stopPropagation();
-  toggleTerminalMarkdownOutput(toggle);
-  if (event.detail > 0) toggle.blur();
 });
 
 els.flowPane.querySelector(".terminal").addEventListener(

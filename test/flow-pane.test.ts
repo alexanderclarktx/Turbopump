@@ -32,7 +32,7 @@ Object.defineProperty(globalThis, "document", {
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const { terminalGroups } = await import("../public/js/terminal-groups.js");
 const { state } = await import("../public/js/state.js");
-const { formatTerminalElapsed, renderableTerminalGroups } = await import("../public/js/terminal-render.js");
+const { formatTerminalElapsed, renderableTerminalGroups, renderTerminalMarkdownOutput, usesRawAgentMarkdown } = await import("../public/js/terminal-render.js");
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
 describe("Turbopump pane markup", () => {
@@ -284,14 +284,21 @@ describe("Turbopump pane markup", () => {
   test("adds an agent output toolbar that can hide trace messages", () => {
     expect(html).toContain('class="agent-output-toolbar"');
     expect(html).toContain('id="agentTraceToggle"');
+    expect(html).toContain('id="agentRawMarkdownToggle"');
+    expect(html).toContain('aria-label="Show raw agent Markdown"');
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain('aria-label="Show tool output messages"');
     expect(app).toContain("agentTraceHidden: true");
     expect(app).toContain("agentTraceToggle: document.querySelector(\"#agentTraceToggle\")");
+    expect(app).toContain("rawAgentMarkdown: false");
+    expect(app).toContain("agentRawMarkdownToggle: document.querySelector(\"#agentRawMarkdownToggle\")");
     expect(app).toContain("state.agentTraceHidden = !state.agentTraceHidden;");
     expect(app).toContain('els.agentTraceToggle.setAttribute("aria-pressed", String(state.agentTraceHidden));');
     expect(app).toContain('els.agentTraceToggle.setAttribute("aria-label", state.agentTraceHidden ? "Show tool output messages" : "Hide tool output messages");');
     expect(app).toContain("renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });");
+    expect(app).toContain("state.rawAgentMarkdown = !state.rawAgentMarkdown;");
+    expect(app).toContain('els.agentRawMarkdownToggle.setAttribute("aria-pressed", String(!state.rawAgentMarkdown));');
+    expect(app).toContain('state.rawAgentMarkdown ? "Show rendered agent responses" : "Show raw agent Markdown"');
     expect(app).toContain("function renderableTerminalGroups(groups, options = {})");
     expect(app).toContain("function agentOutputSimpleMode()");
     expect(app).toContain("function isAgentToolOutputGroup(group)");
@@ -316,7 +323,8 @@ describe("Turbopump pane markup", () => {
     expect(toolbarCss).toContain("left: 1px;");
     expect(toolbarCss).not.toContain("box-shadow");
     expect(css).toContain(".agent-output-button[aria-pressed=\"true\"] .agent-output-slash");
-    expect(css).toContain(".terminal-entry-tool-preview .terminal-entry-body-content");
+    expect(html.match(/class="agent-output-slash" d="M4 4 20 20"/g)).toHaveLength(2);
+    expect(css).toContain(".terminal-entry.terminal-entry-tool-preview .terminal-entry-body,\n.terminal-entry-tool-preview .terminal-entry-body-content");
     expect(css).toContain("max-height: calc(1.55em * 3);");
     expect(css).toContain(".terminal-entry-tool-preview {\n  padding-left: 23px;\n}");
     expect(css).toContain(".terminal-entry-tool-preview .terminal-entry-marker {\n  width: max-content;\n  white-space: nowrap;\n}");
@@ -1253,6 +1261,13 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain(".ticket-pin {");
   });
 
+  test("opens a pin option when right-clicking a ticket row", () => {
+    expect(app).toContain('card.addEventListener("contextmenu", (event) => showTicketOptionsMenu(event, ticket));');
+    expect(app).toContain('menu.className = "ticket-options-menu";');
+    expect(app).toContain('${pinned ? "Unpin" : "Pin"}');
+    expect(css).toContain(".ticket-options-menu {");
+  });
+
   test("lets pinned Linear tickets be manually sorted", () => {
     expect(app).toContain("function orderedPinnedTickets(tickets)");
     expect(app).toContain(".concat(\"\\u001d\", [...state.pinnedLinearIssues].join(\"\\u001f\"))");
@@ -1448,18 +1463,16 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");
     expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain('document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre")');
-    expect(app).toContain("function usesTerminalMarkdownToggle(source)");
+    expect(app).toContain("function usesRawAgentMarkdown(source)");
     expect(app).toContain('["agent", "agent:message"].includes(source)');
     expect(app).toContain("function renderTerminalMarkdownOutput(message, options = {})");
-    expect(app).toContain('markdownToggle.className = "terminal-markdown-toggle";');
-    expect(app).toContain('markdownToggle.setAttribute("aria-pressed", "false");');
-    expect(app).toContain('markdownToggle.textContent = "raw";');
+    expect(app).not.toContain("terminal-markdown-toggle");
     expect(app).toContain("function terminalContentGroups(groups, result = [])");
     expect(app).toContain("function markPendingTerminalTurnGroups(groups, flow)");
     expect(app).toContain("if (isLiveAgentTextSource(contentGroups[index].source)) contentGroups[index].turnPending = true;");
     expect(app).toContain("markPendingTerminalTurnGroups(visibleGroups, flow);");
     expect(app).toContain("markLiveTerminalGroup(visibleGroups, flow);");
-    expect(app).toContain('return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message, options)}</div>`;');
+    expect(app).toContain('? `<pre class="terminal-raw-markdown">${escapeHtml(message)}</pre>`');
     expect(app).toContain("function renderTerminalStreamingTextOutput(message)");
     expect(app).toContain('class="terminal-streaming-markdown"');
     expect(app).toContain('return `<div class="terminal-streaming-markdown">${renderLinearMarkdown(message, "", {');
@@ -1469,14 +1482,12 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain("parts.push(renderTextWithSentenceBreaks(line));");
     expect(app).toContain("preserveTrailingNewlines: Boolean(group.liveStreaming)");
     expect(app).toContain("renderTerminalMarkdownOutput(message, { copyCode: !group.turnPending })");
-    expect(app).toContain("if (!group.liveStreaming && !group.turnPending && usesTerminalMarkdownToggle(group.source))");
-    expect(app).toContain("header.replaceChildren(marker, label, ...(markdownToggle ? [markdownToggle] : []), ...(time ? [time] : []));");
-    expect(app).toContain("function toggleTerminalMarkdownOutput(button)");
-    expect(app).toContain('event.target.closest(".terminal-markdown-toggle")');
-    expect(app).toContain("if (event.detail > 0) toggle.blur();");
-    expect(app).toContain('button.setAttribute("aria-pressed", String(showingRaw));');
-    expect(app).toContain('button.textContent = "raw";');
-    expect(app).not.toContain('button.textContent = showingRaw ? "Rendered" : "Raw";');
+    expect(app).toContain("if (state.rawAgentMarkdown && usesRawAgentMarkdown(group.source))");
+    expect(app).toContain("body.innerHTML = renderTerminalMarkdownOutput(message, { raw: true });");
+    expect(app).toContain("header.replaceChildren(marker, label, ...(time ? [time] : []));");
+    expect(usesRawAgentMarkdown("agent:message")).toBe(true);
+    expect(usesRawAgentMarkdown("user")).toBe(false);
+    expect(renderTerminalMarkdownOutput("**bold**", { raw: true })).toBe('<pre class="terminal-raw-markdown">**bold**</pre>');
     expect(app).toContain("function highlightCodeBlocks(root)");
     expect(app).toContain("window.Prism?.highlightAllUnder?.(root);");
     expect(app).toContain('event.target.closest("[data-code-copy]")');
@@ -1510,7 +1521,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('parts[3] === "context-images" && parts[4] === "preview" && request.method === "GET"');
     expect(css).toContain("cursor: pointer;");
     expect(app).toContain("function renderTerminalMarkdownContent(message, options = {})");
-    expect(app).toContain("renderTerminalMarkdownContent(raw)");
+    expect(app).toContain("renderTerminalMarkdownContent(message, options)");
     expect(app).toContain("copyCode: options.copyCode !== false");
     expect(app).toContain("const MARKDOWN_TABLE_MIN_COLUMN_WIDTH = 72;");
     expect(app).toContain("function startMarkdownTableColumnResize(event)");
@@ -1560,7 +1571,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-markdown .markdown-code-block:hover .markdown-code-copy");
     expect(css).toContain(".terminal-entry-body .markdown-code-copy:focus-visible");
     expect(css).not.toContain(".terminal-markdown-output {\n  position: relative;");
-    expect(css).toContain(".terminal-markdown-content {\n  display: contents;");
+    expect(css).not.toContain(".terminal-markdown-content");
     expect(css).toContain(".terminal-entry-body h1,\n.terminal-entry-body h2,");
     expect(css).toContain(".terminal-streaming-markdown {\n  white-space: normal;");
     expect(css).toContain("--terminal-message-max-lines: 50;");
@@ -1582,10 +1593,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("body.appendChild(marker);");
     expect(app).toContain("applyTerminalMessageClamps(terminal);");
     expect(app).not.toContain("applyTerminalMessageClamps(pane);");
-    expect(css).toContain(".terminal-markdown-toggle {\n  flex: 0 0 auto;");
-    expect(css).toContain("  min-height: 18px;\n  padding: 0 6px;");
-    expect(css).toContain(".terminal-entry:hover .terminal-markdown-toggle");
-    expect(css).toContain('.terminal-markdown-toggle[aria-pressed="true"] {\n  border-color: var(--accent);\n  background: rgba(59, 130, 246, 0.12);\n  color: var(--accent);\n}');
+    expect(css).not.toContain(".terminal-markdown-toggle");
     expect(css).toContain(".terminal-raw-markdown {\n  margin: 0;");
     expect(css).toContain(".terminal-entry-body .markdown-blank-line {\n  display: block;\n  height: 4px;\n}");
     expect(css).toContain(".linear-markdown .token.keyword,");

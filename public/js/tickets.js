@@ -838,6 +838,30 @@ export function setLinearIssuePinned(identifier, pinned, options = {}) {
   renderTickets();
 }
 
+export function showTicketOptionsMenu(event, ticket) {
+  event.preventDefault();
+  document.querySelector(".ticket-options-menu")?.remove();
+  const pinned = isLinearIssuePinned(ticket.identifier);
+  const menu = document.createElement("div");
+  menu.className = "ticket-options-menu";
+  menu.role = "menu";
+  menu.innerHTML = `<button type="button" role="menuitem">${pinned ? "Unpin" : "Pin"}</button>`;
+  document.body.append(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8))}px`;
+  const button = menu.querySelector("button");
+  button.addEventListener("click", () => {
+    menu.remove();
+    setLinearIssuePinned(ticket.identifier, !pinned, !pinned ? { position: "top" } : {});
+  });
+  button.addEventListener("keydown", (keyEvent) => {
+    if (keyEvent.key === "Escape") menu.remove();
+  });
+  button.addEventListener("blur", () => window.setTimeout(() => menu.remove(), 0));
+  button.focus();
+}
+
 export function focusLinearTicketCard(identifier) {
   requestAnimationFrame(() => {
     const card = [...els.ticketGrid.querySelectorAll(".ticket-card")].find((item) => item.dataset.issue === identifier);
@@ -1320,6 +1344,7 @@ export function renderTicketCard(ticket) {
     if (state.suppressTicketClick) return;
     void openTicketInFlowPane(ticket);
   });
+  card.addEventListener("contextmenu", (event) => showTicketOptionsMenu(event, ticket));
   card.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();

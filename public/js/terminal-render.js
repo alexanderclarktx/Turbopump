@@ -17,7 +17,7 @@ import { api } from "./net.js";
 import { renderAgentImageChip } from "./prompt.js";
 import { els, state } from "./state.js";
 import { isSubmittedUserLogSource, logMeta, shellOutputGroups, terminalGroups } from "./terminal-groups.js";
-import { copyTextToClipboard, escapeAttribute, escapeHtml, toast } from "./ui.js";
+import { copyTextToClipboard, escapeHtml, toast } from "./ui.js";
 
 export function shellOutputPane() {
   return els.flowPane.querySelector(".shell-output-pane");
@@ -138,7 +138,7 @@ export function usesTerminalBlockMarkdown(source) {
   return ["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source);
 }
 
-export function usesTerminalMarkdownToggle(source) {
+export function usesRawAgentMarkdown(source) {
   return ["agent", "agent:message"].includes(source);
 }
 
@@ -180,7 +180,9 @@ export function renderTerminalMarkdownContent(message, options = {}) {
 }
 
 export function renderTerminalMarkdownOutput(message, options = {}) {
-  return `<div class="terminal-markdown-content" data-raw-markdown="${escapeAttribute(message)}">${renderTerminalMarkdownContent(message, options)}</div>`;
+  return options.raw
+    ? `<pre class="terminal-raw-markdown">${escapeHtml(message)}</pre>`
+    : renderTerminalMarkdownContent(message, options);
 }
 
 export function renderTerminalStreamingTextOutput(message) {
@@ -190,24 +192,6 @@ export function renderTerminalStreamingTextOutput(message) {
     compactBlankLines: true,
     copyCode: false,
   })}</div>`;
-}
-
-export function toggleTerminalMarkdownOutput(button) {
-  const entry = button.closest(".terminal-entry");
-  const body = entry?.querySelector(".terminal-entry-body");
-  const content = body?.querySelector(".terminal-markdown-content");
-  if (!content) return;
-
-  const raw = content.dataset.rawMarkdown || "";
-  const showingRaw = body.classList.toggle("showing-raw-markdown");
-  button.setAttribute("aria-pressed", String(showingRaw));
-  button.setAttribute("aria-label", "Toggle raw markdown");
-  button.textContent = "raw";
-  content.innerHTML = showingRaw
-    ? `<pre class="terminal-raw-markdown">${escapeHtml(raw)}</pre>`
-    : renderTerminalMarkdownContent(raw);
-  if (!showingRaw) highlightCodeBlocks(content);
-  applyTerminalMessageClamps(body.closest(".terminal-entry") || body);
 }
 
 export function highlightCodeBlocks(root) {
@@ -450,16 +434,6 @@ export function appendTerminalBlock(fragment, group, options = {}) {
   label.className = "terminal-entry-label";
   label.textContent = meta.label;
 
-  let markdownToggle = null;
-  if (!group.liveStreaming && !group.turnPending && usesTerminalMarkdownToggle(group.source)) {
-    markdownToggle = document.createElement("button");
-    markdownToggle.type = "button";
-    markdownToggle.className = "terminal-markdown-toggle";
-    markdownToggle.setAttribute("aria-pressed", "false");
-    markdownToggle.setAttribute("aria-label", "Toggle raw markdown");
-    markdownToggle.textContent = "raw";
-  }
-
   let time = null;
   if (meta.tone !== "output") {
     time = document.createElement("time");
@@ -475,7 +449,9 @@ export function appendTerminalBlock(fragment, group, options = {}) {
   });
   if (usesTerminalBlockMarkdown(group.source)) {
     body.classList.add("terminal-markdown-output");
-    if (group.liveStreaming) {
+    if (state.rawAgentMarkdown && usesRawAgentMarkdown(group.source)) {
+      body.innerHTML = renderTerminalMarkdownOutput(message, { raw: true });
+    } else if (group.liveStreaming) {
       body.classList.add("terminal-streaming-output");
       body.innerHTML = renderTerminalStreamingTextOutput(message);
       highlightCodeBlocks(body);
@@ -489,7 +465,7 @@ export function appendTerminalBlock(fragment, group, options = {}) {
     body.innerHTML = renderInlineMarkdown(message, { images: false, links: false });
   }
 
-  header.replaceChildren(marker, label, ...(markdownToggle ? [markdownToggle] : []), ...(time ? [time] : []));
+  header.replaceChildren(marker, label, ...(time ? [time] : []));
   block.replaceChildren(
     header,
     ...(meta.tone === "output" ? [renderOutputDeleteButton(group)] : []),
@@ -838,7 +814,7 @@ export function terminalGroupsSignature(groups) {
 export function terminalGroupNodeSignature(group) {
   const logIds = group.logIds || [group.id];
   const deleting = logIds.some((logId) => state.deletingOutputLogIds.has(logId));
-  return [terminalGroupSignaturePart(group), Boolean(group.liveStreaming), Boolean(group.turnPending), deleting].join(":");
+  return [terminalGroupSignaturePart(group), Boolean(group.liveStreaming), Boolean(group.turnPending), deleting, state.rawAgentMarkdown].join(":");
 }
 
 export function syncClosedTerminalTraceChildren(terminal, groups) {
