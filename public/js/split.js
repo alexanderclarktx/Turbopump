@@ -113,7 +113,7 @@ export function closeSplitPane(kind) {
   setSplitPaneOpen(flow.id, kind, false);
   renderFlowPane();
   const input = kind === "shell"
-    ? els.flowPane.querySelector(".message-form .shell-input")
+    ? els.flowPane.querySelector(".shell-command-panel:not(.shell-command-panel-split) .shell-input")
     : els.flowPane.querySelector(".message-form .message-input");
   input?.focus({ preventScroll: true });
 }

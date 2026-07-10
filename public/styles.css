@@ -2179,10 +2179,8 @@ body.theme-dark .ticket-flow-start:focus-visible {
 
 .terminal-panel {
   --shell-resizer-size: 8px;
-  grid-template-areas:
-    "terminal"
-    "form";
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-areas: "agent-col";
+  grid-template-rows: minmax(0, 1fr);
   transition:
     --shell-pane-size var(--motion-pane),
     --shell-resizer-size var(--motion-pane);
@@ -2190,42 +2188,29 @@ body.theme-dark .ticket-flow-start:focus-visible {
 
 .terminal-panel.shell-output-visible {
   grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);
-  grid-template-areas:
-    "terminal shell-resizer shell"
-    "form form form";
+  grid-template-areas: "agent-col shell-resizer shell-col";
 }
 
-.terminal-panel.agent-split-open,
-.terminal-panel.shell-split-open {
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto;
+.agent-column,
+.shell-column {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
 }
 
-.terminal-panel.agent-split-open {
-  grid-template-areas:
-    "terminal"
-    "terminal-split"
-    "form";
+.agent-column {
+  grid-area: agent-col;
 }
 
-.terminal-panel.shell-output-visible.agent-split-open {
-  grid-template-areas:
-    "terminal shell-resizer shell"
-    "terminal-split shell-resizer shell"
-    "form form form";
+.shell-column {
+  grid-area: shell-col;
 }
 
-.terminal-panel.shell-output-visible.shell-split-open {
-  grid-template-areas:
-    "terminal shell-resizer shell"
-    "terminal shell-resizer shell-split"
-    "form form form";
-}
-
-.terminal-panel.shell-output-visible.agent-split-open.shell-split-open {
-  grid-template-areas:
-    "terminal shell-resizer shell"
-    "terminal-split shell-resizer shell-split"
-    "form form form";
+.terminal-panel.agent-split-open .agent-column,
+.terminal-panel.shell-split-open .shell-column {
+  grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);
 }
 
 body.linear-pane-hidden .flow-content {
@@ -2358,11 +2343,9 @@ body.shell-output-resizing .terminal-panel {
   display: grid;
 }
 
-.agent-panel.disabled .terminal,
-.agent-panel.disabled .agent-output-toolbar,
+.agent-panel.disabled .agent-column,
 .agent-panel.disabled .shell-output-resizer,
-.agent-panel.disabled .shell-output-pane,
-.agent-panel.disabled .message-form {
+.agent-panel.disabled .shell-column {
   display: none;
 }
 
@@ -3393,7 +3376,6 @@ body.markdown-table-resizing {
 }
 
 .terminal {
-  grid-area: terminal;
   display: grid;
   align-content: start;
   gap: 10px;
@@ -3410,7 +3392,6 @@ body.markdown-table-resizing {
 }
 
 .terminal-split-pane {
-  grid-area: terminal-split;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
@@ -3420,10 +3401,6 @@ body.markdown-table-resizing {
 
 .terminal-split-pane[hidden] {
   display: none;
-}
-
-.terminal-split {
-  grid-area: auto;
 }
 
 .terminal-split-pane .prompt-input-pane-split {
@@ -3437,7 +3414,8 @@ body.markdown-table-resizing {
 }
 
 .agent-output-toolbar {
-  grid-area: terminal;
+  grid-row: 1 / 2;
+  grid-column: 1 / 2;
   position: absolute;
   z-index: 5;
   align-self: end;
@@ -4088,15 +4066,14 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
 }
 
 .message-form {
-  grid-area: form;
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    "search search search"
-    "images images images"
-    "input . shell"
-    "context . shell";
+    "search"
+    "images"
+    "input"
+    "context";
   align-items: start;
   row-gap: 4px;
   min-width: 0;
@@ -4104,9 +4081,6 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
   border-top: 1px solid var(--line);
   background: var(--panel);
   z-index: 1;
-  transition:
-    --shell-pane-size var(--motion-pane),
-    --shell-resizer-size var(--motion-pane);
 }
 
 .prompt-input-pane.prompt-input-pane-split,
@@ -4289,13 +4263,18 @@ body.theme-dark .queued-prompt-hint {
 
 .shell-command-panel {
   position: relative;
-  grid-area: shell;
   min-width: 0;
   align-self: start;
   padding-right: 14px;
   overflow: hidden;
   opacity: 1;
   transition: opacity var(--motion-pane);
+}
+
+.shell-column > .shell-command-panel {
+  padding: 4px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
 }
 
 body.shell-pane-hidden .shell-command-panel {
@@ -4583,7 +4562,6 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
 }
 
 .shell-output-pane {
-  grid-area: shell;
   display: grid;
   align-content: start;
   gap: 10px;
@@ -4607,7 +4585,6 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
 }
 
 .shell-output-split-pane {
-  grid-area: shell-split;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
@@ -4617,10 +4594,6 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
 
 .shell-output-split-pane[hidden] {
   display: none;
-}
-
-.shell-output-split {
-  grid-area: auto;
 }
 
 .shell-output-split-pane .shell-command-panel-split {
@@ -5141,7 +5114,7 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   bottom: calc(100% - 4px);
   left: 8px;
   width: max-content;
-  max-width: min(720px, calc(100% - var(--shell-pane-size, 28%) - 18px), calc(100vw - 40px));
+  max-width: min(720px, calc(100vw - 40px));
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -5225,49 +5198,30 @@ body.theme-dark .diff-modal-summary .diff-deletions {
     min-width: 0;
   }
 
-  .message-form {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "search"
-      "images"
-      "input"
-      "context";
-  }
-
   .prompt-input-pane {
     padding-right: 14px;
   }
 
   .terminal-panel.shell-output-visible {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "terminal"
-      "form";
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas: "agent-col";
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .terminal-panel.shell-output-visible .shell-output-resizer,
   .pane-rail,
-  .shell-command-panel,
-  .shell-output-pane {
+  .shell-column {
     display: none;
-  }
-
-  .terminal-panel.agent-split-open,
-  .terminal-panel.shell-split-open,
-  .terminal-panel.shell-output-visible.agent-split-open,
-  .terminal-panel.shell-output-visible.shell-split-open,
-  .terminal-panel.shell-output-visible.agent-split-open.shell-split-open {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "terminal"
-      "form";
   }
 
   .terminal-split-pane,
   .shell-output-split-pane {
     display: none;
+  }
+
+  .terminal-panel.agent-split-open .agent-column,
+  .terminal-panel.shell-split-open .shell-column {
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 }
 

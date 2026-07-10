@@ -217,30 +217,53 @@
               aria-label="Expand Shell pane"
               ></button>
               <div class="agent-disabled-message">Configure the repo URL to use the agent.</div>
-              <div class="agent-output-toolbar" role="toolbar" aria-label="Agent output controls">
-                <button
-                  id="agentTraceToggle"
-                  class="icon-button agent-output-button"
-                  type="button"
-                  aria-pressed="true"
-                  aria-label="Show tool output messages"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6" />
-                    <path d="m16 16 4 4" />
-                    <path class="agent-output-slash" d="M4 20 20 4" />
-                  </svg>
-                </button>
-              </div>
-              <div class="terminal" role="log" aria-live="polite"></div>
-              <div class="terminal-split-pane" hidden>
-                <div class="terminal terminal-split" role="log" aria-live="polite"></div>
-                <div class="prompt-input-pane prompt-input-pane-split">
-                  <button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-close" aria-label="Close second agent pane">
-                    <span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>
-                    <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
+              <div class="agent-column">
+                <div class="agent-output-toolbar" role="toolbar" aria-label="Agent output controls">
+                  <button
+                    id="agentTraceToggle"
+                    class="icon-button agent-output-button"
+                    type="button"
+                    aria-pressed="true"
+                    aria-label="Show tool output messages"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="11" cy="11" r="6" />
+                      <path d="m16 16 4 4" />
+                      <path class="agent-output-slash" d="M4 20 20 4" />
+                    </svg>
                   </button>
-                  <textarea class="message-input message-input-split" rows="1"></textarea>
+                </div>
+                <div class="terminal" role="log" aria-live="polite"></div>
+                <form class="message-form">
+                  <div class="history-search-indicator" aria-live="polite" aria-hidden="true"></div>
+                  <div class="queued-prompt-hint" aria-live="polite" hidden>
+                    message queued
+                  </div>
+                  <div class="prompt-input-pane">
+                    <button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-toggle" aria-label="Open second agent pane">
+                      <span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>
+                      <span class="input-pane-prefix-plus" aria-hidden="true">+</span>
+                    </button>
+                    <textarea class="message-input" rows="1"></textarea>
+                  </div>
+                  <div class="agent-context" aria-label="Current flow context" hidden>
+                    <span class="agent-context-window"></span>
+                    <span class="agent-context-model" role="button" tabindex="0" aria-haspopup="listbox" aria-label="Change agent model"></span>
+                    <button class="agent-context-diff" type="button" hidden>diff</button>
+                    <a class="agent-context-branch"></a>
+                  </div>
+                  <div class="agent-image-context" aria-label="Attached image context" hidden></div>
+                  <div class="slash-menu" role="listbox" hidden></div>
+                </form>
+                <div class="terminal-split-pane" hidden>
+                  <div class="terminal terminal-split" role="log" aria-live="polite"></div>
+                  <div class="prompt-input-pane prompt-input-pane-split">
+                    <button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-close" aria-label="Close second agent pane">
+                      <span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>
+                      <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
+                    </button>
+                    <textarea class="message-input message-input-split" rows="1"></textarea>
+                  </div>
                 </div>
               </div>
               <div
@@ -252,31 +275,8 @@
                 aria-valuemax="100"
                 tabindex="0"
               ></div>
-              <div class="shell-output-pane" role="log" aria-live="polite" hidden></div>
-              <div class="shell-output-split-pane" hidden>
-                <div class="shell-output-pane shell-output-split" role="log" aria-live="polite"></div>
-                <div class="shell-command-panel shell-command-panel-split">
-                  <div class="shell-input-pane">
-                    <button type="button" class="input-pane-prefix shell-input-prefix input-pane-split-close" aria-label="Close second shell pane">
-                      <span class="input-pane-prefix-glyph" aria-hidden="true">$</span>
-                      <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
-                    </button>
-                    <input class="shell-input shell-input-split" autocomplete="off" />
-                  </div>
-                </div>
-              </div>
-              <form class="message-form">
-                <div class="history-search-indicator" aria-live="polite" aria-hidden="true"></div>
-                <div class="queued-prompt-hint" aria-live="polite" hidden>
-                  message queued
-                </div>
-                <div class="prompt-input-pane">
-                  <button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-toggle" aria-label="Open second agent pane">
-                    <span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>
-                    <span class="input-pane-prefix-plus" aria-hidden="true">+</span>
-                  </button>
-                  <textarea class="message-input" rows="1"></textarea>
-                </div>
+              <div class="shell-column">
+                <div class="shell-output-pane" role="log" aria-live="polite" hidden></div>
                 <div class="shell-command-panel">
                   <div class="shell-input-pane">
                     <button type="button" class="input-pane-prefix shell-input-prefix input-pane-split-toggle" aria-label="Open second shell pane">
@@ -286,15 +286,19 @@
                     <input class="shell-input" autocomplete="off" />
                   </div>
                 </div>
-                <div class="agent-context" aria-label="Current flow context" hidden>
-                  <span class="agent-context-window"></span>
-                  <span class="agent-context-model" role="button" tabindex="0" aria-haspopup="listbox" aria-label="Change agent model"></span>
-                  <button class="agent-context-diff" type="button" hidden>diff</button>
-                  <a class="agent-context-branch"></a>
+                <div class="shell-output-split-pane" hidden>
+                  <div class="shell-output-pane shell-output-split" role="log" aria-live="polite"></div>
+                  <div class="shell-command-panel shell-command-panel-split">
+                    <div class="shell-input-pane">
+                      <button type="button" class="input-pane-prefix shell-input-prefix input-pane-split-close" aria-label="Close second shell pane">
+                        <span class="input-pane-prefix-glyph" aria-hidden="true">$</span>
+                        <span class="input-pane-prefix-x" aria-hidden="true">&times;</span>
+                      </button>
+                      <input class="shell-input shell-input-split" autocomplete="off" />
+                    </div>
+                  </div>
                 </div>
-                <div class="agent-image-context" aria-label="Attached image context" hidden></div>
-                <div class="slash-menu" role="listbox" hidden></div>
-              </form>
+              </div>
             </div>
           </div>
         </article>
