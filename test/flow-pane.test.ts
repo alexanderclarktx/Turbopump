@@ -913,7 +913,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/steer');
     expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/flush');
     expect(app).toContain('const QUEUED_PROMPT_PREFIX_HTML = \'<span class="queued-prompt-spinner" aria-hidden="true"></span>\';');
-    expect(app).toContain('if (queued && !prefix.querySelector(".queued-prompt-spinner")) {');
+    expect(app).toContain('const prefixGlyph = prefix?.querySelector(".input-pane-prefix-glyph");');
+    expect(app).toContain('if (queued && !prefixGlyph.querySelector(".queued-prompt-spinner")) {');
     expect(app).toContain("queuedHint.hidden = !queued || compactQueued;");
     expect(app).toContain("messageInput.disabled = false;");
     expect(app).toContain("commandInput.disabled = false;");
@@ -1697,7 +1698,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function runtimeOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain('"agentRuntimeStatus"');
     expect(app).toContain('"shellRuntimeStatus"');
-    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) scheduleLogRender(flow.id, { force: true });\n        return;\n      }");
+    expect(app).toContain("if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        const flow = selectedFlow();\n        if (flow) scheduleLogRender(flow.id, { force: true });\n        const companion = selectedCompanionFlow();\n        if (companion) {\n          scheduleLogRender(companion.id, { force: true });\n          scheduleShellOutputRender(companion.id);\n        }\n        return;\n      }");
     expect(app).toContain("function syncLinearTicketsWithFlows()");
     expect(app).toContain("function flowUpdatedAtMs(flow)");
     expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
@@ -2060,14 +2061,16 @@ describe("Turbopump pane markup", () => {
     expect(html.indexOf('class="queued-prompt-hint"')).toBeLessThan(html.indexOf('<div class="prompt-input-pane">'));
     expect(html).toContain('<div class="prompt-input-pane">');
     expect(html).toContain("message queued");
-    expect(html).toContain('<span class="input-pane-prefix prompt-input-prefix" aria-hidden="true">&gt;</span>');
+    expect(html).toContain('<button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-toggle" aria-label="Open second agent pane">');
+    expect(html).toContain('<span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>');
     expect(html).toContain('<textarea class="message-input" rows="1"></textarea>');
     expect(html).toContain('class="shell-output-resizer"');
     expect(html).toContain('aria-label="Resize agent and shell output panes"');
     expect(html).toContain('aria-orientation="vertical"');
     expect(html).toContain('class="shell-output-pane" role="log" aria-live="polite" hidden');
     expect(html).toContain('<div class="shell-input-pane">');
-    expect(html).toContain('<span class="input-pane-prefix shell-input-prefix" aria-hidden="true">$</span>');
+    expect(html).toContain('<button type="button" class="input-pane-prefix shell-input-prefix input-pane-split-toggle" aria-label="Open second shell pane">');
+    expect(html).toContain('<span class="input-pane-prefix-glyph" aria-hidden="true">$</span>');
     expect(html).toContain('<input class="shell-input" autocomplete="off" />');
     expect(html).not.toContain('placeholder="Prompt the agent"');
     expect(html).not.toContain('placeholder="$ shell"');
@@ -3545,5 +3548,67 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('scope: "session"');
     expect(server).not.toContain('approvalPolicy: "never"');
     expect(server).not.toContain("does not expose approval UI yet");
+  });
+
+  test("opens a second agent or shell pane from the input prefixes", () => {
+    expect(html).toContain('<div class="terminal terminal-split" role="log" aria-live="polite" hidden></div>');
+    expect(html).toContain('<div class="shell-output-pane shell-output-split" role="log" aria-live="polite" hidden></div>');
+    expect(html).toContain('<div class="prompt-input-pane prompt-input-pane-split" hidden>');
+    expect(html).toContain('<div class="shell-command-panel shell-command-panel-split" hidden>');
+    expect(html).toContain('aria-label="Open second agent pane"');
+    expect(html).toContain('aria-label="Open second shell pane"');
+    expect(html).toContain('aria-label="Close second agent pane"');
+    expect(html).toContain('aria-label="Close second shell pane"');
+    expect(html).toContain('<span class="input-pane-prefix-plus" aria-hidden="true">+</span>');
+    expect(html).toContain('<span class="input-pane-prefix-x" aria-hidden="true">&times;</span>');
+    expect(html).toContain('<textarea class="message-input message-input-split" rows="1"></textarea>');
+    expect(html).toContain('<input class="shell-input shell-input-split" autocomplete="off" />');
+
+    expect(css).toContain(".input-pane-split-toggle:hover .input-pane-prefix-plus");
+    expect(css).toContain(".input-pane-split-toggle:hover .input-pane-prefix-glyph");
+    expect(css).toContain(".input-pane-split-close:hover .input-pane-prefix-x");
+    expect(css).toContain('"terminal-split shell-resizer shell"');
+    expect(css).toContain('"terminal shell-resizer shell-split"');
+    expect(css).toContain('"terminal-split shell-resizer shell-split"');
+    expect(css).toContain('"input-split . shell-split"');
+    expect(css).toContain(
+      ".terminal-panel.agent-split-open .prompt-input-pane:not(.prompt-input-pane-split) .input-pane-split-toggle,\n.terminal-panel.shell-split-open .shell-command-panel:not(.shell-command-panel-split) .input-pane-split-toggle {\n  pointer-events: none;\n}",
+    );
+
+    expect(app).toContain("/api/flows/${encodeURIComponent(flow.id)}/split");
+    expect(app).toContain("if (!flow || flow.parentFlowId || isSplitPaneOpen(flow.id, kind)) return;");
+    expect(app).toContain("flow.linearIssueId === identifier && !flow.parentFlowId");
+
+    expect(server).toContain("parentFlowId text not null default ''");
+    expect(server).toContain("tryMigration(\"alter table flows add column parentFlowId text not null default ''\");");
+    expect(server).toContain("select * from flows where linearIssueId = ? and parentFlowId = '' limit 1");
+    expect(server).toContain('if (parts[3] === "split" && request.method === "POST") {');
+    expect(server).toContain('"A split pane cannot be split again."');
+    expect(server).toContain("function createCompanionFlow(flow: Flow)");
+  });
+
+  test("tracks split pane state per flow", async () => {
+    const { companionFlowFor, isSplitPaneOpen, setSplitPaneOpen, splitPaneState } = await import("../public/js/split.js");
+    const previousFlows = state.flows;
+    try {
+      setSplitPaneOpen("flow-split-test", "agent", true);
+      expect(isSplitPaneOpen("flow-split-test", "agent")).toBe(true);
+      expect(isSplitPaneOpen("flow-split-test", "shell")).toBe(false);
+      setSplitPaneOpen("flow-split-test", "shell", true);
+      expect(splitPaneState("flow-split-test")).toEqual({ agent: true, shell: true });
+      setSplitPaneOpen("flow-split-test", "agent", false);
+      setSplitPaneOpen("flow-split-test", "shell", false);
+      expect(state.splitPanes.has("flow-split-test")).toBe(false);
+
+      state.flows = [
+        { id: "parent-flow", parentFlowId: "" },
+        { id: "companion-flow", parentFlowId: "parent-flow" },
+      ];
+      expect(companionFlowFor("parent-flow")?.id).toBe("companion-flow");
+      expect(companionFlowFor("companion-flow")).toBe(null);
+      expect(companionFlowFor("")).toBe(null);
+    } finally {
+      state.flows = previousFlows;
+    }
   });
 });

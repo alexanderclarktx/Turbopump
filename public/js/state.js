@@ -10,6 +10,7 @@ import {
   SHELL_HISTORY_KEY,
   SHELL_OUTPUT_SPLIT_SIZE_KEY,
   SHELL_PANE_HIDDEN_KEY,
+  SPLIT_PANES_KEY,
   THEME_KEY,
   TICKET_DRAWER_MAX_SIZE,
   TICKET_DRAWER_MIN_SIZE,
@@ -110,6 +111,19 @@ export function initialBooleanSetting(key) {
   return localStorage.getItem(key) === "true";
 }
 
+export function initialSplitPanes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SPLIT_PANES_KEY) || "{}");
+    return new Map(
+      Object.entries(parsed)
+        .filter(([, value]) => value && typeof value === "object")
+        .map(([flowId, value]) => [flowId, { agent: Boolean(value.agent), shell: Boolean(value.shell) }]),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
 export const state = {
   flows: [],
   checkouts: [],
@@ -162,6 +176,9 @@ export const state = {
   ticketSearchOpen: false,
   ticketSearchQuery: "",
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
+  splitPanes: initialSplitPanes(),
+  splitMessageSubmitting: false,
+  splitShellSubmitting: false,
   slashCommandIndex: 0,
   slashMenuCommands: null,
   messageSubmitting: false,

@@ -229,7 +229,7 @@ export function mergeLinearIssue(existing, incoming) {
 }
 
 export function syncLinearTicketsWithFlows() {
-  const flowsByIssue = new Map(state.flows.map((flow) => [flow.linearIssueId, flow]));
+  const flowsByIssue = new Map(state.flows.filter((flow) => !flow.parentFlowId).map((flow) => [flow.linearIssueId, flow]));
   const baseTickets = state.linearTickets.filter((ticket) => !ticket.turbopumpFlowOnly || flowCanRenderTicket(flowsByIssue.get(ticket.identifier)));
   const ticketIds = new Set(baseTickets.map((ticket) => ticket.identifier));
   const tickets = baseTickets.map((ticket) => {
@@ -244,7 +244,7 @@ export function syncLinearTicketsWithFlows() {
     return;
   }
   for (const flow of state.flows) {
-    if (!flowCanRenderTicket(flow) || ticketIds.has(flow.linearIssueId)) continue;
+    if (flow.parentFlowId || !flowCanRenderTicket(flow) || ticketIds.has(flow.linearIssueId)) continue;
     tickets.push({
       identifier: flow.linearIssueId,
       title: flow.title || flow.linearIssueId,
