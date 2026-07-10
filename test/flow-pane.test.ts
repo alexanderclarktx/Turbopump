@@ -1840,6 +1840,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("model.onclick = flow ? () => (modelDisabled ? flashBlockedInput(promptInput()) : openModelMenu()) : null;");
     expect(app).toContain("model.onkeydown = flow ? (event) => handleModelMenuKeydown(event, modelDisabled) : null;");
     expect(app).toContain("function openModelMenu()");
+    expect(app).toContain("if (state.slashMenuCommands) return hideSlashMenu();");
     expect(app).toContain("function handleModelMenuKeydown(event, blocked = false)");
     expect(app).toContain("flashBlockedInput(promptInput());");
     expect(app).toContain('renderSlashMenuCommands(slashCommandExpansionMatches("/model"));');
@@ -2365,6 +2366,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".message-form.history-searching .history-search-indicator");
     expect(css).toContain("bottom: calc(100% - 4px);");
     expect(css).toContain(".slash-menu");
+    expect(css).toContain("transition: opacity 120ms ease, display 120ms allow-discrete;");
+    expect(css).toContain("@starting-style {\n  .slash-menu:not([hidden]) {");
     expect(css).toContain("width: max-content;");
     expect(css).toContain(
       "max-width: min(720px, calc(100% - var(--shell-pane-size, 28%) - 18px), calc(100vw - 40px));",
@@ -2539,6 +2542,7 @@ describe("Turbopump pane markup", () => {
   test("renders command execution logs as a single shell prompt line", () => {
     expect(app).toContain('group.source === "agent:tool" || group.source === "agent:tool-result" || group.source === "shell:command"');
     expect(app).toContain('block.classList.add("terminal-entry-command");');
+    expect(app).toContain('if (group.source.endsWith(":stderr")) block.classList.add("terminal-entry-stderr");');
     expect(app).toContain('row.className = "terminal-command-line";');
     expect(app).toContain("group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;");
     expect(app).toContain("row.replaceChildren(marker, body);");
@@ -2563,6 +2567,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".terminal-command-line {\n  display: flex;\n  align-items: baseline;\n  gap: 7px;\n  min-width: 0;\n  font-size: 10px;");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;");
     expect(css).toContain(".terminal-entry-shell .terminal-entry-marker {\n  color: #22c55e;\n}");
+    expect(css).toContain(".terminal-entry-stderr .terminal-entry-marker,\n.terminal-entry-stderr .terminal-entry-label,\n.terminal-entry-stderr .terminal-entry-body {\n  color: #b45309;\n}");
     expect(css).toContain("body.theme-dark .terminal-entry-shell .terminal-entry-marker {\n  color: #22c55e;\n}");
     expect(css).toContain(".terminal-entry-shell.terminal-entry-command .terminal-command-line,\n.terminal-entry-shell.terminal-entry-command .terminal-entry-body {\n  font-size: 12px;\n}");
     expect(css).toContain(".terminal-entry-command .terminal-entry-body {\n  flex: 1 1 auto;\n  padding-left: 0;\n  font-size: 10px;");

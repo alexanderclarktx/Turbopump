@@ -936,6 +936,12 @@ body.theme-dark .terminal-entry-error .terminal-entry-body {
   color: var(--danger);
 }
 
+body.theme-dark .terminal-entry-stderr .terminal-entry-marker,
+body.theme-dark .terminal-entry-stderr .terminal-entry-label,
+body.theme-dark .terminal-entry-stderr .terminal-entry-body {
+  color: #fbbf24;
+}
+
 .sidebar section {
   box-sizing: border-box;
   display: grid;
@@ -4002,6 +4008,12 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
   color: #b42318;
 }
 
+.terminal-entry-stderr .terminal-entry-marker,
+.terminal-entry-stderr .terminal-entry-label,
+.terminal-entry-stderr .terminal-entry-body {
+  color: #b45309;
+}
+
 .terminal-entry-warning .terminal-entry-marker,
 .terminal-entry-warning .terminal-entry-label,
 .terminal-entry-warning .terminal-entry-body {
@@ -4968,6 +4980,18 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   border-radius: 8px;
   background: var(--panel);
   box-shadow: 0 14px 34px rgb(15 23 42 / 14%);
+  opacity: 1;
+  transition: opacity 120ms ease, display 120ms allow-discrete;
+}
+
+.slash-menu[hidden] {
+  opacity: 0;
+}
+
+@starting-style {
+  .slash-menu:not([hidden]) {
+    opacity: 0;
+  }
 }
 
 .slash-command {
@@ -5082,6 +5106,7 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   .flow-content,
   .terminal-panel,
   .message-form,
+  .slash-menu,
   .pane-rail,
   .shell-command-panel,
   .shell-output-pane,

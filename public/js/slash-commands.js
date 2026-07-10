@@ -133,7 +133,6 @@ export function hideSlashMenu() {
   const menu = els.flowPane.querySelector(".slash-menu");
   state.slashMenuCommands = null;
   menu.hidden = true;
-  menu.replaceChildren();
 }
 
 function renderSlashMenuItems(matches) {

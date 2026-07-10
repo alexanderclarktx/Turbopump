@@ -19,7 +19,7 @@ import {
 } from "./prompt.js";
 import { render } from "./render.js";
 import { repoUrlConfigured } from "./settings.js";
-import { agentProviderKindForFlow, renderSlashMenuCommands, slashCommandExpansionMatches } from "./slash-commands.js";
+import { agentProviderKindForFlow, hideSlashMenu, renderSlashMenuCommands, slashCommandExpansionMatches } from "./slash-commands.js";
 import { els, state } from "./state.js";
 import { copyAgentBranchName, renderLogs, renderShellOutputPane, resumeTerminalFollow } from "./terminal-render.js";
 import {
@@ -392,6 +392,7 @@ export function renderAgentContext(flow) {
 }
 
 export function openModelMenu() {
+  if (state.slashMenuCommands) return hideSlashMenu();
   state.slashCommandIndex = 0;
   renderSlashMenuCommands(slashCommandExpansionMatches("/model"));
 }

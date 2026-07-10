@@ -397,6 +397,7 @@ export function appendTerminalBlock(fragment, group, options = {}) {
   const meta = logMeta(group.source);
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
+  if (group.source.endsWith(":stderr")) block.classList.add("terminal-entry-stderr");
   if (options.incoming) block.classList.add("terminal-entry-incoming");
   if (group.latestVisibleToolOutput) block.classList.add("terminal-entry-tool-preview");
 
