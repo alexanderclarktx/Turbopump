@@ -439,12 +439,6 @@ splitTerminal().addEventListener("click", (event) => {
     return;
   }
 
-  const toggle = event.target.closest(".terminal-markdown-toggle");
-  if (!toggle) return;
-  event.preventDefault();
-  event.stopPropagation();
-  toggleTerminalMarkdownOutput(toggle);
-  if (event.detail > 0) toggle.blur();
 });
 
 splitTerminal().addEventListener(

@@ -116,7 +116,7 @@ export function promptInput() {
 }
 
 export function shellInput() {
-  return els.flowPane.querySelector(".message-form .shell-input");
+  return els.flowPane.querySelector(".shell-command-panel:not(.shell-command-panel-split) .shell-input");
 }
 
 export function focusInputPane(kind) {
