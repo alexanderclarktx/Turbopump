@@ -667,7 +667,7 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   promptInput().focus();
 });
 
-els.flowPane.querySelector(".message-form").addEventListener("submit", (event) => {
+els.flowPane.querySelector(".terminal-panel > .message-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void submitPromptMessage();
 });

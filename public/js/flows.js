@@ -348,7 +348,7 @@ export function agentContextWindowLabel(flow) {
   return `${Math.round((available / total) * 100)}%`;
 }
 
-export function renderAgentContext(flow, root = els.flowPane.querySelector(".message-form"), input = promptInput(), options = {}) {
+export function renderAgentContext(flow, root = els.flowPane.querySelector(".terminal-panel > .message-form"), input = promptInput(), options = {}) {
   const context = root?.querySelector(".agent-context");
   if (!context) return;
   const branch = context.querySelector(".agent-context-branch");
@@ -576,7 +576,7 @@ export function renderFlowPane(options = {}) {
     return;
   }
 
-  const messageForm = els.flowPane.querySelector(".message-form");
+  const messageForm = els.flowPane.querySelector(".terminal-panel > .message-form");
   const messageInput = promptInput();
   const commandInput = shellInput();
   messageInput.disabled = false;

@@ -147,7 +147,7 @@ export function handleInputHistoryNavigationKeydown(event) {
 export function renderHistorySearchIndicator() {
   const indicator = els.flowPane.querySelector(".history-search-indicator");
   if (!indicator) return;
-  const form = els.flowPane.querySelector(".message-form");
+  const form = els.flowPane.querySelector(".terminal-panel > .message-form");
   const search = state.historySearch;
   const terminal = els.flowPane.querySelector(".terminal");
   const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);

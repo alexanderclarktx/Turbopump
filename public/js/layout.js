@@ -122,7 +122,7 @@ export function toggleTheme() {
 
 export function flowSplitBounds(content, rect) {
   const resizer = content.querySelector(".flow-resizer");
-  const messageForm = content.querySelector(".message-form");
+  const messageForm = content.querySelector(".terminal-panel > .message-form");
   const minTopPx = 0;
   const resizerHeight = resizer?.getBoundingClientRect().height || 0;
   const messageFormStyle = messageForm ? getComputedStyle(messageForm) : null;

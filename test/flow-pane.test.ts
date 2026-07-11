@@ -125,9 +125,9 @@ describe("Turbopump pane markup", () => {
     const narrowRules = css.slice(css.indexOf("@media (max-width: 980px)"), css.indexOf("@media (prefers-reduced-motion: reduce)"));
     expect(narrowRules).toContain("  .prompt-input-pane {\n    padding-right: 14px;\n  }");
     expect(narrowRules).toContain(
-      '  .terminal-panel.shell-output-visible {\n    grid-template-columns: minmax(0, 1fr);\n    grid-template-areas: "agent-col";\n    grid-template-rows: minmax(0, 1fr);\n  }',
+      '  .terminal-panel.shell-output-visible {\n    grid-template-columns: minmax(0, 1fr);\n    grid-template-areas:\n      "agent-col"\n      "form";\n    grid-template-rows: minmax(0, 1fr) auto;\n  }',
     );
-    expect(narrowRules).toContain("  .terminal-panel.shell-output-visible .shell-output-resizer,\n  .pane-rail,\n  .shell-column {\n    display: none;\n  }");
+    expect(narrowRules).toContain("  .terminal-panel.shell-output-visible .shell-output-resizer,\n  .pane-rail,\n  .shell-command-panel,\n  .shell-column {\n    display: none;\n  }");
     expect(narrowRules).not.toContain('      "context"\n      "shell";');
     expect(narrowRules).not.toContain('      "shell"\n      "form";');
     expect(narrowRules).not.toContain("minmax(140px, 32%)");
@@ -319,7 +319,7 @@ describe("Turbopump pane markup", () => {
     expect(toolbarCss).toContain("left: 1px;");
     expect(toolbarCss).not.toContain("box-shadow");
     expect(css).toContain(".agent-output-button[aria-pressed=\"true\"] .agent-output-slash");
-    expect(html.match(/class="agent-output-slash" d="M4 4 20 20"/g)).toHaveLength(4);
+    expect(html.match(/class="agent-output-slash" d="M4 4 20 20"/g)).toHaveLength(2);
     expect(css).toContain(".terminal-entry.terminal-entry-tool-preview .terminal-entry-body,\n.terminal-entry-tool-preview .terminal-entry-body-content");
     expect(css).toContain("max-height: calc(1.55em * 3);");
     expect(css).toContain(".terminal-entry-tool-preview {\n  padding-left: 23px;\n}");
@@ -1826,7 +1826,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("agentReasoningEffort: defaultCodexReasoningEffort,");
     expect(app).toContain('branchName: issueSlug ? `turbo/${issueSlug}` : "",');
     expect(app).toContain('flow.agentServiceTier === "fast" ? "fast" : ""');
-    expect(app).toContain("function renderAgentContext(flow, root = els.flowPane.querySelector(\".message-form\"), input = promptInput(), options = {})");
+    expect(app).toContain("function renderAgentContext(flow, root = els.flowPane.querySelector(\".terminal-panel > .message-form\"), input = promptInput(), options = {})");
     expect(app).toContain('context.querySelector(".agent-context-window").textContent = agentContextWindowLabel(flow);');
     expect(app).toContain('const model = context.querySelector(".agent-context-model");');
     expect(app).toContain("model.textContent = agentModelLabel(flow);");
@@ -2300,8 +2300,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(
       "grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);",
     );
-    expect(css).toContain('grid-template-areas: "agent-col shell-resizer shell-col";');
-    expect(css).toContain('    "search"\n    "images"\n    "input"\n    "context";');
+    expect(css).toContain('    "agent-col shell-resizer shell-col"\n    "form form form";');
+    expect(css).toContain('    "search search search"\n    "images images images"\n    "input . shell"\n    "context . shell";');
     expect(css).toContain(".shell-output-resizer");
     expect(css).toContain("cursor: col-resize;");
     expect(css).toContain(".shell-output-pane");
@@ -2330,7 +2330,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".queued-prompt-hint {\n  color: #b45309;");
     expect(css).toContain("body.theme-dark .queued-prompt-hint");
     expect(css).toContain(".agent-context {\n  grid-area: context;\n  padding-left: 16px;");
-    expect(css).toContain(".shell-command-panel {\n  position: relative;\n  min-width: 0;\n  align-self: start;\n  padding-right: 14px;");
+    expect(css).toContain(".shell-command-panel {\n  position: relative;\n  grid-area: shell;\n  min-width: 0;\n  align-self: start;\n  padding-right: 14px;");
     expect(css).toContain(".input-pane-prefix");
     expect(css).toContain("pointer-events: none;\n  color: var(--muted);");
     expect(css).toContain("transition: color var(--motion-fast);");
@@ -2480,7 +2480,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flowSplitBounds(content, rect)");
     expect(app).toContain("const minTopPx = 0;");
     expect(app).not.toContain('linearDetail?.querySelector(".linear-meta")');
-    expect(app).toContain('content.querySelector(".message-form")');
+    expect(app).toContain('content.querySelector(".terminal-panel > .message-form")');
     expect(app).toContain("function setFlowSplitSize(value)");
     expect(app).toContain('content.style.setProperty("--top-pane-size"');
     expect(css).toContain(".agent-panel {\n  --terminal-message-max-lines: 50;\n  --terminal-message-max-height: 77.5em;\n  position: relative;\n  overflow: hidden;\n}");
@@ -3584,9 +3584,17 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".agent-column {\n  grid-area: agent-col;\n}");
     expect(css).toContain(".shell-column {\n  grid-area: shell-col;\n}");
     expect(css).toContain(
-      ".terminal-panel.agent-split-open .agent-column,\n.terminal-panel.shell-split-open .shell-column {\n  grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);\n}",
+      ".terminal-panel.agent-split-open .agent-column,\n.terminal-panel.shell-split-open .shell-column {\n  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);\n}",
     );
-    expect(html.indexOf('class="message-form"')).toBeLessThan(html.indexOf('class="terminal-split-pane"'));
+    expect(css).toContain(
+      ".terminal-panel.agent-split-open .agent-column > .terminal,\n.terminal-panel.shell-split-open .shell-column > .shell-output-pane {\n  grid-row: 2;\n}",
+    );
+    expect(css).toContain(".terminal-panel.agent-split-open .agent-column > .agent-output-toolbar {\n  grid-row: 2;\n}");
+    expect(css).toContain(
+      ".terminal-panel.agent-split-open .agent-column > .terminal-split-pane,\n.terminal-panel.shell-split-open .shell-column > .shell-output-split-pane {\n  grid-row: 1;\n}",
+    );
+    expect(html.indexOf('class="terminal-split-pane"')).toBeLessThan(html.indexOf('class="message-form"'));
+    expect(html.indexOf('class="shell-output-split-pane"')).toBeLessThan(html.indexOf('class="message-form"'));
     expect(html).toContain('aria-label="Open second agent pane"');
     expect(html).toContain('aria-label="Open second shell pane"');
     expect(html).toContain('aria-label="Close second agent pane"');
@@ -3595,7 +3603,7 @@ describe("Turbopump pane markup", () => {
     expect(html).toContain('<span class="input-pane-prefix-x" aria-hidden="true">&times;</span>');
     expect(html).toContain('<textarea class="message-input message-input-split" rows="1"></textarea>');
     expect(html).toContain('<form class="message-form message-form-split">');
-    expect(html).toContain('class="agent-output-toolbar agent-output-toolbar-split"');
+    expect(html).not.toContain("agent-output-toolbar-split");
     expect(html).toContain('class="agent-context agent-context-split" aria-label="Second agent context" hidden');
     expect(html).toContain('<input class="shell-input shell-input-split" autocomplete="off" />');
 
@@ -3609,7 +3617,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("/api/flows/${encodeURIComponent(flow.id)}/split");
     expect(app).toContain("if (!flow || flow.parentFlowId || isSplitPaneOpen(flow.id, kind)) return;");
     expect(app).toContain("renderAgentContext(agentOpen ? companion : null, terminalPane, splitPromptInput(), { modelMenu: false });");
-    expect(app).toContain('syncAgentOutputToolbar(terminalPane?.querySelector(".agent-output-toolbar"), agentOpen ? companion.id : "");');
+    expect(app).toContain('els.flowPane.querySelector(".terminal-panel > .message-form").addEventListener("submit"');
     expect(app).toContain("flow.linearIssueId === identifier && !flow.parentFlowId");
 
     expect(server).toContain("parentFlowId text not null default ''");

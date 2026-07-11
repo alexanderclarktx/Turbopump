@@ -13,7 +13,7 @@ import { loadLogs } from "./logs.js";
 import { api } from "./net.js";
 import { flashBlockedInput } from "./prompt.js";
 import { els, state } from "./state.js";
-import { renderLogs, renderShellOutputPane, syncAgentOutputToolbar } from "./terminal-render.js";
+import { renderLogs, renderShellOutputPane } from "./terminal-render.js";
 import { toast } from "./ui.js";
 
 const splitLogsLoadingFlowIds = new Set();
@@ -115,7 +115,7 @@ export function closeSplitPane(kind) {
   renderFlowPane();
   const input = kind === "shell"
     ? els.flowPane.querySelector(".shell-command-panel:not(.shell-command-panel-split) .shell-input")
-    : els.flowPane.querySelector(".message-form .message-input");
+    : els.flowPane.querySelector(".terminal-panel > .message-form .message-input");
   input?.focus({ preventScroll: true });
 }
 
@@ -135,7 +135,6 @@ export function renderSplitPanes() {
   const shellOutputPane = els.flowPane.querySelector(".shell-output-split-pane");
   if (terminalPane) terminalPane.hidden = !agentOpen;
   renderAgentContext(agentOpen ? companion : null, terminalPane, splitPromptInput(), { modelMenu: false });
-  syncAgentOutputToolbar(terminalPane?.querySelector(".agent-output-toolbar"), agentOpen ? companion.id : "");
   if (shellOutputPane) shellOutputPane.hidden = !shellOpen;
   if (terminal && !agentOpen) {
     terminal.replaceChildren();

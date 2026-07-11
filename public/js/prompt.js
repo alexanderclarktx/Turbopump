@@ -112,7 +112,7 @@ export function syncTicketInputState(issueId) {
 }
 
 export function promptInput() {
-  return els.flowPane.querySelector(".message-form .message-input");
+  return els.flowPane.querySelector(".terminal-panel > .message-form .message-input");
 }
 
 export function shellInput() {
@@ -154,8 +154,8 @@ export function updateMessageInputMode() {
   const queuedPrompt = queuedPromptForFlow(flow);
   const queued = Boolean(queuedPrompt);
   const queuedCanSteer = promptQueuedCanSteer(flow);
-  const pane = els.flowPane.querySelector(".message-form .prompt-input-pane");
-  const prefix = els.flowPane.querySelector(".message-form .prompt-input-prefix");
+  const pane = els.flowPane.querySelector(".terminal-panel > .message-form .prompt-input-pane");
+  const prefix = els.flowPane.querySelector(".terminal-panel > .message-form .prompt-input-prefix");
   const queuedHint = els.flowPane.querySelector(".queued-prompt-hint");
   const compactQueued = queued && flowAgentCompacting(flow);
   pane?.classList.toggle("prompt-queued", queued);
