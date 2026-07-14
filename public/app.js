@@ -1,5 +1,5 @@
 import { closeDiffViewer, loadFlowDiff, scheduleSelectedDiffFileSync, setSelectedDiffFile } from "./js/diff.js";
-import { renderFlowPane, selectedFlow, setFlows } from "./js/flows.js";
+import { flowAgentRunning, flowShellRunning, renderFlowPane, selectedFlow, setFlows } from "./js/flows.js";
 import {
   closeImagePreview,
   endImagePreviewDrag,
@@ -95,6 +95,26 @@ import {
   slashCommandMatches,
   validSlashCommand,
 } from "./js/slash-commands.js";
+import {
+  closeSplitPane,
+  handleAgentSplitResizeKeydown,
+  handleSplitQueuedPromptBeforeInput,
+  handleSplitQueuedPromptKeydown,
+  interruptSplitAgent,
+  interruptSplitShell,
+  isSplitPaneOpen,
+  openSplitPane,
+  resizeSplitPromptInput,
+  selectedCompanionFlow,
+  splitPaneKindForToggle,
+  splitPromptInput,
+  splitAgentPaneFlowId,
+  splitShellInput,
+  splitTerminal,
+  startAgentSplitResize,
+  submitSplitPromptMessage,
+  submitSplitShellCommand,
+} from "./js/split.js";
 import { els, state } from "./js/state.js";
 import {
   flushDeferredTerminalLogRender,
@@ -104,7 +124,7 @@ import {
   scheduleMarkdownCodeCopyPositionUpdate,
   startMarkdownTableColumnResize,
   terminalAtLatest,
-  toggleTerminalMarkdownOutput,
+  toggleAgentOutput,
 } from "./js/terminal-render.js";
 import {
   closeTicketSearch,
@@ -314,13 +334,12 @@ els.flowPane.querySelector(".linear-pane-rail").addEventListener("click", () => 
 
 els.flowPane.querySelector(".shell-pane-rail").addEventListener("click", () => setShellPaneHidden(false));
 
-els.agentTraceToggle.addEventListener("click", (event) => {
+els.flowPane.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-agent-output]");
+  if (!button) return;
   event.preventDefault();
   event.stopPropagation();
-  state.agentTraceHidden = !state.agentTraceHidden;
-  els.agentTraceToggle.setAttribute("aria-pressed", String(state.agentTraceHidden));
-  els.agentTraceToggle.setAttribute("aria-label", state.agentTraceHidden ? "Show tool output messages" : "Hide tool output messages");
-  renderLogs(state.selectedFlowId, { force: true, preserveScrollTop: true });
+  toggleAgentOutput(button.closest(".agent-output-toolbar")?.dataset.flowId, button.dataset.agentOutput);
 });
 
 els.flowPane.addEventListener("click", handleLinearDetailClick);
@@ -366,13 +385,6 @@ els.flowPane.querySelector(".terminal").addEventListener("click", (event) => {
     if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true });
     return;
   }
-
-  const toggle = event.target.closest(".terminal-markdown-toggle");
-  if (!toggle) return;
-  event.preventDefault();
-  event.stopPropagation();
-  toggleTerminalMarkdownOutput(toggle);
-  if (event.detail > 0) toggle.blur();
 });
 
 els.flowPane.querySelector(".terminal").addEventListener(
@@ -390,6 +402,156 @@ els.flowPane.querySelector(".terminal").addEventListener(
   },
   { passive: true },
 );
+
+for (const button of els.flowPane.querySelectorAll(".input-pane-split-toggle")) {
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void openSplitPane(splitPaneKindForToggle(button));
+  });
+}
+
+for (const button of els.flowPane.querySelectorAll(".input-pane-split-close")) {
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeSplitPane(splitPaneKindForToggle(button));
+  });
+}
+
+function handleSplitPaneShortcut(event) {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key !== "/") return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const kind = event.target?.closest?.(".shell-command-panel") ? "shell" : "agent";
+  const flow = selectedFlow();
+  if (event.repeat) return;
+  if (flow && isSplitPaneOpen(flow.id, kind)) closeSplitPane(kind);
+  else void openSplitPane(kind);
+}
+
+splitTerminal().addEventListener("scroll", (event) => {
+  const terminal = event.currentTarget;
+  if (terminalAtLatest(terminal)) resumeTerminalFollow();
+  if (!terminal._flowLogPending || !terminalAtLatest(terminal)) return;
+  flushDeferredTerminalLogRender(terminal, { scrollToLatest: true });
+});
+
+splitTerminal().addEventListener("click", (event) => {
+  const loadMore = event.target.closest(".terminal-load-more");
+  if (loadMore) {
+    event.preventDefault();
+    event.stopPropagation();
+    const flowId = splitTerminal()._flowLogFlowId;
+    if (!loadMore.disabled && flowId) void loadOlderTerminalTraceMessages({ preserveScrollTop: true, flowId });
+    return;
+  }
+
+});
+
+splitTerminal().addEventListener(
+  "wheel",
+  (event) => {
+    if (event.deltaY < 0) pauseTerminalFollow();
+  },
+  { passive: true },
+);
+
+splitPromptInput().addEventListener("input", () => {
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
+  state.slashMenuCommands = null;
+  state.slashCommandIndex = 0;
+  resizeSplitPromptInput();
+  renderSlashMenu();
+});
+
+splitPromptInput().addEventListener("beforeinput", handleSplitQueuedPromptBeforeInput);
+
+els.flowPane.querySelector(".message-form-split").addEventListener("pointerdown", startAgentSplitResize);
+els.flowPane.querySelector(".message-form-split-resizer").addEventListener("keydown", handleAgentSplitResizeKeydown);
+
+els.flowPane.querySelector(".message-form-split").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitSplitPromptMessage();
+});
+
+function handlePromptSlashMenuKeydown(event, resizeInput) {
+  const input = event.currentTarget;
+  const menu = els.flowPane.querySelector(".slash-menu");
+  const matches = slashCommandMatches(input.value);
+  if (menu.hidden || !matches.length) return false;
+
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    state.slashCommandIndex = (state.slashCommandIndex + offset + matches.length) % matches.length;
+    renderSlashMenu();
+    return true;
+  }
+  if (event.key === "Tab") {
+    handleInputPaneTabKeydown(event);
+    return true;
+  }
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    const command = matches[state.slashCommandIndex];
+    if (!command) return true;
+    if (input.value.trim() !== command.name) {
+      input.value = command.name;
+      resizeInput();
+    }
+    if (slashCommandHasExpansions(command.name)) {
+      state.slashCommandIndex = 0;
+      renderSlashMenu();
+      return true;
+    }
+    hideSlashMenu();
+    input.form?.requestSubmit();
+    return true;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideSlashMenu();
+    return true;
+  }
+  return false;
+}
+
+splitPromptInput().addEventListener("keydown", (event) => {
+  const input = event.currentTarget;
+  if (handleSplitQueuedPromptKeydown(event)) return;
+  if (handleHistorySearchKeydown(event)) return;
+  if (handlePromptSlashMenuKeydown(event, resizeSplitPromptInput)) return;
+  if (handleInputHistoryNavigationKeydown(event)) return;
+
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;
+    hideSlashMenu();
+    input.form?.requestSubmit();
+    return;
+  }
+  if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (!flowAgentRunning(selectedCompanionFlow())) return;
+    event.preventDefault();
+    if (!event.repeat) void interruptSplitAgent();
+  }
+});
+
+splitShellInput().addEventListener("keydown", (event) => {
+  if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c") {
+    if (!flowShellRunning(selectedCompanionFlow())) return;
+    event.preventDefault();
+    void interruptSplitShell();
+    return;
+  }
+  if (event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    if (event.shiftKey) return;
+    void submitSplitShellCommand();
+  }
+});
 
 promptInput().addEventListener("input", () => {
   cancelHistorySearch();
@@ -419,10 +581,11 @@ shellInput().addEventListener("input", () => {
   saveActiveTicketInputState();
 });
 
-els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-index]");
+els.flowPane.addEventListener("click", (event) => {
+  const button = event.target.closest(".agent-image-context button[data-index]");
   if (!button) return;
-  state.pendingAgentImages.splice(Number(button.dataset.index), 1);
+  const images = button.closest(".message-form-split") ? state.pendingSplitAgentImages : state.pendingAgentImages;
+  images.splice(Number(button.dataset.index), 1);
   renderFlowPane();
 });
 
@@ -431,8 +594,8 @@ document.addEventListener("dragenter", (event) => {
   event.preventDefault();
   event.stopPropagation();
   state.agentImageDragDepth += 1;
-  focusPromptInputForImageDrag(event);
-  setAgentImageDragActive(true);
+  const input = focusPromptInputForImageDrag(event);
+  setAgentImageDragActive(true, input);
 }, true);
 
 document.addEventListener("dragover", (event) => {
@@ -440,8 +603,8 @@ document.addEventListener("dragover", (event) => {
   event.preventDefault();
   event.stopPropagation();
   event.dataTransfer.dropEffect = "copy";
-  focusPromptInputForImageDrag(event);
-  setAgentImageDragActive(true);
+  const input = focusPromptInputForImageDrag(event);
+  setAgentImageDragActive(true, input);
 }, true);
 
 document.addEventListener("dragleave", (event) => {
@@ -458,56 +621,18 @@ document.addEventListener("drop", (event) => {
   event.preventDefault();
   event.stopPropagation();
   const files = droppedImageFiles(event);
+  const flowId = event.target?.closest?.(".terminal-split-pane:not([hidden])") ? splitAgentPaneFlowId() : "";
   state.agentImageDragDepth = 0;
   setAgentImageDragActive(false);
-  if (files.length) void uploadAgentImages(files);
+  if (files.length) void uploadAgentImages(files, flowId);
 }, true);
 
 promptInput().addEventListener("keydown", (event) => {
   const input = event.currentTarget;
-  const menu = els.flowPane.querySelector(".slash-menu");
-  const matches = slashCommandMatches(input.value);
 
   if (handleQueuedPromptKeydown(event)) return;
   if (handleHistorySearchKeydown(event)) return;
-
-  if (!menu.hidden && matches.length) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      state.slashCommandIndex = (state.slashCommandIndex + 1) % matches.length;
-      renderSlashMenu();
-      return;
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      state.slashCommandIndex = (state.slashCommandIndex - 1 + matches.length) % matches.length;
-      renderSlashMenu();
-      return;
-    } else if (event.key === "Tab") {
-      handleInputPaneTabKeydown(event);
-      return;
-    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      const command = matches[state.slashCommandIndex];
-      if (!command) return;
-      if (input.value.trim() !== command.name) {
-        input.value = command.name;
-        resizeMessageInput();
-      }
-      if (slashCommandHasExpansions(command.name)) {
-        state.slashCommandIndex = 0;
-        renderSlashMenu();
-        return;
-      }
-      if (!validSlashCommand(input.value)) return;
-      hideSlashMenu();
-      input.form?.requestSubmit();
-      return;
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      hideSlashMenu();
-      return;
-    }
-  }
+  if (handlePromptSlashMenuKeydown(event, resizeMessageInput)) return;
 
   if (handleInputPaneTabKeydown(event)) return;
   if (handleAgentInterruptKeydown(event)) return;
@@ -550,23 +675,33 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   const command = event.target.closest(".slash-command")?.dataset.command;
   if (!command) return;
   event.preventDefault();
+  const input = event.currentTarget.closest("form")?.querySelector(".message-input") || promptInput();
   if (command.startsWith("/model ")) {
-    void submitPromptCommand(command);
+    if (input.matches(".message-input-split")) {
+      input.value = command;
+      hideSlashMenu();
+      void submitSplitPromptMessage();
+    } else {
+      void submitPromptCommand(command);
+    }
     return;
   }
-  promptInput().value = command;
-  resizeMessageInput();
-  saveActiveTicketInputState();
+  input.value = command;
+  if (input.matches(".message-input-split")) resizeSplitPromptInput();
+  else {
+    resizeMessageInput();
+    saveActiveTicketInputState();
+  }
   if (slashCommandHasExpansions(command)) {
     state.slashCommandIndex = 0;
     renderSlashMenu();
   } else {
     hideSlashMenu();
   }
-  promptInput().focus();
+  input.focus();
 });
 
-els.flowPane.querySelector(".message-form").addEventListener("submit", (event) => {
+els.flowPane.querySelector(".terminal-panel > .message-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void submitPromptMessage();
 });
@@ -613,6 +748,8 @@ document.addEventListener("keydown", handleCommandK, true);
 document.addEventListener("keydown", handleCommandE, true);
 
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
+
+document.addEventListener("keydown", handleSplitPaneShortcut, true);
 
 document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
 

@@ -9,12 +9,13 @@ import {
 import { flowForTicket } from "./flows.js";
 import { rememberLogHistory } from "./input-history.js";
 import { api, wsRequest } from "./net.js";
-import { els, state } from "./state.js";
+import { state } from "./state.js";
 import { isShellOnlyRenderLog, terminalGroups } from "./terminal-groups.js";
 import {
   pauseTerminalFollow,
   renderLogs,
   renderShellOutputPane,
+  terminalForFlowLogs,
   terminalTurnCount,
   terminalVisibleTurnCount,
 } from "./terminal-render.js";
@@ -136,9 +137,9 @@ export function rememberLoadedLogBounds(flowId, logs) {
 }
 
 export async function loadOlderTerminalTraceMessages(options = {}) {
-  const flowId = state.selectedFlowId;
+  const flowId = options.flowId || state.selectedFlowId;
   if (!flowId || state.logOlderLoadingFlowIds.has(flowId)) return;
-  const terminal = els.flowPane.querySelector(".terminal");
+  const terminal = terminalForFlowLogs(flowId);
   if (!terminal) return;
   const renderOptions = {
     force: true,

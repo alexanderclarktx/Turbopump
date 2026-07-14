@@ -89,7 +89,7 @@ export function applyHistorySearchResult(input) {
   if (!result) return false;
   input.value = result;
   input.setSelectionRange(result.length, result.length);
-  resizeMessageInput();
+  resizeMessageInput(input);
   renderSlashMenu();
   return true;
 }
@@ -116,7 +116,7 @@ export function updateInputHistoryNavigation(input, direction) {
   const value = nextIndex === -1 ? state.historyNavigation.draft : history[nextIndex];
   input.value = value;
   input.setSelectionRange(value.length, value.length);
-  resizeMessageInput();
+  resizeMessageInput(input);
   hideSlashMenu();
   return true;
 }
@@ -144,10 +144,11 @@ export function handleInputHistoryNavigationKeydown(event) {
   return true;
 }
 
-export function renderHistorySearchIndicator() {
+export function renderHistorySearchIndicator(input = document.activeElement) {
   const indicator = els.flowPane.querySelector(".history-search-indicator");
   if (!indicator) return;
-  const form = els.flowPane.querySelector(".message-form");
+  const form = input?.closest?.(".message-form") || els.flowPane.querySelector(".terminal-panel > .message-form");
+  if (form && indicator.parentElement !== form) form.prepend(indicator);
   const search = state.historySearch;
   const terminal = els.flowPane.querySelector(".terminal");
   const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
@@ -177,7 +178,7 @@ export function updateHistorySearchMatches(input, query) {
   }
   input.value = search.query ? "" : search.draft;
   input.setSelectionRange(input.value.length, input.value.length);
-  resizeMessageInput();
+  resizeMessageInput(input);
   renderSlashMenu();
   return true;
 }

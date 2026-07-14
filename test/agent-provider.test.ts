@@ -162,7 +162,7 @@ describe("Agent providers", () => {
     expect(app).toContain("icon.dataset.provider = agentProviderKindForFlow(flow);");
     expect(app).toContain("model.prepend(agentProviderIcon(flow));");
     expect(app).toContain("const modelDisabled = !flow || flowAgentRunning(flow);");
-    expect(app).toContain("model.onclick = flow ? () => (modelDisabled ? flashBlockedInput(promptInput()) : openModelMenu()) : null;");
+    expect(app).toContain("model.onclick = modelInteractive ? () => (modelDisabled ? flashBlockedInput(input) : openModelMenu()) : null;");
     expect(css).toContain(".agent-context .agent-provider-icon {");
     expect(css).toContain('mask: url("provider-icons/openai.svg") no-repeat center / contain;');
     expect(css).toContain('.agent-context .agent-provider-icon[data-provider="claude"]');

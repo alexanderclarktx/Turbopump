@@ -10,6 +10,7 @@ import {
   SHELL_HISTORY_KEY,
   SHELL_OUTPUT_SPLIT_SIZE_KEY,
   SHELL_PANE_HIDDEN_KEY,
+  SPLIT_PANES_KEY,
   THEME_KEY,
   TICKET_DRAWER_MAX_SIZE,
   TICKET_DRAWER_MIN_SIZE,
@@ -110,6 +111,19 @@ export function initialBooleanSetting(key) {
   return localStorage.getItem(key) === "true";
 }
 
+export function initialSplitPanes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SPLIT_PANES_KEY) || "{}");
+    return new Map(
+      Object.entries(parsed)
+        .filter(([, value]) => value && typeof value === "object")
+        .map(([flowId, value]) => [flowId, { agent: Boolean(value.agent), shell: Boolean(value.shell) }]),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
 export const state = {
   flows: [],
   checkouts: [],
@@ -162,6 +176,9 @@ export const state = {
   ticketSearchOpen: false,
   ticketSearchQuery: "",
   shellPaneHidden: initialBooleanSetting(SHELL_PANE_HIDDEN_KEY),
+  splitPanes: initialSplitPanes(),
+  splitMessageSubmitting: false,
+  splitShellSubmitting: false,
   slashCommandIndex: 0,
   slashMenuCommands: null,
   messageSubmitting: false,
@@ -174,6 +191,8 @@ export const state = {
   shellInterruptingFlowIds: new Set(),
   pendingAgentImages: [],
   agentImageUploading: false,
+  pendingSplitAgentImages: [],
+  splitAgentImageUploading: false,
   agentImageDragDepth: 0,
   promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),
@@ -185,6 +204,9 @@ export const state = {
   historyNavigation: null,
   terminalFollowPaused: false,
   agentTraceHidden: true,
+  rawAgentMarkdown: false,
+  agentTraceHiddenByFlow: new Map(),
+  rawAgentMarkdownByFlow: new Map(),
   flowDiffs: new Map(),
   flowDiffLoadingIds: new Set(),
   pendingFlowDiffRefreshes: new Map(),
@@ -234,6 +256,7 @@ export const els = {
   ticketGrid: document.querySelector("#ticketGrid"),
   flowPane: document.querySelector("#flowPane"),
   agentTraceToggle: document.querySelector("#agentTraceToggle"),
+  agentRawMarkdownToggle: document.querySelector("#agentRawMarkdownToggle"),
   diffModal: document.querySelector("#diffModal"),
   imagePreviewModal: document.querySelector("#imagePreviewModal"),
   toastStack: document.querySelector("#toastStack"),

@@ -81,7 +81,7 @@ export function setShellPaneHidden(hidden) {
   const restoreTerminalBottom = terminalBottomKeeper();
   state.shellPaneHidden = hidden;
   document.body.classList.toggle("shell-pane-hidden", hidden);
-  const shellPanel = els.flowPane.querySelector(".shell-command-panel");
+  const shellPanel = els.flowPane.querySelector(".shell-command-panel:not(.shell-command-panel-split)");
   const shellRail = els.flowPane.querySelector(".shell-pane-rail");
   if (shellPanel) shellPanel.setAttribute("aria-hidden", String(hidden));
   if (shellRail) shellRail.setAttribute("aria-expanded", String(!hidden));
@@ -122,7 +122,7 @@ export function toggleTheme() {
 
 export function flowSplitBounds(content, rect) {
   const resizer = content.querySelector(".flow-resizer");
-  const messageForm = content.querySelector(".message-form");
+  const messageForm = content.querySelector(".terminal-panel > .message-form");
   const minTopPx = 0;
   const resizerHeight = resizer?.getBoundingClientRect().height || 0;
   const messageFormStyle = messageForm ? getComputedStyle(messageForm) : null;

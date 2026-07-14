@@ -16,6 +16,8 @@ export const SHELL_OUTPUT_SPLIT_SIZE_KEY = "flow.shellOutputPaneSize";
 
 export const SHELL_PANE_HIDDEN_KEY = "flow.shellPaneHidden";
 
+export const SPLIT_PANES_KEY = "flow.splitPanes";
+
 export const THEME_KEY = "flow.theme";
 
 export const PROMPT_HISTORY_KEY = "flow.promptHistory";

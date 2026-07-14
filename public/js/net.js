@@ -13,6 +13,7 @@ import {
 import { appendLogEntry, loadLogs, removeLogEntries } from "./logs.js";
 import { notifyAgentTurnEnded, refreshFlowDiffAfterAgentTurn } from "./notifications.js";
 import { render } from "./render.js";
+import { selectedCompanionFlow } from "./split.js";
 import { state } from "./state.js";
 import { isAgentTurnEndedLog, isShellOnlyRenderLog } from "./terminal-groups.js";
 import { renderLogs, renderShellOutputPane, scheduleLogRender, scheduleShellOutputRender } from "./terminal-render.js";
@@ -143,6 +144,11 @@ export function connectWs() {
         renderTickets();
         const flow = selectedFlow();
         if (flow) scheduleLogRender(flow.id, { force: true });
+        const companion = selectedCompanionFlow();
+        if (companion) {
+          scheduleLogRender(companion.id, { force: true });
+          scheduleShellOutputRender(companion.id);
+        }
         return;
       }
       if (tokenUsageOnlyFlowChanges(previousFlows, state.flows)) {

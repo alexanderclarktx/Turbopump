@@ -73,9 +73,19 @@ export function agentProviderKindForFlow(flow) {
   return flow?.agentProvider === "claude" ? "claude" : "codex";
 }
 
-export function activeAgentProviderKind() {
+function activePromptInput() {
+  const active = document.activeElement;
+  return active?.matches?.(".message-input") ? active : promptInput();
+}
+
+function activeAgentFlow() {
   const flow = state.flows.find((item) => item.id === state.selectedFlowId) || null;
-  return agentProviderKindForFlow(flow);
+  if (!activePromptInput()?.matches(".message-input-split")) return flow;
+  return state.flows.find((item) => item.parentFlowId === flow?.id) || flow;
+}
+
+export function activeAgentProviderKind() {
+  return agentProviderKindForFlow(activeAgentFlow());
 }
 
 export function activeSlashCommands() {
@@ -133,11 +143,12 @@ export function hideSlashMenu() {
   const menu = els.flowPane.querySelector(".slash-menu");
   state.slashMenuCommands = null;
   menu.hidden = true;
-  menu.replaceChildren();
 }
 
 function renderSlashMenuItems(matches) {
   const menu = els.flowPane.querySelector(".slash-menu");
+  const form = activePromptInput()?.form;
+  if (form && menu.parentElement !== form) form.append(menu);
   if (!matches.length) {
     hideSlashMenu();
     return;
@@ -193,8 +204,8 @@ export function renderSlashMenu() {
     renderSlashMenuItems(state.slashMenuCommands);
     return;
   }
-  const input = promptInput();
-  if (!input || document.activeElement === shellInput() || promptQueuedForSelectedFlow()) {
+  const input = activePromptInput();
+  if (!input || document.activeElement === shellInput() || (!input.matches(".message-input-split") && promptQueuedForSelectedFlow())) {
     hideSlashMenu();
     return;
   }
@@ -202,13 +213,18 @@ export function renderSlashMenu() {
 }
 
 export function selectSlashCommand(index = state.slashCommandIndex) {
-  const input = promptInput();
+  const input = activePromptInput();
   if (!input) return false;
   const matches = slashCommandMatches(input.value);
   const command = matches[index];
   if (!command) return false;
   input.value = command.name;
-  resizeMessageInput();
+  if (input.matches(".message-input-split")) {
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  } else {
+    resizeMessageInput();
+  }
   if (slashCommandHasExpansions(command.name)) {
     state.slashCommandIndex = 0;
     renderSlashMenu();

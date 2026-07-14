@@ -43,6 +43,7 @@ type Flow = {
   agentContextWindow: number;
   agentTotalTokensUsed: number;
   serving: number;
+  parentFlowId: string;
   createdAt: string;
   updatedAt: string;
   shellOutputClearAfterLogId?: number;
@@ -230,6 +231,7 @@ db.exec(`
     agentContextWindow integer not null default 0,
     agentTotalTokensUsed integer not null default 0,
     serving integer not null default 0,
+    parentFlowId text not null default '',
     createdAt text not null,
     updatedAt text not null
   );
@@ -281,6 +283,7 @@ tryMigration("alter table flows add column githubCiTargetUrl text not null defau
 tryMigration("alter table flows add column githubCiDescription text not null default ''");
 tryMigration("update flows set agentContextTokensUsed = 0 where agentContextWindow > 0 and agentContextTokensUsed > agentContextWindow");
 tryMigration("alter table linear_issues add column assigned integer not null default 0");
+tryMigration("alter table flows add column parentFlowId text not null default ''");
 
 const clients = new Set<ServerWebSocket>();
 const agentProcesses = new Map<string, RuntimeProcess>();
@@ -426,7 +429,8 @@ const allLinearIssuesStmt = db.query("select identifier, issueJson, assigned fro
 const setLinearIssueAssignedStmt = db.query("update linear_issues set assigned = ? where identifier = ?");
 const assignedLinearIssueIdentifiersStmt = db.query("select identifier from linear_issues where assigned = 1");
 const flowByIdStmt = db.query("select * from flows where id = ?");
-const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? limit 1");
+const flowByIssueStmt = db.query("select * from flows where linearIssueId = ? and parentFlowId = '' limit 1");
+const companionFlowStmt = db.query("select * from flows where parentFlowId = ? limit 1");
 const allFlowsStmt = db.query("select * from flows order by createdAt asc");
 const deleteFlowByIdStmt = db.query("delete from flows where id = ?");
 const deleteShellOutputStateByFlowIdStmt = db.query("delete from shell_output_state where flowId = ?");
@@ -716,6 +720,41 @@ function getFlowByIssue(identifier: string) {
   return flowByIssueStmt.get(identifier) as Flow | null;
 }
 
+function companionFlowFor(flowId: string) {
+  return companionFlowStmt.get(flowId) as Flow | null;
+}
+
+function createCompanionFlow(flow: Flow) {
+  const id = crypto.randomUUID();
+  const createdAt = now();
+  db.query(`
+    insert into flows (
+      id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier, agentProvider,
+      checkoutPath, branchName, baseSha, agentStatus, serving, parentFlowId, createdAt, updatedAt
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    flow.linearIssueId,
+    flow.linearIssueUrl,
+    flow.title,
+    flow.linearStatus,
+    "",
+    flow.agentProvider || defaultAgentProviderKind(),
+    flow.checkoutPath,
+    flow.branchName,
+    flow.baseSha,
+    "idle",
+    0,
+    flow.id,
+    createdAt,
+    createdAt,
+  );
+  const companion = getFlow(id);
+  if (!companion) throw new Error("Failed to create split pane.");
+  insertLog(id, "flow", `Opened split pane for ${flow.branchName || flow.linearIssueId}\n`);
+  return companion;
+}
+
 function listFlows() {
   return allFlowsStmt.all() as Flow[];
 }
@@ -812,7 +851,7 @@ function worktreeNameFromPath(path: string) {
 function worktreeFlowMap() {
   const map = new Map<string, Flow>();
   for (const flow of listFlows()) {
-    if (!flow.checkoutPath) continue;
+    if (!flow.checkoutPath || flow.parentFlowId) continue;
     map.set(worktreeNameFromPath(flow.checkoutPath), flow);
   }
   return map;
@@ -882,6 +921,8 @@ function deleteWorktree(name: string) {
   const stats = statSync(target);
   if (!stats.isDirectory()) throw new Error("Worktree is not a directory.");
   const flow = worktreeFlowMap().get(name) ?? null;
+  const companion = flow ? companionFlowFor(flow.id) : null;
+  if (companion) stopFlowRuntimesForDelete(companion.id);
   if (flow) stopFlowRuntimesForDelete(flow.id);
   if (existsSync(repoCheckoutDir) && isGitWorktree(target)) {
     runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
@@ -889,6 +930,7 @@ function deleteWorktree(name: string) {
   } else {
     rmSync(target, { recursive: true, force: true });
   }
+  if (companion) deleteFlowTraceData(companion.id);
   if (flow) deleteFlowTraceData(flow.id);
   return { deletedFlowId: flow?.id ?? "" };
 }
@@ -1178,6 +1220,14 @@ function assertFlowWorktree(flow: Flow) {
 
 function ensureFlowWorktree(flow: Flow) {
   if (flowHasWorktree(flow)) return flow;
+
+  const parent = flow.parentFlowId ? getFlow(flow.parentFlowId) : null;
+  if (parent) {
+    const ensured = ensureFlowWorktree(parent);
+    const shared = { checkoutPath: ensured.checkoutPath, branchName: ensured.branchName, baseSha: ensured.baseSha };
+    updateFlow(flow.id, shared);
+    return getFlow(flow.id) ?? { ...flow, ...shared };
+  }
 
   const { target, branch, baseSha } = createWorktree(flow.id, flow.linearIssueId);
   updateFlow(flow.id, { checkoutPath: target, branchName: branch, baseSha });
@@ -2556,7 +2606,14 @@ function statusPercentLeft(window: unknown) {
 
 function codexRateLimits(value: unknown) {
   const data = value as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null };
-  return (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
+  const rateLimits = (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
+  const windows = [rateLimits.primary, rateLimits.secondary];
+  const duration = (window: unknown) => (window as { windowDurationMins?: unknown } | null)?.windowDurationMins;
+  if (!windows.some((window) => typeof duration(window) === "number")) return rateLimits;
+  return {
+    primary: windows.find((window) => duration(window) === 300),
+    secondary: windows.find((window) => duration(window) === 10_080),
+  };
 }
 
 function markdownTable(rows: Array<[string, unknown]>) {
@@ -4424,6 +4481,15 @@ async function handleApi(request: Request, url: URL) {
       }
       if (fields.linearIssueId !== undefined) insertLog(id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
+    if (parts[3] === "split" && request.method === "POST") {
+      if (flow.parentFlowId) return json({ error: "A split pane cannot be split again." }, { status: 400 });
+      const existing = companionFlowFor(flow.id);
+      if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
+      const companion = createCompanionFlow(flow);
+      broadcast("flows", listClientFlows());
+      return json({ ok: true, flow: clientFlow(companion) });
     }
 
     if (parts[3] === "agent" && parts[4] === "interrupt" && request.method === "POST") {

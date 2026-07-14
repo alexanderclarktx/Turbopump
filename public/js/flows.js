@@ -19,9 +19,10 @@ import {
 } from "./prompt.js";
 import { render } from "./render.js";
 import { repoUrlConfigured } from "./settings.js";
-import { agentProviderKindForFlow, renderSlashMenuCommands, slashCommandExpansionMatches } from "./slash-commands.js";
+import { agentProviderKindForFlow, hideSlashMenu, renderSlashMenuCommands, slashCommandExpansionMatches } from "./slash-commands.js";
+import { clearSplitPaneState, renderSplitPanes } from "./split.js";
 import { els, state } from "./state.js";
-import { copyAgentBranchName, renderLogs, renderShellOutputPane, resumeTerminalFollow } from "./terminal-render.js";
+import { copyAgentBranchName, renderLogs, renderShellOutputPane, resumeTerminalFollow, syncAgentOutputToolbar } from "./terminal-render.js";
 import {
   animateTicketSwitch,
   linearStatusName,
@@ -210,6 +211,8 @@ export function clearFlowClientState(flowId) {
   state.shellOutputClearAfterLogId.delete(flowId);
   state.openTraceGroups.delete(flowId);
   state.shellInterruptingFlowIds.delete(flowId);
+  state.agentTraceHiddenByFlow.delete(flowId);
+  state.rawAgentMarkdownByFlow.delete(flowId);
   if (state.queuedPrompt?.flowId === flowId) state.queuedPrompt = null;
   state.flowDiffs.delete(flowId);
   state.flowDiffLoadingIds.delete(flowId);
@@ -226,6 +229,7 @@ export function clearFlowClientState(flowId) {
     localStorage.removeItem("flow.selectedFlowId");
   }
   if (state.githubCiSelectedFlowId === flowId) state.githubCiSelectedFlowId = "";
+  clearSplitPaneState(flowId);
 }
 
 export function syncShellOutputClearState(flows) {
@@ -344,8 +348,9 @@ export function agentContextWindowLabel(flow) {
   return `${Math.round((available / total) * 100)}%`;
 }
 
-export function renderAgentContext(flow) {
-  const context = els.flowPane.querySelector(".agent-context");
+export function renderAgentContext(flow, root = els.flowPane.querySelector(".terminal-panel > .message-form"), input = promptInput(), options = {}) {
+  const context = root?.querySelector(".agent-context");
+  if (!context) return;
   const branch = context.querySelector(".agent-context-branch");
   const model = context.querySelector(".agent-context-model");
   const diffButton = context.querySelector(".agent-context-diff");
@@ -355,10 +360,11 @@ export function renderAgentContext(flow) {
   model.textContent = agentModelLabel(flow);
   model.prepend(agentProviderIcon(flow));
   const modelDisabled = !flow || flowAgentRunning(flow);
-  model.setAttribute("aria-disabled", String(modelDisabled));
-  model.tabIndex = flow ? 0 : -1;
-  model.onclick = flow ? () => (modelDisabled ? flashBlockedInput(promptInput()) : openModelMenu()) : null;
-  model.onkeydown = flow ? (event) => handleModelMenuKeydown(event, modelDisabled) : null;
+  const modelInteractive = flow && options.modelMenu !== false;
+  model.setAttribute("aria-disabled", String(!modelInteractive || modelDisabled));
+  model.tabIndex = modelInteractive ? 0 : -1;
+  model.onclick = modelInteractive ? () => (modelDisabled ? flashBlockedInput(input) : openModelMenu()) : null;
+  model.onkeydown = modelInteractive ? (event) => handleModelMenuKeydown(event, modelDisabled, input) : null;
   diffButton.hidden = !flow || !diffHasChanges(diff);
   renderDiffIndicator(diffButton, flow?.id || "", diff);
   diffButton.disabled = !flow;
@@ -392,15 +398,16 @@ export function renderAgentContext(flow) {
 }
 
 export function openModelMenu() {
+  if (state.slashMenuCommands) return hideSlashMenu();
   state.slashCommandIndex = 0;
   renderSlashMenuCommands(slashCommandExpansionMatches("/model"));
 }
 
-export function handleModelMenuKeydown(event, blocked = false) {
+export function handleModelMenuKeydown(event, blocked = false, input = promptInput()) {
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   if (blocked) {
-    flashBlockedInput(promptInput());
+    flashBlockedInput(input);
     return;
   }
   openModelMenu();
@@ -474,7 +481,7 @@ export function selectedTicket() {
 
 export function flowForLinearIssue(identifier) {
   if (!identifier) return null;
-  return state.flows.find((flow) => flow.linearIssueId === identifier) || null;
+  return state.flows.find((flow) => flow.linearIssueId === identifier && !flow.parentFlowId) || null;
 }
 
 export function flowForTicket(ticket) {
@@ -563,12 +570,13 @@ export function renderFlowPane(options = {}) {
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !issueId);
   renderAgentContext(flow || wouldBeAgentContext(ticket));
+  syncAgentOutputToolbar(els.flowPane.querySelector(".agent-column > .agent-output-toolbar"), flow?.id || "");
   renderAgentImageContext();
   if (!issueId) {
     return;
   }
 
-  const messageForm = els.flowPane.querySelector(".message-form");
+  const messageForm = els.flowPane.querySelector(".terminal-panel > .message-form");
   const messageInput = promptInput();
   const commandInput = shellInput();
   messageInput.disabled = false;
@@ -600,6 +608,7 @@ export function renderFlowPane(options = {}) {
       terminal.textContent = "No agent session yet.";
     }
   }
+  renderSplitPanes();
   if (!options.light) void loadLinearDetail(issueId);
   scheduleQueuedPromptFlush();
 }

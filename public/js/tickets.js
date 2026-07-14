@@ -9,6 +9,7 @@ import {
   TICKET_START_AGENT_FLAME_PATH,
 } from "./constants.js";
 import {
+  createFlowFromTicket,
   flowAgentRunning,
   flowForLinearIssue,
   flowForTicket,
@@ -229,7 +230,7 @@ export function mergeLinearIssue(existing, incoming) {
 }
 
 export function syncLinearTicketsWithFlows() {
-  const flowsByIssue = new Map(state.flows.map((flow) => [flow.linearIssueId, flow]));
+  const flowsByIssue = new Map(state.flows.filter((flow) => !flow.parentFlowId).map((flow) => [flow.linearIssueId, flow]));
   const baseTickets = state.linearTickets.filter((ticket) => !ticket.turbopumpFlowOnly || flowCanRenderTicket(flowsByIssue.get(ticket.identifier)));
   const ticketIds = new Set(baseTickets.map((ticket) => ticket.identifier));
   const tickets = baseTickets.map((ticket) => {
@@ -244,7 +245,7 @@ export function syncLinearTicketsWithFlows() {
     return;
   }
   for (const flow of state.flows) {
-    if (!flowCanRenderTicket(flow) || ticketIds.has(flow.linearIssueId)) continue;
+    if (flow.parentFlowId || !flowCanRenderTicket(flow) || ticketIds.has(flow.linearIssueId)) continue;
     tickets.push({
       identifier: flow.linearIssueId,
       title: flow.title || flow.linearIssueId,
@@ -838,6 +839,30 @@ export function setLinearIssuePinned(identifier, pinned, options = {}) {
   renderTickets();
 }
 
+export function showTicketOptionsMenu(event, ticket) {
+  event.preventDefault();
+  document.querySelector(".ticket-options-menu")?.remove();
+  const pinned = isLinearIssuePinned(ticket.identifier);
+  const menu = document.createElement("div");
+  menu.className = "ticket-options-menu";
+  menu.role = "menu";
+  menu.innerHTML = `<button type="button" role="menuitem">${pinned ? "Unpin" : "Pin"}</button>`;
+  document.body.append(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8))}px`;
+  const button = menu.querySelector("button");
+  button.addEventListener("click", () => {
+    menu.remove();
+    setLinearIssuePinned(ticket.identifier, !pinned, !pinned ? { position: "top" } : {});
+  });
+  button.addEventListener("keydown", (keyEvent) => {
+    if (keyEvent.key === "Escape") menu.remove();
+  });
+  button.addEventListener("blur", () => window.setTimeout(() => menu.remove(), 0));
+  button.focus();
+}
+
 export function focusLinearTicketCard(identifier) {
   requestAnimationFrame(() => {
     const card = [...els.ticketGrid.querySelectorAll(".ticket-card")].find((item) => item.dataset.issue === identifier);
@@ -1177,7 +1202,7 @@ export async function createPinnedLinearTicket() {
     state.linearDetails.set(issue.identifier, { loading: false, issue });
     syncLinearTicketsWithFlows();
     setLinearIssuePinned(issue.identifier, true, { position: "top" });
-    renderFlowPane();
+    await createFlowFromTicket(issue);
     focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {
@@ -1320,6 +1345,7 @@ export function renderTicketCard(ticket) {
     if (state.suppressTicketClick) return;
     void openTicketInFlowPane(ticket);
   });
+  card.addEventListener("contextmenu", (event) => showTicketOptionsMenu(event, ticket));
   card.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
