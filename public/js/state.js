@@ -191,6 +191,8 @@ export const state = {
   shellInterruptingFlowIds: new Set(),
   pendingAgentImages: [],
   agentImageUploading: false,
+  pendingSplitAgentImages: [],
+  splitAgentImageUploading: false,
   agentImageDragDepth: 0,
   promptHistory: initialInputHistory(PROMPT_HISTORY_KEY),
   shellHistory: initialInputHistory(SHELL_HISTORY_KEY),

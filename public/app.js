@@ -97,6 +97,9 @@ import {
 } from "./js/slash-commands.js";
 import {
   closeSplitPane,
+  handleAgentSplitResizeKeydown,
+  handleSplitQueuedPromptBeforeInput,
+  handleSplitQueuedPromptKeydown,
   interruptSplitAgent,
   interruptSplitShell,
   isSplitPaneOpen,
@@ -105,8 +108,10 @@ import {
   selectedCompanionFlow,
   splitPaneKindForToggle,
   splitPromptInput,
+  splitAgentPaneFlowId,
   splitShellInput,
   splitTerminal,
+  startAgentSplitResize,
   submitSplitPromptMessage,
   submitSplitShellCommand,
 } from "./js/split.js";
@@ -418,17 +423,11 @@ function handleSplitPaneShortcut(event) {
   if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key !== "/") return;
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (!event.repeat) void openSplitPane(event.target?.closest?.(".shell-command-panel") ? "shell" : "agent");
-}
-
-function handleCloseSplitPaneShortcut(event) {
-  if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "d") return;
-  const kind = event.target?.closest?.(".shell-command-panel") ? "shell" : event.target?.closest?.(".prompt-input-pane") ? "agent" : "";
+  const kind = event.target?.closest?.(".shell-command-panel") ? "shell" : "agent";
   const flow = selectedFlow();
-  if (!kind || !flow || !isSplitPaneOpen(flow.id, kind)) return;
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  if (!event.repeat) closeSplitPane(kind);
+  if (event.repeat) return;
+  if (flow && isSplitPaneOpen(flow.id, kind)) closeSplitPane(kind);
+  else void openSplitPane(kind);
 }
 
 splitTerminal().addEventListener("scroll", (event) => {
@@ -458,17 +457,79 @@ splitTerminal().addEventListener(
   { passive: true },
 );
 
-splitPromptInput().addEventListener("input", resizeSplitPromptInput);
+splitPromptInput().addEventListener("input", () => {
+  cancelHistorySearch();
+  resetInputHistoryNavigation();
+  state.slashMenuCommands = null;
+  state.slashCommandIndex = 0;
+  resizeSplitPromptInput();
+  renderSlashMenu();
+});
+
+splitPromptInput().addEventListener("beforeinput", handleSplitQueuedPromptBeforeInput);
+
+els.flowPane.querySelector(".message-form-split").addEventListener("pointerdown", startAgentSplitResize);
+els.flowPane.querySelector(".message-form-split-resizer").addEventListener("keydown", handleAgentSplitResizeKeydown);
 
 els.flowPane.querySelector(".message-form-split").addEventListener("submit", (event) => {
   event.preventDefault();
   void submitSplitPromptMessage();
 });
 
-splitPromptInput().addEventListener("keydown", (event) => {
+function handlePromptSlashMenuKeydown(event, resizeInput) {
+  const input = event.currentTarget;
+  const menu = els.flowPane.querySelector(".slash-menu");
+  const matches = slashCommandMatches(input.value);
+  if (menu.hidden || !matches.length) return false;
+
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    state.slashCommandIndex = (state.slashCommandIndex + offset + matches.length) % matches.length;
+    renderSlashMenu();
+    return true;
+  }
+  if (event.key === "Tab") {
+    handleInputPaneTabKeydown(event);
+    return true;
+  }
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    void submitSplitPromptMessage();
+    const command = matches[state.slashCommandIndex];
+    if (!command) return true;
+    if (input.value.trim() !== command.name) {
+      input.value = command.name;
+      resizeInput();
+    }
+    if (slashCommandHasExpansions(command.name)) {
+      state.slashCommandIndex = 0;
+      renderSlashMenu();
+      return true;
+    }
+    hideSlashMenu();
+    input.form?.requestSubmit();
+    return true;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideSlashMenu();
+    return true;
+  }
+  return false;
+}
+
+splitPromptInput().addEventListener("keydown", (event) => {
+  const input = event.currentTarget;
+  if (handleSplitQueuedPromptKeydown(event)) return;
+  if (handleHistorySearchKeydown(event)) return;
+  if (handlePromptSlashMenuKeydown(event, resizeSplitPromptInput)) return;
+  if (handleInputHistoryNavigationKeydown(event)) return;
+
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    if (input.value.trim().startsWith("/") && !validSlashCommand(input.value)) return;
+    hideSlashMenu();
+    input.form?.requestSubmit();
     return;
   }
   if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -520,10 +581,11 @@ shellInput().addEventListener("input", () => {
   saveActiveTicketInputState();
 });
 
-els.flowPane.querySelector(".agent-image-context").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-index]");
+els.flowPane.addEventListener("click", (event) => {
+  const button = event.target.closest(".agent-image-context button[data-index]");
   if (!button) return;
-  state.pendingAgentImages.splice(Number(button.dataset.index), 1);
+  const images = button.closest(".message-form-split") ? state.pendingSplitAgentImages : state.pendingAgentImages;
+  images.splice(Number(button.dataset.index), 1);
   renderFlowPane();
 });
 
@@ -532,8 +594,8 @@ document.addEventListener("dragenter", (event) => {
   event.preventDefault();
   event.stopPropagation();
   state.agentImageDragDepth += 1;
-  focusPromptInputForImageDrag(event);
-  setAgentImageDragActive(true);
+  const input = focusPromptInputForImageDrag(event);
+  setAgentImageDragActive(true, input);
 }, true);
 
 document.addEventListener("dragover", (event) => {
@@ -541,8 +603,8 @@ document.addEventListener("dragover", (event) => {
   event.preventDefault();
   event.stopPropagation();
   event.dataTransfer.dropEffect = "copy";
-  focusPromptInputForImageDrag(event);
-  setAgentImageDragActive(true);
+  const input = focusPromptInputForImageDrag(event);
+  setAgentImageDragActive(true, input);
 }, true);
 
 document.addEventListener("dragleave", (event) => {
@@ -559,56 +621,18 @@ document.addEventListener("drop", (event) => {
   event.preventDefault();
   event.stopPropagation();
   const files = droppedImageFiles(event);
+  const flowId = event.target?.closest?.(".terminal-split-pane:not([hidden])") ? splitAgentPaneFlowId() : "";
   state.agentImageDragDepth = 0;
   setAgentImageDragActive(false);
-  if (files.length) void uploadAgentImages(files);
+  if (files.length) void uploadAgentImages(files, flowId);
 }, true);
 
 promptInput().addEventListener("keydown", (event) => {
   const input = event.currentTarget;
-  const menu = els.flowPane.querySelector(".slash-menu");
-  const matches = slashCommandMatches(input.value);
 
   if (handleQueuedPromptKeydown(event)) return;
   if (handleHistorySearchKeydown(event)) return;
-
-  if (!menu.hidden && matches.length) {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      state.slashCommandIndex = (state.slashCommandIndex + 1) % matches.length;
-      renderSlashMenu();
-      return;
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      state.slashCommandIndex = (state.slashCommandIndex - 1 + matches.length) % matches.length;
-      renderSlashMenu();
-      return;
-    } else if (event.key === "Tab") {
-      handleInputPaneTabKeydown(event);
-      return;
-    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      const command = matches[state.slashCommandIndex];
-      if (!command) return;
-      if (input.value.trim() !== command.name) {
-        input.value = command.name;
-        resizeMessageInput();
-      }
-      if (slashCommandHasExpansions(command.name)) {
-        state.slashCommandIndex = 0;
-        renderSlashMenu();
-        return;
-      }
-      if (!validSlashCommand(input.value)) return;
-      hideSlashMenu();
-      input.form?.requestSubmit();
-      return;
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      hideSlashMenu();
-      return;
-    }
-  }
+  if (handlePromptSlashMenuKeydown(event, resizeMessageInput)) return;
 
   if (handleInputPaneTabKeydown(event)) return;
   if (handleAgentInterruptKeydown(event)) return;
@@ -651,20 +675,30 @@ els.flowPane.querySelector(".slash-menu").addEventListener("mousedown", (event) 
   const command = event.target.closest(".slash-command")?.dataset.command;
   if (!command) return;
   event.preventDefault();
+  const input = event.currentTarget.closest("form")?.querySelector(".message-input") || promptInput();
   if (command.startsWith("/model ")) {
-    void submitPromptCommand(command);
+    if (input.matches(".message-input-split")) {
+      input.value = command;
+      hideSlashMenu();
+      void submitSplitPromptMessage();
+    } else {
+      void submitPromptCommand(command);
+    }
     return;
   }
-  promptInput().value = command;
-  resizeMessageInput();
-  saveActiveTicketInputState();
+  input.value = command;
+  if (input.matches(".message-input-split")) resizeSplitPromptInput();
+  else {
+    resizeMessageInput();
+    saveActiveTicketInputState();
+  }
   if (slashCommandHasExpansions(command)) {
     state.slashCommandIndex = 0;
     renderSlashMenu();
   } else {
     hideSlashMenu();
   }
-  promptInput().focus();
+  input.focus();
 });
 
 els.flowPane.querySelector(".terminal-panel > .message-form").addEventListener("submit", (event) => {
@@ -716,8 +750,6 @@ document.addEventListener("keydown", handleCommandE, true);
 document.addEventListener("keydown", handlePaneVisibilityShortcuts, true);
 
 document.addEventListener("keydown", handleSplitPaneShortcut, true);
-
-document.addEventListener("keydown", handleCloseSplitPaneShortcut, true);
 
 document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNotification);
 

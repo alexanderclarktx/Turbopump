@@ -1,4 +1,4 @@
-import { SPLIT_PANES_KEY } from "./constants.js";
+import { QUEUED_PROMPT_PREFIX_HTML, SPLIT_PANES_KEY } from "./constants.js";
 import {
   ensureSelectedFlow,
   flowAgentRunning,
@@ -6,14 +6,21 @@ import {
   renderAgentContext,
   renderFlowPane,
   selectedFlow,
+  updateFlowQueuedPrompt,
   upsertFlow,
 } from "./flows.js";
 import { setShellPaneHidden } from "./layout.js";
 import { loadLogs } from "./logs.js";
 import { api } from "./net.js";
-import { flashBlockedInput } from "./prompt.js";
+import {
+  agentMessageWithImages,
+  flashBlockedInput,
+  handleInputPaneTabKeydown,
+  promptQueuedCanSteer,
+  renderAgentImageContext,
+} from "./prompt.js";
 import { els, state } from "./state.js";
-import { renderLogs, renderShellOutputPane } from "./terminal-render.js";
+import { renderLogs, renderShellOutputPane, scrollTerminalToLatestNow, terminalAtLatest } from "./terminal-render.js";
 import { toast } from "./ui.js";
 
 const splitLogsLoadingFlowIds = new Set();
@@ -134,7 +141,35 @@ export function renderSplitPanes() {
   const terminalPane = els.flowPane.querySelector(".terminal-split-pane");
   const shellOutputPane = els.flowPane.querySelector(".shell-output-split-pane");
   if (terminalPane) terminalPane.hidden = !agentOpen;
-  renderAgentContext(agentOpen ? companion : null, terminalPane, splitPromptInput(), { modelMenu: false });
+  const queuedPrompt = companion?.queuedPrompt;
+  const queued = Boolean(queuedPrompt);
+  const input = splitPromptInput();
+  const promptPane = terminalPane?.querySelector(".prompt-input-pane");
+  const queuedHint = terminalPane?.querySelector(".queued-prompt-hint");
+  const prefixGlyph = terminalPane?.querySelector(".input-pane-prefix-glyph");
+  promptPane?.classList.toggle("prompt-queued", queued);
+  if (queuedHint) {
+    queuedHint.hidden = !queued;
+    queuedHint.textContent = promptQueuedCanSteer(companion) ? 'message queued — press "s" to steer' : "message queued";
+  }
+  if (queued && !prefixGlyph?.querySelector(".queued-prompt-spinner")) prefixGlyph.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
+  else if (!queued && prefixGlyph?.textContent !== ">") prefixGlyph.textContent = ">";
+  const previousQueuedMessage = input?.dataset.queuedPrompt || "";
+  if (input && queuedPrompt?.message) {
+    input.dataset.queuedPrompt = queuedPrompt.message;
+    if (input.value !== queuedPrompt.message) input.value = queuedPrompt.message;
+    resizeSplitPromptInput();
+  } else if (input && previousQueuedMessage) {
+    if (input.value === previousQueuedMessage) input.value = "";
+    delete input.dataset.queuedPrompt;
+    resizeSplitPromptInput();
+  }
+  renderAgentContext(agentOpen ? companion : null, terminalPane, input, { modelMenu: false });
+  renderAgentImageContext(
+    terminalPane?.querySelector(".agent-image-context"),
+    state.pendingSplitAgentImages,
+    state.splitAgentImageUploading,
+  );
   if (shellOutputPane) shellOutputPane.hidden = !shellOpen;
   if (terminal && !agentOpen) {
     terminal.replaceChildren();
@@ -168,27 +203,131 @@ export function resizeSplitPromptInput() {
   input.style.height = `${input.scrollHeight}px`;
 }
 
+function setAgentSplitSize(size) {
+  const column = els.flowPane.querySelector(".agent-column");
+  const resizer = els.flowPane.querySelector(".message-form-split-resizer");
+  const applied = Math.max(15, Math.min(85, size));
+  column?.style.setProperty("--agent-split-size", `${applied}%`);
+  resizer?.setAttribute("aria-valuenow", String(Math.round(applied)));
+}
+
+export function startAgentSplitResize(event) {
+  if (event.target.closest("textarea, button, a, .slash-menu, .agent-image-context")) return;
+  event.preventDefault();
+  const column = event.currentTarget.closest(".agent-column");
+  const rect = column?.getBoundingClientRect();
+  const upperPaneHeight = column?.querySelector(".terminal-split-pane")?.getBoundingClientRect().height;
+  if (!rect?.height || !upperPaneHeight) return;
+  const initialSize = (upperPaneHeight / rect.height) * 100;
+  const initialY = event.clientY;
+  const anchoredTerminals = [...column.querySelectorAll(".terminal")].filter(terminalAtLatest);
+  document.body.classList.add("agent-split-resizing");
+  const resize = (clientY) => {
+    setAgentSplitSize(initialSize + ((clientY - initialY) / rect.height) * 100);
+    anchoredTerminals.forEach(scrollTerminalToLatestNow);
+  };
+  const onPointerMove = (moveEvent) => resize(moveEvent.clientY);
+  const onPointerUp = () => {
+    document.body.classList.remove("agent-split-resizing");
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+  };
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
+export function handleAgentSplitResizeKeydown(event) {
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const current = Number.parseFloat(event.currentTarget.closest(".agent-column")?.style.getPropertyValue("--agent-split-size")) || 50;
+  setAgentSplitSize(event.key === "Home" ? 15 : event.key === "End" ? 85 : current + (event.key === "ArrowDown" ? 5 : -5));
+}
+
+export function clearSplitQueuedPrompt() {
+  const companion = selectedCompanionFlow();
+  if (!companion?.queuedPrompt) return;
+  updateFlowQueuedPrompt(companion.id, null, { preserveQueuedPromptDraft: true });
+  renderFlowPane();
+  void api(`/api/flows/${encodeURIComponent(companion.id)}/queued-prompt`, { method: "DELETE" })
+    .then((data) => {
+      if (data.flow) upsertFlow(data.flow);
+    })
+    .catch(() => {});
+}
+
+async function submitSplitQueuedPromptSteer() {
+  const companion = selectedCompanionFlow();
+  if (!companion?.queuedPrompt || !promptQueuedCanSteer(companion) || state.splitMessageSubmitting) {
+    flashBlockedInput(splitPromptInput());
+    return;
+  }
+  updateFlowQueuedPrompt(companion.id, null, { preserveQueuedPromptDraft: true });
+  state.splitMessageSubmitting = true;
+  renderFlowPane();
+  try {
+    const data = await api(`/api/flows/${encodeURIComponent(companion.id)}/queued-prompt/steer`, { method: "POST" });
+    if (data.flow) upsertFlow(data.flow);
+    await loadLogs(companion.id, { scrollToLatest: true });
+  } finally {
+    state.splitMessageSubmitting = false;
+    renderFlowPane();
+    splitPromptInput()?.focus({ preventScroll: true });
+  }
+}
+
+export function handleSplitQueuedPromptKeydown(event) {
+  const companion = selectedCompanionFlow();
+  if (!companion?.queuedPrompt) return false;
+  if (event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing && ["a", "c", "r"].includes(event.key.toLowerCase())) return false;
+  if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;
+  if (promptQueuedCanSteer(companion) && event.key.toLowerCase() === "s" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing) {
+    event.preventDefault();
+    if (!event.repeat) void submitSplitQueuedPromptSteer();
+    return true;
+  }
+  if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
+  event.preventDefault();
+  if (event.key === "Escape" || event.key === "Backspace") clearSplitQueuedPrompt();
+  else flashBlockedInput(event.currentTarget);
+  return true;
+}
+
+export function handleSplitQueuedPromptBeforeInput(event) {
+  if (!selectedCompanionFlow()?.queuedPrompt) return false;
+  event.preventDefault();
+  flashBlockedInput(event.currentTarget);
+  return true;
+}
+
 export async function submitSplitPromptMessage() {
   const input = splitPromptInput();
   const companion = selectedCompanionFlow();
   if (!input || !companion) return;
   const message = input.value.trim();
-  if (!message) return;
-  if (state.splitMessageSubmitting || flowAgentRunning(companion)) {
+  if (!message && !state.pendingSplitAgentImages.length) return;
+  if (state.splitMessageSubmitting || companion.queuedPrompt) {
     flashBlockedInput(input);
     return;
   }
+  const slashCommand = message.startsWith("/");
+  const submittedImages = slashCommand ? [] : [...state.pendingSplitAgentImages];
+  const agentMessage = slashCommand
+    ? message
+    : agentMessageWithImages(message || "Use the attached image context.", submittedImages);
   state.splitMessageSubmitting = true;
   input.value = "";
+  if (!slashCommand) state.pendingSplitAgentImages = [];
   resizeSplitPromptInput();
   try {
     renderLogs(companion.id, { force: true, scrollToLatest: true });
-    const data = await api(`/api/flows/${encodeURIComponent(companion.id)}/message`, {
-      method: "POST",
-      body: JSON.stringify({ message }),
+    const data = await api(`/api/flows/${encodeURIComponent(companion.id)}/${flowAgentRunning(companion) ? "queued-prompt" : "message"}`, {
+      method: flowAgentRunning(companion) ? "PUT" : "POST",
+      body: JSON.stringify({ message: agentMessage }),
     });
     if (data.flow) upsertFlow(data.flow);
+    renderFlowPane();
   } catch (error) {
+    if (!slashCommand) state.pendingSplitAgentImages = [...submittedImages, ...state.pendingSplitAgentImages];
     if (!input.value) {
       input.value = message;
       resizeSplitPromptInput();

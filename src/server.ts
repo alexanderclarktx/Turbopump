@@ -2606,7 +2606,14 @@ function statusPercentLeft(window: unknown) {
 
 function codexRateLimits(value: unknown) {
   const data = value as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null };
-  return (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
+  const rateLimits = (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
+  const windows = [rateLimits.primary, rateLimits.secondary];
+  const duration = (window: unknown) => (window as { windowDurationMins?: unknown } | null)?.windowDurationMins;
+  if (!windows.some((window) => typeof duration(window) === "number")) return rateLimits;
+  return {
+    primary: windows.find((window) => duration(window) === 300),
+    secondary: windows.find((window) => duration(window) === 10_080),
+  };
 }
 
 function markdownTable(rows: Array<[string, unknown]>) {

@@ -254,6 +254,8 @@
                     <div class="terminal terminal-split" role="log" aria-live="polite"></div>
                   </div>
                   <form class="message-form message-form-split">
+                    <div class="message-form-split-resizer" role="separator" aria-label="Resize upper pane" aria-orientation="horizontal" aria-valuemin="15" aria-valuemax="85" aria-valuenow="50" tabindex="0"></div>
+                    <div class="queued-prompt-hint" aria-live="polite" hidden>message queued</div>
                     <div class="prompt-input-pane prompt-input-pane-split">
                       <button type="button" class="input-pane-prefix prompt-input-prefix input-pane-split-close" aria-label="Close second agent pane">
                         <span class="input-pane-prefix-glyph" aria-hidden="true">&gt;</span>
@@ -261,6 +263,7 @@
                       </button>
                       <textarea class="message-input message-input-split" rows="1"></textarea>
                     </div>
+                    <div class="agent-image-context agent-image-context-split" aria-label="Attached image context" hidden></div>
                     <div class="agent-context agent-context-split" aria-label="Second agent context" hidden>
                       <span class="agent-context-window"></span>
                       <span class="agent-context-model"></span>
@@ -344,8 +347,7 @@
             <div><dt><kbd>Cmd + ,</kbd></dt><dd>Toggle settings</dd></div>
             <div><dt><kbd>Ctrl + `</kbd></dt><dd>Toggle tickets</dd></div>
             <div><dt><kbd>Cmd + \</kbd></dt><dd>Toggle shell</dd></div>
-            <div><dt><kbd>Cmd + /</kbd></dt><dd>Add split session</dd></div>
-            <div><dt><kbd>Ctrl + D</kbd></dt><dd>Close split session</dd></div>
+            <div><dt><kbd>Cmd + /</kbd></dt><dd>Toggle split session</dd></div>
             <div><dt><kbd>Tab</kbd></dt><dd>Switch prompt and shell</dd></div>
             <div><dt><kbd>Ctrl + R</kbd></dt><dd>Search input history</dd></div>
             <div><dt><kbd>Ctrl + Z</kbd></dt><dd>Previous history match</dd></div>

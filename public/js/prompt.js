@@ -156,7 +156,7 @@ export function updateMessageInputMode() {
   const queuedCanSteer = promptQueuedCanSteer(flow);
   const pane = els.flowPane.querySelector(".terminal-panel > .message-form .prompt-input-pane");
   const prefix = els.flowPane.querySelector(".terminal-panel > .message-form .prompt-input-prefix");
-  const queuedHint = els.flowPane.querySelector(".queued-prompt-hint");
+  const queuedHint = els.flowPane.querySelector(".terminal-panel > .message-form > .queued-prompt-hint");
   const compactQueued = queued && flowAgentCompacting(flow);
   pane?.classList.toggle("prompt-queued", queued);
   if (queuedHint) {
@@ -637,9 +637,8 @@ export function handleGlobalHistorySearchKeydown(event) {
   return true;
 }
 
-export function resizeMessageInput() {
-  const input = promptInput();
-  const terminal = els.flowPane.querySelector(".terminal");
+export function resizeMessageInput(input = promptInput()) {
+  const terminal = els.flowPane.querySelector(input?.matches(".message-input-split") ? ".terminal-split" : ".terminal");
   if (!input) return;
   const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);
   const currentHeight = input.getBoundingClientRect().height;
@@ -656,15 +655,17 @@ export function resizeMessageInput() {
   if (shouldFollowLatest) followTerminalToLatestDuringLayout(terminal, 160);
 }
 
-export function renderAgentImageContext() {
-  const container = els.flowPane.querySelector(".agent-image-context");
+export function renderAgentImageContext(
+  container = els.flowPane.querySelector(".terminal-panel > .message-form > .agent-image-context"),
+  images = state.pendingAgentImages,
+  uploading = state.agentImageUploading,
+) {
   if (!container) return;
-  const images = state.pendingAgentImages;
-  container.hidden = !images.length && !state.agentImageUploading;
-  const uploading = state.agentImageUploading ? '<span class="agent-image-chip pending">uploading...</span>' : "";
+  container.hidden = !images.length && !uploading;
+  const uploadingChip = uploading ? '<span class="agent-image-chip pending">uploading...</span>' : "";
   container.innerHTML = `${images
     .map((image, index) => renderAgentImageChip(image, { index }))
-    .join("")}${uploading}`;
+    .join("")}${uploadingChip}`;
 }
 
 export function renderAgentImageChip(image, options = {}) {
@@ -736,20 +737,26 @@ export function eventTargetsPromptInputPane(event) {
 }
 
 export function focusPromptInputForImageDrag(event) {
-  if (eventTargetsPromptInputPane(event)) focusInputPane("prompt");
+  const splitInput = event.target?.closest?.(".terminal-split-pane:not([hidden])")?.querySelector(".message-input-split");
+  if (splitInput) splitInput.focus({ preventScroll: true });
+  else if (eventTargetsPromptInputPane(event)) focusInputPane("prompt");
+  return splitInput || promptInput();
 }
 
-export function setAgentImageDragActive(active) {
+export function setAgentImageDragActive(active, input = promptInput()) {
   document.body.classList.toggle("agent-image-drag-active", active);
-  promptInput().classList.toggle("drag-over", active);
+  for (const candidate of els.flowPane.querySelectorAll(".message-input")) candidate.classList.remove("drag-over");
+  if (active) input?.classList.add("drag-over");
 }
 
-export async function uploadAgentImages(files) {
-  if (!files.length || state.agentImageUploading) return;
-  state.agentImageUploading = true;
+export async function uploadAgentImages(files, flowId = "") {
+  const images = flowId ? state.pendingSplitAgentImages : state.pendingAgentImages;
+  const uploadingKey = flowId ? "splitAgentImageUploading" : "agentImageUploading";
+  if (!files.length || state[uploadingKey]) return;
+  state[uploadingKey] = true;
   renderFlowPane();
   try {
-    const flow = await ensureSelectedFlow();
+    const flow = flowId ? state.flows.find((item) => item.id === flowId) : await ensureSelectedFlow();
     if (!flow) return;
     const body = new FormData();
     for (const file of files) body.append("images", file, file.name);
@@ -757,9 +764,9 @@ export async function uploadAgentImages(files) {
       method: "POST",
       body,
     });
-    state.pendingAgentImages.push(...(data.images || []));
+    images.push(...(data.images || []));
   } finally {
-    state.agentImageUploading = false;
+    state[uploadingKey] = false;
     renderFlowPane();
   }
 }

@@ -9,6 +9,7 @@ import {
   TICKET_START_AGENT_FLAME_PATH,
 } from "./constants.js";
 import {
+  createFlowFromTicket,
   flowAgentRunning,
   flowForLinearIssue,
   flowForTicket,
@@ -1201,7 +1202,7 @@ export async function createPinnedLinearTicket() {
     state.linearDetails.set(issue.identifier, { loading: false, issue });
     syncLinearTicketsWithFlows();
     setLinearIssuePinned(issue.identifier, true, { position: "top" });
-    renderFlowPane();
+    await createFlowFromTicket(issue);
     focusLinearTicketCard(issue.identifier);
     els.ticketState.textContent = formatLastUpdated();
   } catch (error) {

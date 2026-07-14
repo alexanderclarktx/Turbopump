@@ -740,6 +740,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("async function createPinnedLinearTicket()");
     expect(app).toContain('const data = await api("/api/linear/issues", { method: "POST" });');
     expect(app).toContain('setLinearIssuePinned(issue.identifier, true, { position: "top" });');
+    expect(app).toContain("await createFlowFromTicket(issue);");
     expect(app).not.toContain("state.pinnedLinearIssues.add(issue.identifier);");
     expect(app).toContain("state.linearDetails.set(issue.identifier, { loading: false, issue });");
     expect(app).toContain("function focusLinearTicketCard(identifier)");
@@ -910,6 +911,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('/api/flows/${encodeURIComponent(flow.id)}/queued-prompt/flush');
     expect(app).toContain('const QUEUED_PROMPT_PREFIX_HTML = \'<span class="queued-prompt-spinner" aria-hidden="true"></span>\';');
     expect(app).toContain('const prefixGlyph = prefix?.querySelector(".input-pane-prefix-glyph");');
+    expect(app).toContain('querySelector(".terminal-panel > .message-form > .queued-prompt-hint")');
     expect(app).toContain('if (queued && !prefixGlyph.querySelector(".queued-prompt-spinner")) {');
     expect(app).toContain("queuedHint.hidden = !queued || compactQueued;");
     expect(app).toContain("messageInput.disabled = false;");
@@ -2194,7 +2196,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("!flowAgentRunning(flow) &&\n      !promptQueuedForFlow(flow)");
     expect(app).toContain("function canSubmitShellCommand()");
     expect(app).toContain("function flashBlockedInput(input)");
-    expect(app).toContain("async function uploadAgentImages(files)");
+    expect(app).toContain('async function uploadAgentImages(files, flowId = "")');
     expect(app).toContain("function eventHasDraggedFiles(event)");
     expect(app).toContain("function pastedImageFiles(event)");
     expect(app).toContain('event.clipboardData?.files');
@@ -2202,8 +2204,8 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function eventTargetsPromptInputPane(event)");
     expect(app).toContain('event.target?.closest?.(".prompt-input-pane:not(.prompt-input-pane-split)")');
     expect(app).toContain("function focusPromptInputForImageDrag(event)");
-    expect(app).toContain('if (eventTargetsPromptInputPane(event)) focusInputPane("prompt");');
-    expect(app).toContain("function setAgentImageDragActive(active)");
+    expect(app).toContain('event.target?.closest?.(".terminal-split-pane:not([hidden])")?.querySelector(".message-input-split")');
+    expect(app).toContain("function setAgentImageDragActive(active, input = promptInput())");
     expect(app).toContain('await api(`/api/flows/${encodeURIComponent(flow.id)}/context-images`,');
     expect(app).toContain("function agentMessageWithImages(message, images = state.pendingAgentImages)");
     expect(app).toContain('const name = image.name ? `${image.name}: ` : "";');
@@ -2220,7 +2222,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("const files = pastedImageFiles(event);");
     expect(app).toContain("if (!files.length) return;\n  event.preventDefault();\n  void uploadAgentImages(files);");
     expect(app).toContain('document.addEventListener("drop"');
-    expect(app).toContain("focusPromptInputForImageDrag(event);\n  setAgentImageDragActive(true);");
+    expect(app).toContain("setAgentImageDragActive(true, input);");
+    expect(html).toContain('class="agent-image-context agent-image-context-split" aria-label="Attached image context" hidden');
+    expect(app).toContain('const flowId = event.target?.closest?.(".terminal-split-pane:not([hidden])") ? splitAgentPaneFlowId() : "";');
+    expect(app).toContain("const images = flowId ? state.pendingSplitAgentImages : state.pendingAgentImages;");
+    expect(app).toContain("renderAgentImageContext(\n    terminalPane?.querySelector(\".agent-image-context\"),\n    state.pendingSplitAgentImages,");
+    expect(app).toContain('agentMessageWithImages(message || "Use the attached image context.", submittedImages)');
+    expect(app).toContain("if (!slashCommand) state.pendingSplitAgentImages = [];");
     expect(css).not.toContain(".agent-image-drop-overlay");
     expect(css).toContain(".terminal-attached-images");
     expect(css).toContain(".terminal-attached-images .agent-image-chip {\n  border-color: #6b7280;\n}");
@@ -3080,7 +3088,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('document.addEventListener("mousedown", handleSlashMenuOutsideMouseDown);');
     expect(app).toContain('target.closest(".agent-context-model")');
     expect(app).toContain("function selectSlashCommand");
-    expect(app).toContain("function resizeMessageInput()");
+    expect(app).toContain("function resizeMessageInput(input = promptInput())");
     expect(app).toContain("const currentHeight = input.getBoundingClientRect().height;");
     expect(app).toContain("const targetHeight = input.scrollHeight;");
     expect(app).toContain('input.style.height = `${currentHeight}px`;');
@@ -3198,6 +3206,8 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('if (command === "/status")');
     expect(server).toContain('sendCodexRequest(runtime, "account/read", { refreshToken: false })');
     expect(server).toContain('sendCodexRequest(runtime, "account/rateLimits/read")');
+    expect(server).toContain('primary: windows.find((window) => duration(window) === 300)');
+    expect(server).toContain('secondary: windows.find((window) => duration(window) === 10_080)');
     expect(server).toContain('const runtime = await ensureCodexRuntime(flow);');
     expect(server).toContain('insertLog(flow.id, "agent:message", `${await flowStatusMessage(runtime)}\\n`);');
     expect(server).toContain('return ["| Field | Value |", "| --- | --- |"');
@@ -3413,7 +3423,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (state.activeInputIssueId === nextIssueId) return;");
     expect(app).toContain("saveActiveTicketInputState();\n  state.activeInputIssueId = nextIssueId;\n  restoreTicketInputState(nextIssueId);");
     expect(app).toContain("syncTicketInputState(issueId);");
-    expect(app).toContain("function renderHistorySearchIndicator()");
+    expect(app).toContain("function renderHistorySearchIndicator(input = document.activeElement)");
+    expect(app).toContain('input?.closest?.(".message-form")');
+    expect(app).toContain("if (form && indicator.parentElement !== form) form.prepend(indicator);");
     expect(app).toContain('form?.classList.toggle("history-searching", Boolean(search));');
     expect(app).toContain('indicator.setAttribute("aria-hidden", String(!search));');
     expect(app).toContain("const shouldFollowLatest = !state.terminalFollowPaused && terminalAtLatest(terminal);");
@@ -3457,6 +3469,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (direction < 0 && !state.historyNavigation && !inputCaretOnLastLine(input)) return false;");
     expect(app).toContain("if (!updateInputHistoryNavigation(input, direction)) return false;");
     expect(app).toContain("function handleHistorySearchKeydown(event)");
+    expect(app).toContain("resizeMessageInput(input);");
     expect(app).toContain("function setInputMode(mode)");
     expect(app).toContain('focusInputPane(mode === "command" || mode === "shell" ? "shell" : "prompt");');
     expect(app).toContain("input.focus({ preventScroll: true });");
@@ -3538,23 +3551,16 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain('mode === "off"');
   });
 
-  test("adds a matching split session with Cmd+Slash", () => {
+  test("toggles a matching split session with Cmd+Slash", () => {
     expect(html).toContain("<kbd>Cmd + /</kbd>");
-    expect(html).toContain("<dd>Add split session</dd>");
+    expect(html).toContain("<dd>Toggle split session</dd>");
     expect(app).toContain("function handleSplitPaneShortcut(event)");
     expect(app).toContain('event.shiftKey || event.key !== "/"');
-    expect(app).toContain('if (!event.repeat) void openSplitPane(event.target?.closest?.(".shell-command-panel") ? "shell" : "agent");');
+    expect(app).toContain("if (flow && isSplitPaneOpen(flow.id, kind)) closeSplitPane(kind);");
+    expect(app).toContain("else void openSplitPane(kind);");
     expect(app).toContain('document.addEventListener("keydown", handleSplitPaneShortcut, true);');
-  });
-
-  test("closes a matching split session with Ctrl+D", () => {
-    expect(html).toContain("<kbd>Ctrl + D</kbd>");
-    expect(html).toContain("<dd>Close split session</dd>");
-    expect(app).toContain("function handleCloseSplitPaneShortcut(event)");
-    expect(app).toContain('event.key.toLowerCase() !== "d"');
-    expect(app).toContain('if (!kind || !flow || !isSplitPaneOpen(flow.id, kind)) return;');
-    expect(app).toContain("if (!event.repeat) closeSplitPane(kind);");
-    expect(app).toContain('document.addEventListener("keydown", handleCloseSplitPaneShortcut, true);');
+    expect(app).not.toContain("handleCloseSplitPaneShortcut");
+    expect(html).not.toContain("<kbd>Ctrl + D</kbd>");
   });
 
   test("auto-approves sandboxed agent approvals", () => {
@@ -3583,9 +3589,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".shell-output-split-pane {\n  display: grid;\n  grid-template-rows: minmax(0, 1fr) auto;");
     expect(css).toContain(".agent-column {\n  grid-area: agent-col;\n}");
     expect(css).toContain(".shell-column {\n  grid-area: shell-col;\n}");
-    expect(css).toContain(
-      ".terminal-panel.agent-split-open .agent-column,\n.terminal-panel.shell-split-open .shell-column {\n  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);\n}",
-    );
+    expect(css).toContain(".terminal-panel.agent-split-open .agent-column {\n  grid-template-rows: minmax(0, var(--agent-split-size, 50%)) minmax(0, 1fr);");
+    expect(css).toContain(".terminal-panel.shell-split-open .shell-column {\n  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);");
     expect(css).toContain(
       ".terminal-panel.agent-split-open .agent-column > .terminal,\n.terminal-panel.shell-split-open .shell-column > .shell-output-pane {\n  grid-row: 2;\n}",
     );
@@ -3603,6 +3608,8 @@ describe("Turbopump pane markup", () => {
     expect(html).toContain('<span class="input-pane-prefix-x" aria-hidden="true">&times;</span>');
     expect(html).toContain('<textarea class="message-input message-input-split" rows="1"></textarea>');
     expect(html).toContain('<form class="message-form message-form-split">');
+    expect(html).toContain('class="message-form-split-resizer" role="separator"');
+    expect(html).toContain('<div class="queued-prompt-hint" aria-live="polite" hidden>message queued</div>');
     expect(html).not.toContain("agent-output-toolbar-split");
     expect(html).toContain('class="agent-context agent-context-split" aria-label="Second agent context" hidden');
     expect(html).toContain('<input class="shell-input shell-input-split" autocomplete="off" />');
@@ -3616,8 +3623,30 @@ describe("Turbopump pane markup", () => {
 
     expect(app).toContain("/api/flows/${encodeURIComponent(flow.id)}/split");
     expect(app).toContain("if (!flow || flow.parentFlowId || isSplitPaneOpen(flow.id, kind)) return;");
-    expect(app).toContain("renderAgentContext(agentOpen ? companion : null, terminalPane, splitPromptInput(), { modelMenu: false });");
+    expect(app).toContain("renderAgentContext(agentOpen ? companion : null, terminalPane, input, { modelMenu: false });");
+    expect(app).toContain('${flowAgentRunning(companion) ? "queued-prompt" : "message"}');
+    expect(app).toContain('if (queued && !prefixGlyph?.querySelector(".queued-prompt-spinner"))');
+    expect(app).toContain('splitPromptInput().addEventListener("beforeinput", handleSplitQueuedPromptBeforeInput);');
+    expect(app).toContain('if (event.key === "Escape" || event.key === "Backspace") clearSplitQueuedPrompt();');
+    expect(app).toContain("input.dataset.queuedPrompt = queuedPrompt.message;");
     expect(app).toContain('els.flowPane.querySelector(".terminal-panel > .message-form").addEventListener("submit"');
+    expect(app).toContain('return active?.matches?.(".message-input") ? active : promptInput();');
+    expect(app).toContain('if (form && menu.parentElement !== form) form.append(menu);');
+    expect(app).toContain('splitPromptInput().addEventListener("input", () => {');
+    expect(app).toContain('splitPromptInput().addEventListener("keydown", (event) => {\n  const input = event.currentTarget;\n  if (handleSplitQueuedPromptKeydown(event)) return;\n  if (handleHistorySearchKeydown(event)) return;');
+    expect(app).toContain("if (handleInputHistoryNavigationKeydown(event)) return;");
+    expect(app).toContain('if (input.matches(".message-input-split")) {');
+    expect(app).toContain('(!input.matches(".message-input-split") && promptQueuedForSelectedFlow())');
+    expect(css).toContain('    "images"\n    "input"\n    "context";\n  border-bottom: 1px solid var(--line);');
+    expect(css).toContain(".prompt-input-pane.prompt-input-pane-split {\n  grid-area: input;");
+    expect(css).toContain(".message-form-split .agent-context-diff,\n.message-form-split .agent-context-branch {\n  display: none;");
+    expect(css).toContain(".message-form-split-resizer {\n  position: absolute;");
+    expect(css).toContain(".message-form-split .message-input-split {\n  cursor: text;");
+    expect(app).toContain('querySelector(".message-form-split").addEventListener("pointerdown", startAgentSplitResize);');
+    expect(app).toContain('if (event.target.closest("textarea, button, a, .slash-menu, .agent-image-context")) return;');
+    expect(app).toContain('const anchoredTerminals = [...column.querySelectorAll(".terminal")].filter(terminalAtLatest);');
+    expect(app).toContain("anchoredTerminals.forEach(scrollTerminalToLatestNow);");
+    expect(app).toContain('column?.style.setProperty("--agent-split-size", `${applied}%`);');
     expect(app).toContain("flow.linearIssueId === identifier && !flow.parentFlowId");
 
     expect(server).toContain("parentFlowId text not null default ''");
