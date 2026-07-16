@@ -314,7 +314,11 @@ export async function submitSplitPromptMessage() {
   const agentMessage = slashCommand
     ? message
     : agentMessageWithImages(message || "Use the attached image context.", submittedImages);
+  const queueing = flowAgentRunning(companion);
   state.splitMessageSubmitting = true;
+  if (!queueing) {
+    state.optimisticPromptByFlowId.set(companion.id, { message: agentMessage, createdAt: new Date().toISOString() });
+  }
   input.value = "";
   if (!slashCommand) state.pendingSplitAgentImages = [];
   resizeSplitPromptInput();
@@ -335,6 +339,7 @@ export async function submitSplitPromptMessage() {
     toast(error.message || "Could not send message.", { kind: "error" });
   } finally {
     state.splitMessageSubmitting = false;
+    state.optimisticPromptByFlowId.delete(companion.id);
     await loadLogs(companion.id, { scrollToLatest: true }).catch(() => {});
     splitPromptInput()?.focus({ preventScroll: true });
   }

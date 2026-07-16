@@ -31,11 +31,24 @@ Object.defineProperty(globalThis, "document", {
 });
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const { terminalGroups } = await import("../public/js/terminal-groups.js");
+const { appendLogEntry } = await import("../public/js/logs.js");
 const { state } = await import("../public/js/state.js");
 const { formatTerminalElapsed, renderableTerminalGroups, renderTerminalMarkdownOutput, usesRawAgentMarkdown } = await import("../public/js/terminal-render.js");
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
 describe("Turbopump pane markup", () => {
+  test("reconciles an optimistic prompt when its persisted log arrives", () => {
+    const flowId = "optimistic-prompt-flow";
+    state.logs.set(flowId, []);
+    state.logIds.delete(flowId);
+    state.optimisticPromptByFlowId.set(flowId, { message: "ship it", createdAt: "2026-07-14T20:00:00.000Z" });
+
+    appendLogEntry({ id: 1, flowId, source: "user", message: "ship it\n", createdAt: "2026-07-14T20:00:01.000Z" });
+
+    expect(state.optimisticPromptByFlowId.has(flowId)).toBe(false);
+    expect(state.logs.get(flowId)).toHaveLength(1);
+  });
+
   test("uses Turbopump for product copy and flow for the workflow noun", () => {
     expect(html).toContain("<title>Turbopump</title>");
     expect(html).not.toContain(" title=");
@@ -778,7 +791,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("--line: #3d4754;");
     expect(css).toContain("--line-strong: #5a6675;");
     expect(css).toContain(".linear-markdown code,\n.terminal-entry-body code {\n  border: 1px solid var(--line);");
-    expect(css).toContain(".linear-markdown .markdown-code-block,\n.terminal-entry-body .markdown-code-block {\n  margin: 6px 0;\n  border: 1px solid var(--line);");
+    expect(css).toContain(".linear-markdown .markdown-code-block,\n.terminal-entry-body .markdown-code-block {\n  margin: 6px 0;\n  width: fit-content;\n  max-width: 100%;\n  border: 1px solid var(--line);");
     expect(css).not.toContain("border: 1px solid #d7dce3;");
     expect(css).not.toContain("border-color: #343c47;");
   });
@@ -3212,7 +3225,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('insertLog(flow.id, "agent:message", `${await flowStatusMessage(runtime)}\\n`);');
     expect(server).toContain('return ["| Field | Value |", "| --- | --- |"');
     expect(server).toContain('["5h left", statusPercentLeft(rateLimits.primary)]');
-    expect(server).toContain('["Weekly left", statusPercentLeft(rateLimits.secondary)]');
+    expect(server).toContain('new Date(resetsAt * 1000).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" })');
+    expect(server).toContain('[`until ${statusResetDate(rateLimits.secondary)}`, statusPercentLeft(rateLimits.secondary)]');
+    expect(server).not.toContain('["Weekly left",');
     expect(server).toContain('["Account", accountStatusValue(account)]');
     expect(server).not.toContain("| Section |");
     expect(server).not.toContain('["Turbopump",');

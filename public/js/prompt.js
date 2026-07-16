@@ -856,6 +856,9 @@ export async function submitPromptMessage() {
   const initialFlow = selectedFlow();
   state.messageSubmitting = true;
   state.messageSubmittingFlowId = initialFlow?.id || "";
+  let optimisticFlowId = initialFlow?.id || "";
+  const optimisticPrompt = { message: agentMessage, createdAt: new Date().toISOString() };
+  if (optimisticFlowId) state.optimisticPromptByFlowId.set(optimisticFlowId, optimisticPrompt);
   input.value = "";
   if (!slashCommand) state.pendingAgentImages = [];
   updateMessageInputMode();
@@ -869,6 +872,8 @@ export async function submitPromptMessage() {
     const flow = await ensureSelectedFlow();
     if (!flow) return;
     submittedFlowId = flow.id;
+    optimisticFlowId = flow.id;
+    state.optimisticPromptByFlowId.set(flow.id, optimisticPrompt);
     state.messageSubmittingFlowId = flow.id;
     requestFlowSnapshot(flow.id);
     renderFlowPane();
@@ -884,6 +889,7 @@ export async function submitPromptMessage() {
   } finally {
     state.messageSubmitting = false;
     state.messageSubmittingFlowId = "";
+    if (optimisticFlowId) state.optimisticPromptByFlowId.delete(optimisticFlowId);
     scheduleQueuedPromptFlush();
     if (submittedFlowId) await loadLogs(submittedFlowId, { scrollToLatest: true });
     renderTickets();

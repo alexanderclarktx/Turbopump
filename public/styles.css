@@ -3089,6 +3089,8 @@ body.markdown-table-resizing {
 .linear-markdown .markdown-code-block,
 .terminal-entry-body .markdown-code-block {
   margin: 6px 0;
+  width: fit-content;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
   position: relative;

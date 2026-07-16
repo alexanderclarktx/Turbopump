@@ -1018,7 +1018,11 @@ export function renderLogs(id, options = {}) {
   if (!terminal || terminal.closest(".terminal-split-pane")?.hidden) return;
   renderShellOutputPane(id);
   const flow = state.flows.find((item) => item.id === id) || null;
-  const logs = state.logs.get(id) || [];
+  const persistedLogs = state.logs.get(id) || [];
+  const optimisticPrompt = state.optimisticPromptByFlowId.get(id);
+  const logs = optimisticPrompt
+    ? [...persistedLogs, { id: Number.MAX_SAFE_INTEGER, flowId: id, source: "user", ...optimisticPrompt }]
+    : persistedLogs;
   const allGroups = terminalGroups(logs, flow);
   const agentWorking = agentWorkingForFlow(flow);
   const groups = renderableTerminalGroups(visibleTerminalGroups(id, allGroups), { agentWorking, flowId: id });

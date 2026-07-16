@@ -2604,6 +2604,13 @@ function statusPercentLeft(window: unknown) {
   return "unknown";
 }
 
+function statusResetDate(window: unknown) {
+  const resetsAt = (window as { resetsAt?: unknown } | null)?.resetsAt;
+  return typeof resetsAt === "number" && Number.isFinite(resetsAt)
+    ? new Date(resetsAt * 1000).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" })
+    : "unknown";
+}
+
 function codexRateLimits(value: unknown) {
   const data = value as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null };
   const rateLimits = (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
@@ -2632,7 +2639,7 @@ async function flowStatusMessage(runtime: RuntimeProcess) {
   return markdownTable([
     ["Account", accountStatusValue(account)],
     ["5h left", statusPercentLeft(rateLimits.primary)],
-    ["Weekly left", statusPercentLeft(rateLimits.secondary)],
+    [`until ${statusResetDate(rateLimits.secondary)}`, statusPercentLeft(rateLimits.secondary)],
   ]);
 }
 
