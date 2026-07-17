@@ -1384,7 +1384,8 @@ describe("Turbopump pane markup", () => {
       app.indexOf("function ticketAgentWorking(ticket)"),
       app.indexOf("function ticketShellRunning(ticket)"),
     );
-    expect(ticketAgentWorking).toContain("flowAgentRunning(flow)");
+    expect(ticketAgentWorking).toContain("candidate.id === flow.id || candidate.parentFlowId === flow.id");
+    expect(ticketAgentWorking).toContain("flowAgentRunning(candidate)");
     expect(ticketAgentWorking).toContain("state.messageSubmittingFlowId === flow.id");
     expect(ticketAgentWorking).not.toContain("flowRuntimeActive(flow)");
     expect(ticketAgentWorking).not.toContain("state.shellSubmitting");
@@ -2405,7 +2406,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("async function interruptAgent");
     expect(server).toContain("const shellProcesses = new Map<string, RuntimeProcess>();");
     expect(server).toContain('kind: "agent" | "serve" | "shell";');
-    expect(server).toContain('if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");');
+    expect(server).toContain("const existingRuntime = shellProcesses.get(flow.id);");
     expect(server).toContain("type RuntimeSignal = \"SIGINT\" | \"SIGTERM\" | \"SIGKILL\";");
     expect(server).toContain("function signalRuntimeProcess(runtime: RuntimeProcess, signal: RuntimeSignal)");
     expect(server).toContain("function signalProcessGroup(pid: number, signal: RuntimeSignal)");
@@ -2422,7 +2423,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('streamProcessOutput(flow.id, "shell:output", proc.stdout)');
     expect(server).toContain('streamProcessOutput(flow.id, "shell:stderr", proc.stderr)');
     expect(server).toContain("void (async () => {");
-    expect(server).toContain("if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);\n      await Promise.all([stdoutDone, stderrDone]);");
+    expect(server).toContain("await Promise.all([stdoutDone, stderrDone]);\n      if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);");
     expect(server).toContain("await Promise.all([stdoutDone, stderrDone]);");
     expect(server).toContain("const resultLogId = insertLog(\n        flow.id,\n        \"shell:result\",");
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
@@ -2445,6 +2446,21 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("cleanupPersistedServeProcess();");
     expect(server).toContain("rememberServeProcess(serveProcess);");
     expect(server).toContain("function serverHasActiveWork()");
+  });
+
+  test("queues one shell command independently without steering", () => {
+    expect(app).toContain('return String(flow?.shellQueuedCommand || "");');
+    expect(server).toContain("queuedShellCommand?: string;");
+    expect(server).toContain("existingRuntime.queuedShellCommand = command;");
+    expect(server).toContain("if (nextFlow && runtime.queuedShellCommand) startShellCommand(nextFlow, runtime.queuedShellCommand);");
+    expect(server).toContain('parts[3] === "queued-shell-command" && request.method === "DELETE"');
+    expect(app.match(/const queueing = flowShellRunning\(/g)).toHaveLength(2);
+    expect(app.match(/if \(!queueing\) input.value = "";/g)).toHaveLength(2);
+    expect(app).toContain('if (event.key === "Escape" || event.key === "Backspace") clearQueuedShellCommand();');
+    expect(app).not.toContain("queued-shell-command/steer");
+    expect(html).not.toContain("queued-shell-hint");
+    expect(app).not.toContain("queued-shell-hint");
+    expect(css).toContain(".shell-input-pane.shell-queued .shell-input {\n  border-color: #d97706;");
   });
 
   test("cleans up spawned runtimes when server startup or first turn fails", () => {
@@ -2911,8 +2927,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("!group.boundaryBefore");
     expect(app).toContain("let forceTerminalGroupBoundary = false;");
     expect(app).toContain("forceTerminalGroupBoundary = true;");
-    expect(app).toContain("appendTerminalGroup(traceGroup.children, log, { forceNew: forceTerminalGroupBoundary, traceContent: true });");
-    expect(app).toContain("appendTerminalGroup(groups, log, { forceNew: forceTerminalGroupBoundary });");
+    expect(app).toContain("appendTerminalGroup(traceGroup.children, log, {");
+    expect(app).toContain("appendTerminalGroup(groups, log, {");
+    expect(app).toContain("mergeWith: activeAgentMessageGroup");
     expect(app).toContain("boundaryBefore: Boolean(options.forceNew)");
     expect(app).toContain("function markLiveTerminalGroup(groups, flow)");
     expect(app).toContain("const visibleGroups = mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups));");
@@ -3034,6 +3051,40 @@ describe("Turbopump pane markup", () => {
     const trace = groups.find((group) => group.source === "agent:trace-group");
     expect(trace?.createdAt).toBe("2026-07-02T20:52:59.000Z");
     expect(formatTerminalElapsed(trace?.displayCreatedAt, trace?.displayLastAt)).toBe("10m 0s");
+  });
+
+  test("keeps one agent message together when command output interleaves with its deltas", () => {
+    const groups = terminalGroups(
+      [
+        { id: 1, flowId: "flow-1", source: "user", message: "show it everywhere", createdAt: "2026-07-16T20:31:19.000Z" },
+        { id: 2, flowId: "flow-1", source: "agent:status", message: "turn started abc", createdAt: "2026-07-16T20:31:19.100Z" },
+        { id: 3, flowId: "flow-1", source: "agent:tool", message: "pnpm check", createdAt: "2026-07-16T20:31:24.000Z" },
+        { id: 4, flowId: "flow-1", source: "agent:message", message: "TO", createdAt: "2026-07-16T20:31:35.000Z" },
+        { id: 5, flowId: "flow-1", source: "agent:cmd", message: "check output", createdAt: "2026-07-16T20:31:36.000Z" },
+        { id: 6, flowId: "flow-1", source: "agent:message", message: "OL CALL", createdAt: "2026-07-16T20:31:37.000Z" },
+        { id: 7, flowId: "flow-1", source: "agent:message-boundary", message: "", createdAt: "2026-07-16T20:31:38.000Z" },
+        { id: 8, flowId: "flow-1", source: "agent:status", message: "turn completed", createdAt: "2026-07-16T20:31:39.000Z" },
+      ],
+      { agentStatus: "idle" },
+    );
+
+    const replies = groups.filter((group: { source: string }) => group.source === "agent:message") as Array<{ message: string }>;
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.message).toBe("TOOL CALL");
+
+    const boundedGroups = terminalGroups(
+      [
+        { id: 1, flowId: "flow-1", source: "agent:message", message: "first", createdAt: "2026-07-16T20:31:35.000Z" },
+        { id: 2, flowId: "flow-1", source: "agent:message-boundary", message: "", createdAt: "2026-07-16T20:31:36.000Z" },
+        { id: 3, flowId: "flow-1", source: "agent:cmd", message: "check output", createdAt: "2026-07-16T20:31:37.000Z" },
+        { id: 4, flowId: "flow-1", source: "agent:message", message: "second", createdAt: "2026-07-16T20:31:38.000Z" },
+      ],
+      { agentStatus: "running" },
+    );
+    const boundedReplies = boundedGroups.filter((group: { source: string }) => group.source === "agent:message") as Array<{
+      message: string;
+    }>;
+    expect(boundedReplies.map((group) => group.message)).toEqual(["first", "second"]);
   });
 
   test("repaints agent logs after navigating through a ticket without a flow", () => {

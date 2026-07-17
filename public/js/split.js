@@ -7,6 +7,7 @@ import {
   renderFlowPane,
   selectedFlow,
   updateFlowQueuedPrompt,
+  updateFlowShellQueuedCommand,
   upsertFlow,
 } from "./flows.js";
 import { setShellPaneHidden } from "./layout.js";
@@ -17,6 +18,7 @@ import {
   flashBlockedInput,
   handleInputPaneTabKeydown,
   promptQueuedCanSteer,
+  queuedShellCommandForFlow,
   renderAgentImageContext,
 } from "./prompt.js";
 import { els, state } from "./state.js";
@@ -171,6 +173,24 @@ export function renderSplitPanes() {
     state.splitAgentImageUploading,
   );
   if (shellOutputPane) shellOutputPane.hidden = !shellOpen;
+  const shellCommand = queuedShellCommandForFlow(companion);
+  const shellInput = splitShellInput();
+  const shellInputPane = shellInput?.closest(".shell-input-pane");
+  const shellPrefixGlyph = shellInputPane?.querySelector(".input-pane-prefix-glyph");
+  shellInputPane?.classList.toggle("shell-queued", Boolean(shellCommand));
+  if (shellCommand && !shellPrefixGlyph?.querySelector(".queued-prompt-spinner")) {
+    shellPrefixGlyph.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
+  } else if (!shellCommand && shellPrefixGlyph?.textContent !== "$") {
+    shellPrefixGlyph.textContent = "$";
+  }
+  const previousShellCommand = shellInput?.dataset.queuedShellCommand || "";
+  if (shellInput && shellCommand) {
+    shellInput.dataset.queuedShellCommand = shellCommand;
+    if (shellInput.value !== shellCommand) shellInput.value = shellCommand;
+  } else if (shellInput && previousShellCommand) {
+    if (shellInput.value === previousShellCommand) shellInput.value = "";
+    delete shellInput.dataset.queuedShellCommand;
+  }
   if (terminal && !agentOpen) {
     terminal.replaceChildren();
     terminal._flowLogFlowId = "";
@@ -365,12 +385,13 @@ export async function submitSplitShellCommand() {
     splitShellInput()?.focus({ preventScroll: true });
     return;
   }
-  if (state.splitShellSubmitting || flowShellRunning(companion)) {
+  if (state.splitShellSubmitting || queuedShellCommandForFlow(companion)) {
     flashBlockedInput(input);
     return;
   }
+  const queueing = flowShellRunning(companion);
   state.splitShellSubmitting = true;
-  input.value = "";
+  if (!queueing) input.value = "";
   state.shellInterruptingFlowIds.delete(companion.id);
   try {
     const data = await api(`/api/flows/${encodeURIComponent(companion.id)}/command`, {
@@ -378,6 +399,7 @@ export async function submitSplitShellCommand() {
       body: JSON.stringify({ command }),
     });
     if (data.flow) upsertFlow(data.flow);
+    renderFlowPane();
   } catch (error) {
     if (!input.value) input.value = command;
     toast(error.message || "Could not run shell command.", { kind: "error" });
@@ -387,6 +409,38 @@ export async function submitSplitShellCommand() {
     renderShellOutputPane(companion.id);
     splitShellInput()?.focus({ preventScroll: true });
   }
+}
+
+export function clearSplitQueuedShellCommand() {
+  const companion = selectedCompanionFlow();
+  if (!companion?.id || !queuedShellCommandForFlow(companion)) return;
+  updateFlowShellQueuedCommand(companion.id, "");
+  renderFlowPane();
+  void api(`/api/flows/${encodeURIComponent(companion.id)}/queued-shell-command`, { method: "DELETE" })
+    .then((data) => {
+      if (data.flow) upsertFlow(data.flow);
+    })
+    .catch(() => {});
+}
+
+export function handleSplitQueuedShellCommandKeydown(event) {
+  if (!queuedShellCommandForFlow(selectedCompanionFlow())) return false;
+  if (event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing && ["a", "c", "r"].includes(event.key.toLowerCase())) {
+    return false;
+  }
+  if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;
+  if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
+  event.preventDefault();
+  if (event.key === "Escape" || event.key === "Backspace") clearSplitQueuedShellCommand();
+  else flashBlockedInput(event.currentTarget);
+  return true;
+}
+
+export function handleSplitQueuedShellCommandBeforeInput(event) {
+  if (!queuedShellCommandForFlow(selectedCompanionFlow())) return false;
+  event.preventDefault();
+  flashBlockedInput(event.currentTarget);
+  return true;
 }
 
 export async function interruptSplitAgent() {

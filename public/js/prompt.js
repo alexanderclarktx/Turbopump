@@ -11,6 +11,7 @@ import {
   selectedFlow,
   selectedTicket,
   updateFlowQueuedPrompt,
+  updateFlowShellQueuedCommand,
   upsertFlow,
 } from "./flows.js";
 import {
@@ -148,6 +149,7 @@ export function setInputMode(mode) {
 }
 
 export function updateMessageInputMode() {
+  updateShellInputMode();
   const input = promptInput();
   if (!input) return;
   const flow = selectedFlow();
@@ -180,6 +182,30 @@ export function updateMessageInputMode() {
     return;
   }
   renderSlashMenu();
+}
+
+export function queuedShellCommandForFlow(flow) {
+  return String(flow?.shellQueuedCommand || "");
+}
+
+export function updateShellInputMode() {
+  const input = shellInput();
+  if (!input) return;
+  const command = queuedShellCommandForFlow(selectedFlow());
+  const queued = Boolean(command);
+  const pane = input.closest(".shell-input-pane");
+  const prefixGlyph = pane?.querySelector(".input-pane-prefix-glyph");
+  pane?.classList.toggle("shell-queued", queued);
+  if (queued && !prefixGlyph?.querySelector(".queued-prompt-spinner")) prefixGlyph.innerHTML = QUEUED_PROMPT_PREFIX_HTML;
+  else if (!queued && prefixGlyph?.textContent !== "$") prefixGlyph.textContent = "$";
+  const previousCommand = input.dataset.queuedShellCommand || "";
+  if (queued) {
+    input.dataset.queuedShellCommand = command;
+    if (input.value !== command) input.value = command;
+  } else if (previousCommand) {
+    if (input.value === previousCommand) input.value = "";
+    delete input.dataset.queuedShellCommand;
+  }
 }
 
 export function queuedPromptForFlow(flow) {
@@ -247,7 +273,7 @@ export function canSubmitPromptMessage() {
 export function canSubmitShellCommand() {
   const flow = selectedFlow();
   const ticket = selectedTicket();
-  return Boolean(repoUrlConfigured() && (flow || ticket) && !state.shellSubmitting && !flowShellRunning(flow));
+  return Boolean(repoUrlConfigured() && (flow || ticket) && !state.shellSubmitting && !queuedShellCommandForFlow(flow));
 }
 
 export function canSwitchInputPane() {
@@ -314,6 +340,38 @@ export function clearQueuedPrompt(options = {}) {
       })
       .catch(() => {});
   }
+}
+
+export function clearQueuedShellCommand(flow = selectedFlow()) {
+  if (!flow?.id || !queuedShellCommandForFlow(flow)) return;
+  updateFlowShellQueuedCommand(flow.id, "");
+  updateShellInputMode();
+  saveActiveTicketInputState();
+  void api(`/api/flows/${encodeURIComponent(flow.id)}/queued-shell-command`, { method: "DELETE" })
+    .then((data) => {
+      if (data.flow) upsertFlow(data.flow);
+    })
+    .catch(() => {});
+}
+
+export function handleQueuedShellCommandKeydown(event) {
+  if (!queuedShellCommandForFlow(selectedFlow())) return false;
+  if (event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing && ["a", "c", "r"].includes(event.key.toLowerCase())) {
+    return false;
+  }
+  if (event.key === "Tab" && handleInputPaneTabKeydown(event)) return true;
+  if (["Alt", "CapsLock", "Control", "Meta", "Shift"].includes(event.key)) return true;
+  event.preventDefault();
+  if (event.key === "Escape" || event.key === "Backspace") clearQueuedShellCommand();
+  else flashBlockedInput(event.currentTarget);
+  return true;
+}
+
+export function handleQueuedShellCommandBeforeInput(event) {
+  if (!queuedShellCommandForFlow(selectedFlow())) return false;
+  event.preventDefault();
+  flashBlockedInput(event.currentTarget);
+  return true;
 }
 
 export async function queuePromptMessage(input) {
@@ -797,8 +855,9 @@ export async function submitShellCommand(value) {
   rememberInputHistory(command, "shell");
   cancelHistorySearch();
   resetInputHistoryNavigation();
+  const queueing = flowShellRunning(selectedFlow());
   state.shellSubmitting = true;
-  input.value = "";
+  if (!queueing) input.value = "";
   saveActiveTicketInputState();
   hideSlashMenu();
   renderTickets();
@@ -815,11 +874,13 @@ export async function submitShellCommand(value) {
       body: JSON.stringify({ command }),
     });
     if (data.flow) upsertFlow(data.flow);
+    updateShellInputMode();
   } finally {
     state.shellSubmitting = false;
     if (submittedFlowId) await loadLogs(submittedFlowId, { shellOnly: true });
     renderTickets();
     renderShellOutputPane(submittedFlowId);
+    updateShellInputMode();
     if (state.shellPaneHidden) promptInput()?.focus();
     else shellInput()?.focus();
   }

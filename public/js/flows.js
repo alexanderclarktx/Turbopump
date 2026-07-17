@@ -435,6 +435,15 @@ export function updateFlowQueuedPrompt(flowId, queuedPrompt, options = {}) {
   setFlows(next, options);
 }
 
+export function updateFlowShellQueuedCommand(flowId, shellQueuedCommand) {
+  if (!flowId) return;
+  const index = state.flows.findIndex((item) => item.id === flowId);
+  if (index === -1) return;
+  const next = [...state.flows];
+  next[index] = { ...next[index], shellQueuedCommand };
+  setFlows(next);
+}
+
 export function flowUpdatedAtMs(flow) {
   const timestamp = Date.parse(flow?.updatedAt || "");
   return Number.isFinite(timestamp) ? timestamp : 0;

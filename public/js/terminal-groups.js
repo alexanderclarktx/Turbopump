@@ -276,6 +276,18 @@ export function finalResponseStartIdForTrace(range, rangeLogs) {
   }
   if (finalResponseIndex < 0) return range.beforeId;
 
+  if (rangeLogs.some((log) => isAgentMessageBoundarySource(log.source))) {
+    let startIndex = 0;
+    for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
+      if (!isAgentMessageBoundarySource(rangeLogs[index].source)) continue;
+      startIndex = index + 1;
+      break;
+    }
+    for (let index = startIndex; index <= finalResponseIndex; index += 1) {
+      if (isAgentMessageSource(rangeLogs[index].source)) return rangeLogs[index].id;
+    }
+  }
+
   let finalResponseStartIndex = finalResponseIndex;
   for (let index = finalResponseIndex - 1; index >= 0; index -= 1) {
     if (!isAgentMessageSource(rangeLogs[index].source)) break;
@@ -315,7 +327,7 @@ export function sanitizeTraceRanges(logs, ranges) {
 }
 
 export function appendTerminalGroup(groups, log, options = {}) {
-  const previous = groups[groups.length - 1];
+  const previous = options.mergeWith || groups[groups.length - 1];
   if (!options.forceNew && previous && previous.source === log.source && isStreamingSource(log.source)) {
     previous.message += log.message;
     previous.lastAt = log.lastCreatedAt || log.createdAt;
@@ -459,14 +471,17 @@ export function terminalGroups(logs, flow) {
     ]),
   );
   const traceGroups = new Map();
+  let activeAgentMessageGroup = null;
   let forceTerminalGroupBoundary = false;
   let traceRangeIndex = 0;
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
     if (isAgentMessageBoundarySource(log.source)) {
+      activeAgentMessageGroup = null;
       forceTerminalGroupBoundary = true;
       continue;
     }
+    if (isUserLogSource(log.source) || isAgentTurnEndedLog(log)) activeAgentMessageGroup = null;
     const previousGroup = groups[groups.length - 1];
     if (
       log.source === "agent:tool" &&
@@ -502,12 +517,21 @@ export function terminalGroups(logs, flow) {
         traceGroups.set(traceRange.key, traceGroup);
         groups.push(traceGroup);
       }
-      appendTerminalGroup(traceGroup.children, log, { forceNew: forceTerminalGroupBoundary, traceContent: true });
+      const group = appendTerminalGroup(traceGroup.children, log, {
+        forceNew: forceTerminalGroupBoundary,
+        traceContent: true,
+        mergeWith: activeAgentMessageGroup,
+      });
+      if (isAgentMessageSource(log.source)) activeAgentMessageGroup = group;
       forceTerminalGroupBoundary = false;
       traceGroup.lastAt = log.createdAt;
       continue;
     }
-    appendTerminalGroup(groups, log, { forceNew: forceTerminalGroupBoundary });
+    const group = appendTerminalGroup(groups, log, {
+      forceNew: forceTerminalGroupBoundary,
+      mergeWith: activeAgentMessageGroup,
+    });
+    if (isAgentMessageSource(log.source)) activeAgentMessageGroup = group;
     forceTerminalGroupBoundary = false;
   }
   const visibleGroups = mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups));
