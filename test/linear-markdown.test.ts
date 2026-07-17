@@ -8,15 +8,15 @@ import {
 
 describe("renderLinearMarkdown", () => {
   test("renders standard Markdown links", () => {
-    const html = renderLinearMarkdown("Open [Ando](https://app.ando.so/messages/123).");
+    const html = renderLinearMarkdown("Open [Example](https://app.example.com/messages/123).");
 
-    expect(html).toContain('<a href="https://app.ando.so/messages/123"');
-    expect(html).toContain(">Ando</a>");
-    expect(html).not.toContain("[Ando]");
+    expect(html).toContain('<a href="https://app.example.com/messages/123"');
+    expect(html).toContain(">Example</a>");
+    expect(html).not.toContain("[Example]");
   });
 
   test("renders Markdown links with angle-bracketed URLs", () => {
-    const url = "https://app.ando.so/messages/98bad810-a2c7-4eb9-ab23-f5d51d974aed";
+    const url = "https://app.example.com/messages/98bad810-a2c7-4eb9-ab23-f5d51d974aed";
     const html = renderLinearMarkdown(`Having issues [${url}](<${url}>)`);
 
     expect(html).toContain(`<a href="${url}"`);
@@ -48,7 +48,7 @@ describe("renderLinearMarkdown", () => {
   });
 
   test("leaves trailing punctuation out of bare URLs", () => {
-    const url = "http://dev.ando.so:3000/ando-corp/2c177334-0cca-40ed-b29a-45c3a55069da";
+    const url = "http://dev.example.com:3000/example-corp/2c177334-0cca-40ed-b29a-45c3a55069da";
     const html = renderLinearMarkdown(`"href": "${url}",`);
 
     expect(html).toContain(`<a href="${url}"`);
@@ -244,12 +244,12 @@ describe("renderLinearMarkdown", () => {
 
   test("renders fenced code blocks with common info strings", () => {
     const html = renderLinearMarkdown(
-      "```text\nError calling Ando MCP tool ...\n```\n\n```json\n{\"error\":{\"code\":-32003}}\n```",
+      "```text\nError calling MCP tool ...\n```\n\n```json\n{\"error\":{\"code\":-32003}}\n```",
     );
 
     expect(html).toContain('<pre class="markdown-code-block"><button class="markdown-code-copy"');
-    expect(html).toContain("<code>Error calling Ando MCP tool ...");
-    expect(html).toContain("Error calling Ando MCP tool ...");
+    expect(html).toContain("<code>Error calling MCP tool ...");
+    expect(html).toContain("Error calling MCP tool ...");
     expect(html).toContain('<pre class="markdown-code-block language-json" data-language="json"><button class="markdown-code-copy"');
     expect(html).toContain('<code class="language-json">');
     expect(html).toContain('{"error":{"code":-32003}}');
@@ -259,11 +259,11 @@ describe("renderLinearMarkdown", () => {
 
   test("renders fenced code blocks inside numbered list items", () => {
     const html = renderLinearMarkdown(
-      "1. initialize\n2. notifications/initialized\n3. tools/call\n4. DELETE session in finally\nIf tools/call gets 400, execute wraps it as:\n```text\nError calling Ando MCP tool ...\n```\n\nThe wrapper can retry.",
+      "1. initialize\n2. notifications/initialized\n3. tools/call\n4. DELETE session in finally\nIf tools/call gets 400, execute wraps it as:\n```text\nError calling MCP tool ...\n```\n\nThe wrapper can retry.",
     );
 
     expect(html).toContain('<li>DELETE session in finally<br>If tools/call gets 400, execute wraps it as:<pre class="markdown-code-block"><button class="markdown-code-copy"');
-    expect(html).toContain("<code>Error calling Ando MCP tool ...</code></pre></li>");
+    expect(html).toContain("<code>Error calling MCP tool ...</code></pre></li>");
     expect(html).toContain("</ol>The wrapper can retry.");
     expect(html).not.toContain("```text");
   });
@@ -287,9 +287,9 @@ describe("renderInlineMarkdown", () => {
   });
 
   test("can leave links as plain escaped markdown", () => {
-    const html = renderInlineMarkdown("See [Ando](https://app.ando.so)", { links: false });
+    const html = renderInlineMarkdown("See [Example](https://app.example.com)", { links: false });
 
-    expect(html).toBe("See [Ando](https://app.ando.so)");
+    expect(html).toBe("See [Example](https://app.example.com)");
   });
 });
 

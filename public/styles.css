@@ -3089,6 +3089,8 @@ body.markdown-table-resizing {
 .linear-markdown .markdown-code-block,
 .terminal-entry-body .markdown-code-block {
   margin: 6px 0;
+  width: fit-content;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
   position: relative;
@@ -4501,6 +4503,10 @@ body.theme-dark .prompt-input-pane .input-pane-split-toggle:focus-visible {
   color: #22c55e;
 }
 
+.shell-input-pane.shell-queued .shell-input-prefix {
+  color: #d97706;
+}
+
 .agent-working {
   display: inline-flex;
   align-items: baseline;
@@ -4607,6 +4613,11 @@ body.theme-dark .prompt-input-pane:not(.prompt-queued) .message-input:focus {
 .shell-input:focus {
   border-color: #22c55e;
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.25);
+}
+
+.shell-input-pane.shell-queued .shell-input {
+  border-color: #d97706;
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.24);
 }
 
 .message-input.input-submit-blocked,

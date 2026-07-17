@@ -49,6 +49,8 @@ import {
   handlePaneVisibilityShortcuts,
   handleQueuedPromptBeforeInput,
   handleQueuedPromptKeydown,
+  handleQueuedShellCommandBeforeInput,
+  handleQueuedShellCommandKeydown,
   handleShellInterruptKeydown,
   pastedImageFiles,
   promptInput,
@@ -100,6 +102,8 @@ import {
   handleAgentSplitResizeKeydown,
   handleSplitQueuedPromptBeforeInput,
   handleSplitQueuedPromptKeydown,
+  handleSplitQueuedShellCommandBeforeInput,
+  handleSplitQueuedShellCommandKeydown,
   interruptSplitAgent,
   interruptSplitShell,
   isSplitPaneOpen,
@@ -546,12 +550,15 @@ splitShellInput().addEventListener("keydown", (event) => {
     void interruptSplitShell();
     return;
   }
+  if (handleSplitQueuedShellCommandKeydown(event)) return;
   if (event.key === "Enter" && !event.isComposing) {
     event.preventDefault();
     if (event.shiftKey) return;
     void submitSplitShellCommand();
   }
 });
+
+splitShellInput().addEventListener("beforeinput", handleSplitQueuedShellCommandBeforeInput);
 
 promptInput().addEventListener("input", () => {
   cancelHistorySearch();
@@ -580,6 +587,8 @@ shellInput().addEventListener("input", () => {
   resetInputHistoryNavigation();
   saveActiveTicketInputState();
 });
+
+shellInput().addEventListener("beforeinput", handleQueuedShellCommandBeforeInput);
 
 els.flowPane.addEventListener("click", (event) => {
   const button = event.target.closest(".agent-image-context button[data-index]");
@@ -651,6 +660,7 @@ document.addEventListener("mousedown", handleSlashMenuOutsideMouseDown);
 shellInput().addEventListener("keydown", (event) => {
   const input = event.currentTarget;
   if (handleShellInterruptKeydown(event)) return;
+  if (handleQueuedShellCommandKeydown(event)) return;
   if (handleHistorySearchKeydown(event)) return;
   if (handleInputPaneTabKeydown(event)) return;
   if (handleInputHistoryNavigationKeydown(event)) return;

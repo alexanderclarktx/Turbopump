@@ -50,6 +50,7 @@ type Flow = {
   agentRuntimeKind?: "agent" | "shell";
   agentRuntimeStatus?: "running" | "interrupting" | "";
   shellRuntimeStatus?: "running" | "interrupting" | "";
+  shellQueuedCommand?: string;
   agentCompacting?: boolean;
   agentQueuedMessage?: boolean;
   queuedPrompt?: QueuedPrompt | null;
@@ -303,6 +304,7 @@ type RuntimeProcess = {
   proc?: Bun.Subprocess<"pipe", "pipe", "pipe">;
   claude?: ClaudeRuntimeState;
   command?: string;
+  queuedShellCommand?: string;
   requestId?: number;
   stdoutBuffer?: string;
   threadId?: string;
@@ -826,6 +828,7 @@ function runtimeAdjustedFlow(flow: Flow) {
     agentRuntimeKind: shellRuntimeStatus && !agentRuntimeStatus ? "shell" : "agent",
     agentRuntimeStatus,
     shellRuntimeStatus,
+    shellQueuedCommand: shellRuntime?.queuedShellCommand ?? "",
     agentCompacting: Boolean(agentRuntime?.compacting),
     agentQueuedMessage: Boolean(agentRuntime?.queuedAgentMessages?.length),
   };
@@ -2604,6 +2607,13 @@ function statusPercentLeft(window: unknown) {
   return "unknown";
 }
 
+function statusResetDate(window: unknown) {
+  const resetsAt = (window as { resetsAt?: unknown } | null)?.resetsAt;
+  return typeof resetsAt === "number" && Number.isFinite(resetsAt)
+    ? new Date(resetsAt * 1000).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit" })
+    : "unknown";
+}
+
 function codexRateLimits(value: unknown) {
   const data = value as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null };
   const rateLimits = (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
@@ -2632,7 +2642,7 @@ async function flowStatusMessage(runtime: RuntimeProcess) {
   return markdownTable([
     ["Account", accountStatusValue(account)],
     ["5h left", statusPercentLeft(rateLimits.primary)],
-    ["Weekly left", statusPercentLeft(rateLimits.secondary)],
+    [`until ${statusResetDate(rateLimits.secondary)}`, statusPercentLeft(rateLimits.secondary)],
   ]);
 }
 
@@ -3565,7 +3575,13 @@ function startShellCommand(flow: Flow, userCommand: string) {
   flow = ensureFlowWorktree(flow);
   const command = userCommand.trim();
   if (!command) throw new Error("Type a shell command after $.");
-  if (shellProcesses.has(flow.id)) throw new Error("A shell command is already running.");
+  const existingRuntime = shellProcesses.get(flow.id);
+  if (existingRuntime) {
+    if (existingRuntime.queuedShellCommand) throw new Error("A shell command is already queued.");
+    existingRuntime.queuedShellCommand = command;
+    broadcast("flows", listClientFlows());
+    return;
+  }
 
   const proc = Bun.spawn(["/bin/zsh", "-lc", command], {
     cwd: flow.checkoutPath,
@@ -3591,8 +3607,8 @@ function startShellCommand(flow: Flow, userCommand: string) {
   void (async () => {
     try {
       const code = await proc.exited;
-      if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
       await Promise.all([stdoutDone, stderrDone]);
+      if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
       const resultLogId = insertLog(
         flow.id,
         "shell:result",
@@ -3600,12 +3616,24 @@ function startShellCommand(flow: Flow, userCommand: string) {
       );
       createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");
       updateFlow(flow.id, { agentStatus: code === 0 || runtime.stopping ? "idle" : "failed" });
+      const nextFlow = getFlow(flow.id);
+      if (nextFlow && runtime.queuedShellCommand) startShellCommand(nextFlow, runtime.queuedShellCommand);
     } catch (error) {
       if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
       insertLog(flow.id, "shell:stderr", `shell command failed: ${String(error)}\n`);
       updateFlow(flow.id, { agentStatus: "failed" });
+      const nextFlow = getFlow(flow.id);
+      if (nextFlow && runtime.queuedShellCommand) startShellCommand(nextFlow, runtime.queuedShellCommand);
     }
   })();
+}
+
+function clearQueuedShellCommand(flowId: string) {
+  const runtime = shellProcesses.get(flowId);
+  if (!runtime?.queuedShellCommand) return false;
+  runtime.queuedShellCommand = "";
+  broadcast("flows", listClientFlows());
+  return true;
 }
 
 function interruptShellCommand(flowId: string) {
@@ -4546,6 +4574,11 @@ async function handleApi(request: Request, url: URL) {
 
     if (parts[3] === "command" && parts[4] === "interrupt" && request.method === "POST") {
       interruptShellCommand(id);
+      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+    }
+
+    if (parts[3] === "queued-shell-command" && request.method === "DELETE") {
+      clearQueuedShellCommand(id);
       return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
     }
 

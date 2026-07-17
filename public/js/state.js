@@ -183,6 +183,7 @@ export const state = {
   slashMenuCommands: null,
   messageSubmitting: false,
   messageSubmittingFlowId: "",
+  optimisticPromptByFlowId: new Map(),
   creatingFlowIssueIds: new Set(),
   queuedPrompt: null,
   queuedPromptFlushTimer: 0,

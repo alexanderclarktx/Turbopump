@@ -26,6 +26,15 @@ const coalescedStreamingSources = new Set(["agent:message", "agent:reasoning", "
 export function appendLogEntry(log) {
   const flowId = log.flowId;
   const id = Number(log.id || Date.now());
+  const optimisticPrompt = state.optimisticPromptByFlowId.get(flowId);
+  if (
+    log.source === "user" &&
+    optimisticPrompt &&
+    String(log.message || "").trim() === optimisticPrompt.message.trim() &&
+    Date.parse(log.createdAt || "") >= Date.parse(optimisticPrompt.createdAt)
+  ) {
+    state.optimisticPromptByFlowId.delete(flowId);
+  }
   if (!state.logs.has(flowId)) state.logs.set(flowId, []);
   if (!state.logIds.has(flowId)) {
     state.logIds.set(flowId, new Set((state.logs.get(flowId) || []).map((entry) => Number(entry.id))));

@@ -1219,7 +1219,9 @@ export function ticketAgentWorking(ticket) {
   return Boolean(
     repoUrlConfigured() &&
       flow &&
-      (flowAgentRunning(flow) || state.messageSubmittingFlowId === flow.id),
+      (state.flows.some(
+        (candidate) => (candidate.id === flow.id || candidate.parentFlowId === flow.id) && flowAgentRunning(candidate),
+      ) || state.messageSubmittingFlowId === flow.id),
   );
 }
 
