@@ -300,6 +300,7 @@ export function updateLinearState(linear) {
       : "Linear connected"
     : "Linear disconnected";
   els.linearState.classList.toggle("live", state.linearSignedIn);
+  els.disconnectLinear.hidden = !state.linearSignedIn;
   els.linearKeyForm.classList.toggle("hidden", state.linearSignedIn);
   els.ticketState.textContent = state.linearSignedIn
     ? "Loading assigned tickets."

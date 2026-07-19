@@ -258,6 +258,25 @@ label {
   display: none;
 }
 
+.integration-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.integration-disconnect {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
 main {
   --settings-pane-size: 320px;
   --ticket-drawer-size: 320px;
@@ -2746,14 +2765,27 @@ body.theme-dark .github-ci-pill {
   background: #8b5cf6;
 }
 
-.github-ci-pill-pending .github-ci-dot,
-.github-ci-pill-unknown .github-ci-dot {
+.github-ci-pill-pending .github-ci-dot {
   background: #fbbf24;
 }
 
-body.theme-dark .github-ci-pill-pending .github-ci-dot,
-body.theme-dark .github-ci-pill-unknown .github-ci-dot {
+body.theme-dark .github-ci-pill-pending .github-ci-dot {
   background: #fbbf24;
+}
+
+.github-ci-pill-unknown .github-ci-dot {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: transparent;
+  color: #cf222e;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+body.theme-dark .github-ci-pill-unknown .github-ci-dot {
+  color: #ff7b72;
 }
 
 .github-ci-pill-failure .github-ci-dot {
@@ -3597,6 +3629,12 @@ body.markdown-table-resizing {
   margin-left: auto;
   color: #94a3b8;
   font-size: 11px;
+}
+
+.terminal-entry-marker,
+.terminal-entry-time {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .terminal-trace-group:not([open]) > .terminal-trace-summary .terminal-entry-time {

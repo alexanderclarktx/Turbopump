@@ -17,6 +17,7 @@ bun run dev
 
 then in settings:
 - set your Linear API key
+- set a GitHub personal access token with Pull requests, Actions, and Commit statuses read access
 - set your repository URL
 
 ## How it works

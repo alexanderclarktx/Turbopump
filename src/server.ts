@@ -1112,37 +1112,49 @@ function githubRollupState(check: { status?: string | null; conclusion?: string 
 
 async function getGithubCiStatus(flow: Flow) {
   try {
-    const pr = JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,state,url"], flow)) as {
-      headRefOid?: string;
-      state?: string;
-      url?: string;
-      statusCheckRollup?: Array<{
-        status?: string | null;
-        conclusion?: string | null;
-        state?: string | null;
-        detailsUrl?: string | null;
-        targetUrl?: string | null;
-      }>;
-    };
-    if (String(pr.state || "").toLowerCase() === "merged") {
+    const { owner, repo, number } = githubPullRequest(flow.prUrl);
+    const pr = await githubRequest<{
+      merged_at?: string | null;
+      html_url?: string;
+      head?: { sha?: string };
+    }>(`/repos/${owner}/${repo}/pulls/${number}`);
+    if (pr.merged_at) {
       return {
         state: "merged" as GithubCiState,
         prUrl: flow.prUrl,
-        sha: pr.headRefOid || "",
+        sha: pr.head?.sha || "",
         description: "GitHub PR merged.",
-        targetUrl: pr.url || flow.prUrl,
+        targetUrl: pr.html_url || flow.prUrl,
         checkedAt: now(),
       };
     }
-    const checks = pr.statusCheckRollup || [];
-    const states = checks.map(githubRollupState);
-    const state = combineGithubCiStates(states);
+    const sha = pr.head?.sha || "";
+    // ponytail: fine-grained PATs cannot read the Checks API; use GitHub App auth if third-party check runs need rollup.
+    const [runs, statuses] = await Promise.all([
+      githubRequest<{
+        workflow_runs?: Array<{
+          status?: string | null;
+          conclusion?: string | null;
+          html_url?: string | null;
+        }>;
+      }>(`/repos/${owner}/${repo}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`),
+      githubRequest<{
+        statuses?: Array<{
+          state?: string | null;
+          target_url?: string | null;
+        }>;
+      }>(`/repos/${owner}/${repo}/commits/${encodeURIComponent(sha)}/status`),
+    ]);
+    const checks = [...(runs.workflow_runs || []), ...(statuses.statuses || [])];
+    const state = combineGithubCiStates(checks.map(githubRollupState));
+    const target = checks.find((item) => "html_url" in item && item.html_url)?.html_url
+      || checks.find((item) => "target_url" in item && item.target_url)?.target_url;
     return {
       state,
       prUrl: flow.prUrl,
-      sha: pr.headRefOid || "",
+      sha,
       description: state === "unknown" ? "No CI status found." : `GitHub CI ${state}.`,
-      targetUrl: checks.find((item) => item.detailsUrl || item.targetUrl)?.detailsUrl || checks.find((item) => item.targetUrl)?.targetUrl || pr.url || flow.prUrl,
+      targetUrl: target || pr.html_url || flow.prUrl,
       checkedAt: now(),
     };
   } catch (error) {
@@ -1495,26 +1507,33 @@ function runGit(args: string[], cwd = rootDir) {
   return stdout;
 }
 
-async function runGh(args: string[], flow?: Flow) {
-  const proc = Bun.spawn({
-    cmd: ["gh", ...args],
-    cwd: flow?.checkoutPath || rootDir,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: flow ? runtimeEnv(flow) : runtimeEnv(),
+function githubConfigPayload() {
+  const signedIn = Boolean(getSetting("githubApiKey"));
+  return { signedIn, viewerName: signedIn ? getSetting("githubViewerName") : "" };
+}
+
+function githubPullRequest(prUrl: string) {
+  const url = new URL(prUrl);
+  const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
+  if (url.hostname !== "github.com" || !match) throw new Error("PR URL must be a github.com pull request URL.");
+  return { owner: encodeURIComponent(match[1]), repo: encodeURIComponent(match[2]), number: match[3] };
+}
+
+async function githubRequest<T>(path: string, apiKey = getSetting("githubApiKey")) {
+  if (!apiKey) throw new Error("GitHub is not connected. Add a GitHub API key in settings.");
+  const response = await fetch(`https://api.github.com${path}`, {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${apiKey}`,
+      "x-github-api-version": "2026-03-10",
+    },
   });
-  const [stdoutText, stderrText, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  const stdout = stdoutText.trim();
-  const stderr = stderrText.trim();
-  if (exitCode !== 0) {
-    const output = stderr || stdout;
-    throw new Error(output ? `gh ${args[0] ?? ""} failed: ${output}` : `gh ${args[0] ?? ""} failed`);
+  const body = await response.json() as T & { message?: string };
+  if (!response.ok) {
+    const required = response.headers.get("x-accepted-github-permissions");
+    throw new Error(`${body.message || `GitHub request failed (${response.status}).`}${required ? ` Required permission: ${required}.` : ""}`);
   }
-  return stdout;
+  return body;
 }
 
 function parseLinearIssue(input: string) {
@@ -4269,6 +4288,7 @@ async function handleApi(request: Request, url: URL) {
         agentCommand: normalizeAgentCommand(getSetting("agentCommand", defaultCodexAppServerCommand)),
       },
       linear: linearConfigPayload(),
+      github: githubConfigPayload(),
       agents: {
         developerInstructions: getAgentDeveloperInstructionsTemplate(),
         defaultDeveloperInstructions: defaultAgentDeveloperInstructions,
@@ -4340,6 +4360,23 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/linear/config" && request.method === "GET") {
     return json(linearConfigPayload());
+  }
+
+  if (url.pathname === "/api/github/config" && request.method === "PUT") {
+    const body = await readJson<{ apiKey: string }>(request);
+    const apiKey = body.apiKey?.trim() ?? "";
+    if (!apiKey) return json({ error: "GitHub API key is required." }, { status: 400 });
+    const viewer = await githubRequest<{ login: string }>("/user", apiKey);
+    setSetting("githubApiKey", apiKey);
+    setSetting("githubViewerName", viewer.login);
+    void pollSelectedGithubCiStatus();
+    return json({ ok: true, viewer });
+  }
+
+  if (url.pathname === "/api/github/config" && request.method === "DELETE") {
+    setSetting("githubApiKey", "");
+    setSetting("githubViewerName", "");
+    return json({ ok: true });
   }
 
   if (url.pathname === "/api/linear/config" && request.method === "PUT") {

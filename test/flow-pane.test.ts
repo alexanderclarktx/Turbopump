@@ -248,11 +248,15 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("user-select: none;");
   });
 
-  test("does not show a Linear disconnect button", () => {
-    expect(html).not.toContain("disconnectLinear");
-    expect(html).not.toContain("Disconnect Linear");
-    expect(app).not.toContain("disconnectLinear");
-    expect(css).not.toContain("#disconnectLinear");
+  test("shows disconnect buttons only while integrations are connected", () => {
+    expect(html).toContain('id="disconnectLinear"');
+    expect(html).toContain('id="disconnectGithub"');
+    expect(app).toContain("els.disconnectLinear.hidden = !state.linearSignedIn;");
+    expect(app).toContain("els.disconnectGithub.hidden = !github.signedIn;");
+    expect(app).toContain('await api("/api/linear/config", { method: "DELETE" });');
+    expect(app).toContain('await api("/api/github/config", { method: "DELETE" });');
+    expect(server).toContain('if (url.pathname === "/api/linear/config" && request.method === "DELETE")');
+    expect(server).toContain('if (url.pathname === "/api/github/config" && request.method === "DELETE")');
   });
 
   test("marks completed agent turns as browser and Linear card notifications", () => {
@@ -2023,11 +2027,22 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("let githubCiPolling = false;");
     expect(server).toContain('if (request.method === "selected-github-flow")');
     expect(server).toContain("setSelectedGithubCiFlow(flowId);");
-    expect(server).toContain("async function runGh(args: string[], flow?: Flow)");
-    expect(server).toContain('cmd: ["gh", ...args]');
-    expect(server).toContain("const [stdoutText, stderrText, exitCode] = await Promise.all");
-    expect(server).toContain('JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,state,url"], flow))');
-    expect(server).toContain('if (String(pr.state || "").toLowerCase() === "merged")');
+    expect(html).toContain('<span id="githubState" class="pill">GitHub disconnected</span>');
+    expect(html).toContain('<form id="githubKeyForm" class="linear-key-form">');
+    expect(app).toContain('const data = await api("/api/github/config", {');
+    expect(server).toContain('github: githubConfigPayload(),');
+    expect(server).toContain('if (url.pathname === "/api/github/config" && request.method === "PUT")');
+    expect(server).toContain('const viewer = await githubRequest<{ login: string }>("/user", apiKey);');
+    expect(server).toContain('authorization: `Bearer ${apiKey}`');
+    expect(server).toContain('response.headers.get("x-accepted-github-permissions")');
+    expect(server).toContain('` Required permission: ${required}.`');
+    expect(server).toContain('const pr = await githubRequest<{');
+    expect(server).toContain('}>(`/repos/${owner}/${repo}/pulls/${number}`);');
+    expect(server).toContain('githubRequest<{\n        workflow_runs?: Array<{');
+    expect(server).toContain('githubRequest<{\n        statuses?: Array<{');
+    expect(server).toContain('/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100');
+    expect(server).not.toContain('cmd: ["gh", ...args]');
+    expect(server).toContain("if (pr.merged_at)");
     expect(server).toContain('state: "merged" as GithubCiState,');
     expect(server).toContain("async function pollSelectedGithubCiStatus()");
     expect(server).toContain("setInterval(() => void pollSelectedGithubCiStatus(), 5000);");
@@ -2042,10 +2057,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function githubCiStatusRecent(flow)");
     expect(app).toContain('if (status === "success" || status === "pending" || status === "failure" || status === "merged") return status;');
     expect(app).toContain('if (status === "merged") return "GitHub PR merged";');
-    expect(app).toContain('const knownRecent = status !== "unknown" && githubCiStatusRecent(flow);');
-    expect(app).toContain('${knownRecent ? \'<span class="github-ci-dot" aria-hidden="true"></span>\' : ""}');
+    expect(app).toContain('const statusVisible = githubCiStatusRecent(flow) && (status !== "unknown" || Boolean(flow.githubCiDescription));');
+    expect(app).toContain('flow.githubCiDescription || "GitHub CI status unknown";');
+    expect(app).toContain('${status === "unknown" ? "!" : ""}</span>` : ""}');
     expect(app).toContain('href="${escapeAttribute(flow.prUrl)}"');
-    expect(app).toContain('class="github-ci-pill${knownRecent ? ` github-ci-pill-${status}` : ""}"');
+    expect(app).toContain('class="github-ci-pill${statusVisible ? ` github-ci-pill-${status}` : ""}"');
     expect(app).toContain('aria-label="${escapeAttribute(label)}" title="${escapeAttribute(title)}"');
     expect(app).toContain("function githubCiOnlyFlowChanges(previousFlows, nextFlows)");
     expect(app).toContain("if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {\n        renderFlowPane();\n        return;\n      }");
@@ -2053,8 +2069,9 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".github-ci-pill-success .github-ci-dot");
     expect(css).toContain(".github-ci-pill-merged .github-ci-dot {\n  background: #8b5cf6;\n}");
     expect(css).toContain(".github-ci-pill-pending .github-ci-dot");
-    expect(css).toContain(".github-ci-pill-unknown .github-ci-dot {\n  background: #fbbf24;\n}");
-    expect(css).toContain("body.theme-dark .github-ci-pill-pending .github-ci-dot,\nbody.theme-dark .github-ci-pill-unknown .github-ci-dot {\n  background: #fbbf24;\n}");
+    expect(css).toContain(".github-ci-pill-unknown .github-ci-dot {\n  width: auto;\n  height: auto;");
+    expect(css).toContain("color: #cf222e;\n  font-size: 13px;\n  font-weight: 800;");
+    expect(css).toContain("body.theme-dark .github-ci-pill-unknown .github-ci-dot {\n  color: #ff7b72;\n}");
     expect(css).toContain(".github-ci-pill-failure .github-ci-dot {\n  background: #ef4444;\n}");
   });
 
@@ -2771,6 +2788,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('return dateLabel ? `${time} (${dateLabel})` : time;');
     expect(app).toContain("time.textContent = formatTerminalTimestamp(group.createdAt);");
     expect(css).toContain(".terminal-entry-time {\n  margin-left: auto;\n  color: #94a3b8;\n  font-size: 11px;");
+    expect(css).toContain(".terminal-entry-marker,\n.terminal-entry-time {\n  user-select: none;\n  -webkit-user-select: none;\n}");
     expect(app).toContain("function terminalDistanceFromBottom(terminal)");
     expect(app).toContain("return terminal.scrollHeight - terminal.clientHeight - terminal.scrollTop;");
     expect(app).toContain("function terminalAtLatest(terminal)");
