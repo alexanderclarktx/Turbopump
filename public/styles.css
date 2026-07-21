@@ -2977,6 +2977,22 @@ body.theme-dark .terminal-entry-body a {
   white-space: normal;
 }
 
+.linear-markdown blockquote,
+.terminal-entry-body blockquote {
+  margin: 0;
+  color: #15803d;
+}
+
+body.theme-dark .linear-markdown blockquote,
+body.theme-dark .terminal-entry-body blockquote {
+  color: #75d99a;
+}
+
+.linear-markdown blockquote + br,
+.terminal-entry-body blockquote + br {
+  display: none;
+}
+
 .linear-markdown table,
 .terminal-entry-body table {
   display: block;
@@ -3987,6 +4003,10 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
 .terminal-entry-status .terminal-entry-label,
 .terminal-entry-status .terminal-entry-body {
   color: #64748b;
+}
+
+.terminal-entry-shell-status .terminal-entry-body {
+  font-size: 10px;
 }
 
 .terminal-trace-summary .terminal-entry-marker,

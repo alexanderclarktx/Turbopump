@@ -1618,6 +1618,11 @@ describe("Turbopump pane markup", () => {
     expect(markdown).toContain("<strong>");
     expect(markdown).toContain('data-code-copy="true"');
     expect(markdown).toContain('aria-label="Copy code"');
+    expect(renderLinearMarkdown("> Search query scanned too many documents")).toBe(
+      "<blockquote>&gt; Search query scanned too many documents</blockquote>",
+    );
+    expect(css).toContain("body.theme-dark .terminal-entry-body blockquote {\n  color: #75d99a;");
+    expect(css).toContain(".terminal-entry-body blockquote + br {\n  display: none;");
     expect(renderLinearMarkdown("```ts\nconst value = 1;\n```")).toContain('class="language-typescript"');
     expect(renderLinearMarkdown("[managedAgentFileLoader.ts](/Users/alex/project/file.ts:201)", "", { links: true })).toContain(
       "<code>managedAgentFileLoader.ts</code>",

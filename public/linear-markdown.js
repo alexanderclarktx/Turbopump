@@ -24,6 +24,16 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
       continue;
     }
 
+    if (/^>\s?/.test(line)) {
+      const quote = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quote.push(`&gt; ${renderInlineMarkdown(lines[index].replace(/^>\s?/, ""), { images, links })}`);
+        index += 1;
+      }
+      blocks.push(`<blockquote>${quote.join("<br>")}</blockquote>`);
+      continue;
+    }
+
     if (isTableStart(lines, index)) {
       const parsed = renderTable(lines, index, { images, links });
       blocks.push(parsed.html);
@@ -61,6 +71,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
         !current.trim() ||
         matchCodeFenceStart(current) ||
         /^(#{1,6})\s+(.+)$/.test(current) ||
+        /^>\s?/.test(current) ||
         isTableStart(lines, index) ||
         /^\s*(?:[-*+]|\d+[.)])\s+(.+)$/.test(current)
       ) {
