@@ -510,7 +510,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('if ("linearIssueId" in body)');
     expect(server).toContain("const existing = getFlowByIssue(parsed.identifier);");
     expect(server).toContain("throw new Error(`Linear issue ${parsed.identifier} already has an agent session.`);");
-    expect(server).toContain('insertLog(id, "flow", `Linear issue set to ${fields.linearIssueId}\\n`);');
+    expect(server).toContain('insertLog(metadataFlow.id, "flow", `Linear issue set to ${fields.linearIssueId}\\n`);');
     expect(server).not.toContain('"Current stage: {stage}"');
     expect(server).not.toContain("FLOW_STAGE");
     expect(server).not.toContain("stage: flow.stage,");
@@ -2023,8 +2023,11 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('fields.linearIssueUrl = issue.url || parsed.url || flow.linearIssueUrl;');
     expect(server).toContain('return json({ error: "No supported flow metadata fields provided." }, { status: 400 });');
     expect(server).toContain('fields.prUrl ? `PR set to ${fields.prUrl}\\n` : "PR cleared\\n"');
-    expect(server).toContain('if (fields.linearIssueId !== undefined) insertLog(id, "flow", `Linear issue set to ${fields.linearIssueId}\\n`);');
-    expect(server).toContain('if (selectedGithubCiFlowId === id) void pollSelectedGithubCiStatus();');
+    expect(server).toContain('if (fields.linearIssueId !== undefined) insertLog(metadataFlow.id, "flow", `Linear issue set to ${fields.linearIssueId}\\n`);');
+    expect(server).toContain('if (selectedGithubCiFlowId === metadataFlow.id) void pollSelectedGithubCiStatus();');
+    expect(server).toContain("const metadataFlow = flow.parentFlowId ? getFlow(flow.parentFlowId) ?? flow : flow;");
+    expect(server).toContain("fields = await flowMetaUpdate(metadataFlow");
+    expect(server).toContain("updateFlow(metadataFlow.id, fields);");
   });
 
   test("polls selected flow GitHub CI on the server and displays persisted status", () => {
@@ -2046,6 +2049,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('githubRequest<{\n        workflow_runs?: Array<{');
     expect(server).toContain('githubRequest<{\n        statuses?: Array<{');
     expect(server).toContain('/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100');
+    expect(server).toContain("const seenWorkflowIds = new Set<number>();");
+    expect(server).toContain("if (seenWorkflowIds.has(run.workflow_id)) return false;");
+    expect(server).toContain("const checks = [...latestWorkflowRuns, ...(statuses.statuses || [])];");
     expect(server).not.toContain('cmd: ["gh", ...args]');
     expect(server).toContain("if (pr.merged_at)");
     expect(server).toContain('state: "merged" as GithubCiState,');

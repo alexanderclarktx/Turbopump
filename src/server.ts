@@ -1133,6 +1133,7 @@ async function getGithubCiStatus(flow: Flow) {
     const [runs, statuses] = await Promise.all([
       githubRequest<{
         workflow_runs?: Array<{
+          workflow_id?: number;
           status?: string | null;
           conclusion?: string | null;
           html_url?: string | null;
@@ -1145,10 +1146,17 @@ async function getGithubCiStatus(flow: Flow) {
         }>;
       }>(`/repos/${owner}/${repo}/commits/${encodeURIComponent(sha)}/status`),
     ]);
-    const checks = [...(runs.workflow_runs || []), ...(statuses.statuses || [])];
+    const seenWorkflowIds = new Set<number>();
+    const latestWorkflowRuns = (runs.workflow_runs || []).filter((run) => {
+      if (!run.workflow_id) return true;
+      if (seenWorkflowIds.has(run.workflow_id)) return false;
+      seenWorkflowIds.add(run.workflow_id);
+      return true;
+    });
+    const checks = [...latestWorkflowRuns, ...(statuses.statuses || [])];
     const state = combineGithubCiStates(checks.map(githubRollupState));
-    const target = checks.find((item) => "html_url" in item && item.html_url)?.html_url
-      || checks.find((item) => "target_url" in item && item.target_url)?.target_url;
+    const target = latestWorkflowRuns.find((run) => run.html_url)?.html_url
+      || statuses.statuses?.find((status) => status.target_url)?.target_url;
     return {
       state,
       prUrl: flow.prUrl,
@@ -4530,22 +4538,23 @@ async function handleApi(request: Request, url: URL) {
     }
 
     if (parts[3] === "meta" && request.method === "POST") {
+      const metadataFlow = flow.parentFlowId ? getFlow(flow.parentFlowId) ?? flow : flow;
       let fields: Partial<Flow>;
       try {
-        fields = await flowMetaUpdate(flow, await readJson<Record<string, unknown>>(request));
+        fields = await flowMetaUpdate(metadataFlow, await readJson<Record<string, unknown>>(request));
       } catch (error) {
         return json({ error: String(error) }, { status: 400 });
       }
       if (Object.keys(fields).length === 0) {
         return json({ error: "No supported flow metadata fields provided." }, { status: 400 });
       }
-      updateFlow(id, fields);
+      updateFlow(metadataFlow.id, fields);
       if (fields.prUrl !== undefined) {
-        insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
-        if (selectedGithubCiFlowId === id) void pollSelectedGithubCiStatus();
+        insertLog(metadataFlow.id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
+        if (selectedGithubCiFlowId === metadataFlow.id) void pollSelectedGithubCiStatus();
       }
-      if (fields.linearIssueId !== undefined) insertLog(id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
-      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+      if (fields.linearIssueId !== undefined) insertLog(metadataFlow.id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
+      return json({ ok: true, flow: clientFlow(getFlow(metadataFlow.id) ?? metadataFlow) });
     }
 
     if (parts[3] === "split" && request.method === "POST") {
