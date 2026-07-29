@@ -5,6 +5,8 @@ export function renderLinearMarkdown(
     images?: boolean;
     links?: boolean;
     compactBlankLines?: boolean;
+    copyCode?: boolean;
+    imageSource?: (url: string) => string;
   },
 ): string;
 
@@ -13,6 +15,7 @@ export function renderInlineMarkdown(
   options?: {
     images?: boolean;
     links?: boolean;
+    imageSource?: (url: string) => string;
   },
 ): string;
 

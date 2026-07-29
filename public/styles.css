@@ -2068,15 +2068,15 @@ body.theme-dark .ticket-flow-start:focus-visible {
 }
 
 .ticket-meta .linear-status-icon {
-  width: 13px;
-  min-width: 13px;
-  height: 13px;
+  width: 15px;
+  min-width: 15px;
+  height: 15px;
   vertical-align: 0;
 }
 
 .ticket-meta .linear-status-icon-glyph {
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
 }
 
 .icon-button {
@@ -2739,8 +2739,12 @@ body.theme-dark .github-ci-pill {
   cursor: pointer;
 }
 
-.github-ci-pill {
+.github-ci-pill,
+body.theme-dark .github-ci-pill {
+  border: 0;
+  background: transparent;
   color: #24292f;
+  padding: 0;
   text-decoration: none;
 }
 
@@ -2750,46 +2754,28 @@ body.theme-dark .github-ci-pill {
   fill: currentColor;
 }
 
-.github-ci-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #d0d7de;
+.github-ci-pill-success svg {
+  fill: #2da44e;
 }
 
-.github-ci-pill-success .github-ci-dot {
-  background: #2da44e;
+.github-ci-pill-merged svg {
+  fill: #8b5cf6;
 }
 
-.github-ci-pill-merged .github-ci-dot {
-  background: #8b5cf6;
+.github-ci-pill-pending svg {
+  fill: #fbbf24;
 }
 
-.github-ci-pill-pending .github-ci-dot {
-  background: #fbbf24;
+.github-ci-pill-unknown svg {
+  fill: #cf222e;
 }
 
-body.theme-dark .github-ci-pill-pending .github-ci-dot {
-  background: #fbbf24;
+body.theme-dark .github-ci-pill-unknown svg {
+  fill: #ff7b72;
 }
 
-.github-ci-pill-unknown .github-ci-dot {
-  width: auto;
-  height: auto;
-  border-radius: 0;
-  background: transparent;
-  color: #cf222e;
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1;
-}
-
-body.theme-dark .github-ci-pill-unknown .github-ci-dot {
-  color: #ff7b72;
-}
-
-.github-ci-pill-failure .github-ci-dot {
-  background: #ef4444;
+.github-ci-pill-failure svg {
+  fill: #ef4444;
 }
 
 .linear-status-options,
@@ -3147,6 +3133,10 @@ body.markdown-table-resizing {
   color: #27313d;
   overflow: visible;
   white-space: normal;
+}
+
+.terminal-entry-user .markdown-code-block {
+  margin-top: 12px;
 }
 
 .linear-markdown .markdown-code-copy,

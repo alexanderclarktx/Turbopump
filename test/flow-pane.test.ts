@@ -33,7 +33,15 @@ const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const { terminalGroups } = await import("../public/js/terminal-groups.js");
 const { appendLogEntry } = await import("../public/js/logs.js");
 const { state } = await import("../public/js/state.js");
-const { formatTerminalElapsed, renderableTerminalGroups, renderTerminalMarkdownOutput, usesRawAgentMarkdown } = await import("../public/js/terminal-render.js");
+const {
+  formatTerminalElapsed,
+  renderableTerminalGroups,
+  renderTerminalMarkdownOutput,
+  terminalRowCount,
+  terminalTraceCanLoadMore,
+  terminalVisibleTurnStartIndex,
+  usesRawAgentMarkdown,
+} = await import("../public/js/terminal-render.js");
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
 describe("Turbopump pane markup", () => {
@@ -320,8 +328,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function toolCallCountSincePreviousThought(groups, index)");
     expect(app).toContain("const latestToolIndex = options.agentWorking && !hasLiveAgentReplyGroup(groups) ? latestAgentToolOutputGroupIndex(groups) : -1;");
     expect(app).toContain('block.classList.add("terminal-entry-tool-preview");');
-    expect(app).toContain("group.latestVisibleToolOutput = latestVisibleToolOutput;");
-    expect(app).toContain("if (latestVisibleToolOutput) group.simpleModeToolCallCount = latestToolCallCount;");
+    expect(app).toContain("groups[latestToolIndex].latestVisibleToolOutput = true;");
+    expect(app).toContain("if (index === latestToolParentIndex) result.push(groups[latestToolIndex]);");
+    expect(app).toContain("groups[latestToolIndex].simpleModeToolCallCount = latestToolCallCount;");
     expect(app).toContain("group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;");
     expect(app).toContain("function traceThoughtGroups(groups)");
     expect(app).toContain("result.push({ ...group, children: traceThoughtGroups(group.children), defaultOpen: false });");
@@ -362,6 +371,32 @@ describe("Turbopump pane markup", () => {
       expect(groups.map((group) => group.id)).toEqual([1, 2, 6]);
       expect(groups.at(-1)?.latestVisibleToolOutput).toBe(true);
       expect(groups.at(-1)?.simpleModeToolCallCount).toBe(2);
+    } finally {
+      state.agentTraceHidden = previous;
+    }
+  });
+
+  test("keeps a live tool preview attached to the preceding agent message across a steer", () => {
+    const previous = state.agentTraceHidden;
+    state.agentTraceHidden = true;
+    try {
+      const groups = renderableTerminalGroups(
+        terminalGroups(
+          [
+            { id: 1, flowId: "flow-1", source: "user", message: "explain", createdAt: "2026-07-23T14:47:15.000Z" },
+            { id: 2, flowId: "flow-1", source: "agent:status", message: "turn started abc", createdAt: "2026-07-23T14:47:15.100Z" },
+            { id: 3, flowId: "flow-1", source: "agent:message", message: "I’ll trace it", createdAt: "2026-07-23T14:47:20.000Z" },
+            { id: 4, flowId: "flow-1", source: "agent:message-boundary", message: "", createdAt: "2026-07-23T14:47:20.100Z" },
+            { id: 5, flowId: "flow-1", source: "user", message: "so not saddle agents?", createdAt: "2026-07-23T14:47:21.000Z" },
+            { id: 6, flowId: "flow-1", source: "agent:tool", message: "rg", createdAt: "2026-07-23T14:47:22.000Z" },
+          ],
+          { agentStatus: "running" },
+        ),
+        { agentWorking: true },
+      );
+
+      expect(groups.map((group) => group.id)).toEqual([1, 3, 6, 5]);
+      expect(groups[2]?.latestVisibleToolOutput).toBe(true);
     } finally {
       state.agentTraceHidden = previous;
     }
@@ -491,6 +526,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("const defaultAgentDeveloperInstructions");
     expect(server).not.toContain("defaultAgentStartPrompt");
     expect(server).toContain("function renderAgentTemplate");
+    expect(server).toContain("A built-in browser tool is not available. Use Playwright for browser automation and testing.");
     expect(server).toContain("function getStoredSetting(key: string)");
     expect(server).toContain('const stored = getStoredSetting("agentDeveloperInstructions");');
     expect(server).toContain("if (stored !== null) return stored;");
@@ -1231,6 +1267,8 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('<span class="ticket-priority${urgent ? " urgent" : ""}" aria-label=');
     expect(app).toContain('<svg viewBox="0 0 16 14" aria-hidden="true" focusable="false">');
     expect(app).toContain("${renderLinearStatusIcon(ticket)}\n      ${renderLinearPriorityIcon(ticket.priority)}");
+    expect(app).toContain("${renderLinearPriorityIcon(ticket.priority)}\n      ${renderGithubCiPill(flowForTicket(ticket))}");
+    expect(app).toContain("renderGithubCiPill(flowForTicket(ticket)),");
     expect(app).toContain("${renderLinearPriorityIcon(ticket.priority)}");
     expect(app).not.toContain('const priorityName = ticket.priority ? `P${ticket.priority}` : "";');
     expect(app).not.toContain('<span class="ticket-priority">${escapeHtml(priorityName)}</span>');
@@ -1238,12 +1276,15 @@ describe("Turbopump pane markup", () => {
     expect(app.indexOf("${renderLinearPriorityIcon(ticket.priority)}")).toBeLessThan(app.indexOf('class="ticket-project"'));
     expect(css).toContain(".ticket-meta {\n  grid-column: 1 / -1;\n  grid-row: 3;\n  display: flex;");
     expect(css).toContain("justify-content: flex-start;");
-    expect(css).toContain(".ticket-meta .linear-status-icon {\n  width: 13px;");
-    expect(css).toContain(".ticket-meta .linear-status-icon-glyph {\n  width: 13px;");
+    expect(css).toContain(".ticket-meta .linear-status-icon {\n  width: 15px;");
+    expect(css).toContain(".ticket-meta .linear-status-icon-glyph {\n  width: 15px;");
     expect(css).toContain(".ticket-priority {\n  display: inline-grid;");
     expect(css).toContain(".ticket-priority.urgent {\n  color: var(--danger);\n}");
     expect(css).toContain(".ticket-priority svg");
     expect(css).toContain("fill: currentColor;\n  stroke: none;\n  stroke-width: 0;");
+    expect(css).toContain(".github-ci-pill,\nbody.theme-dark .github-ci-pill {\n  border: 0;\n  background: transparent;");
+    expect(app).toContain('if (event.target.closest(".github-ci-pill")) return;');
+    expect(app).toContain("if (event.target !== card) return;");
   });
 
   test("supports client-side pinned Linear tickets at the top of the drawer", () => {
@@ -1476,7 +1517,7 @@ describe("Turbopump pane markup", () => {
   });
 
   test("renders Markdown headings, inline formatting, and code blocks in Linear and Agent panes", () => {
-    expect(app).toContain('import { renderInlineMarkdown, renderLinearMarkdown } from "../linear-markdown.js";');
+    expect(app).toContain('import { linearImageSource, renderInlineMarkdown, renderLinearMarkdown } from "../linear-markdown.js";');
     expect(app).toContain("function usesTerminalBlockMarkdown(source)");
     expect(app).toContain('["user", "user:queued", "agent", "agent:message", "agent:thinking", "agent:reasoning"].includes(source)');
     expect(app).toContain('document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre")');
@@ -1490,21 +1531,25 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("markPendingTerminalTurnGroups(visibleGroups, flow);");
     expect(app).toContain("markLiveTerminalGroup(visibleGroups, flow);");
     expect(app).toContain('? `<pre class="terminal-raw-markdown">${escapeHtml(message)}</pre>`');
-    expect(app).toContain("function renderTerminalStreamingTextOutput(message)");
+    expect(app).toContain("function renderTerminalStreamingTextOutput(message, options = {})");
     expect(app).toContain('class="terminal-streaming-markdown"');
     expect(app).toContain('return `<div class="terminal-streaming-markdown">${renderLinearMarkdown(message, "", {');
     expect(app).toContain("compactBlankLines: true");
     expect(app).toContain("copyCode: false");
-    expect(app).toContain("body.innerHTML = renderTerminalStreamingTextOutput(message);\n      highlightCodeBlocks(body);");
+    expect(app).toContain("body.innerHTML = renderTerminalStreamingTextOutput(message, { flowId: group.flowId });\n      highlightCodeBlocks(body);");
     expect(app).not.toContain("parts.push(renderTextWithSentenceBreaks(line));");
     expect(app).toContain("preserveTrailingNewlines: Boolean(group.liveStreaming)");
-    expect(app).toContain("renderTerminalMarkdownOutput(message, { copyCode: !group.turnPending })");
+    expect(app).toContain("renderTerminalMarkdownOutput(message, { copyCode: !group.turnPending, flowId: group.flowId })");
     expect(app).toContain("if (rawAgentMarkdownForFlow(group.flowId) && usesRawAgentMarkdown(group.source))");
     expect(app).toContain("body.innerHTML = renderTerminalMarkdownOutput(message, { raw: true });");
     expect(app).toContain("header.replaceChildren(marker, label, ...(time ? [time] : []));");
     expect(usesRawAgentMarkdown("agent:message")).toBe(true);
     expect(usesRawAgentMarkdown("user")).toBe(false);
     expect(renderTerminalMarkdownOutput("**bold**", { raw: true })).toBe('<pre class="terminal-raw-markdown">**bold**</pre>');
+    const proofPath = "/workspace/artifacts/proof.png";
+    const proof = renderTerminalMarkdownOutput(`![Proof](<${proofPath}>)`, { flowId: "flow-1" });
+    expect(proof).toContain(`/api/flows/flow-1/context-images/preview?path=${encodeURIComponent(proofPath)}`);
+    expect(proof).not.toContain("<code>");
     expect(app).toContain("function highlightCodeBlocks(root)");
     expect(app).toContain("window.Prism?.highlightAllUnder?.(root);");
     expect(app).toContain('event.target.closest("[data-code-copy]")');
@@ -1526,9 +1571,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (shouldHideFloatingLinearOptionsForScroll(event)) hideFloatingLinearOptions();");
     expect(app).toContain("function splitTerminalAttachedImages(message)");
     expect(app).toContain('const marker = "\\n\\nAttached images:\\n";');
-    expect(app).toContain("function renderTerminalAttachedImages(images)");
+    expect(app).toContain("function renderTerminalAttachedImages(images, flowId)");
     expect(app).toContain('class="terminal-attached-images"');
-    expect(app).toContain("function agentImagePreviewSource(image)");
+    expect(app).toContain("function agentImagePreviewSource(image, flowId = state.selectedFlowId)");
     expect(app).toContain('data-image-preview data-image-preview-src="${escapeAttribute(previewSrc)}" data-image-preview-alt="${escapeAttribute(label)}"');
     expect(app).toContain('/context-images/preview?path=${encodeURIComponent(path)}');
     expect(app).toContain('<img class="agent-image-chip-preview" src="${escapeAttribute(previewSrc)}" alt="${escapeAttribute(label)}" title="${escapeAttribute(label)}">');
@@ -2064,26 +2109,23 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("syncSelectedGithubCiFlow(flow);");
     expect(app).toContain("function renderGithubCiPill(flow)");
     expect(app).toContain("if (!flow?.prUrl) return \"\";");
-    expect(app).toContain("const GITHUB_CI_RECENT_MS = 30 * 60 * 1000;");
-    expect(app).toContain("function githubCiStatusRecent(flow)");
     expect(app).toContain('if (status === "success" || status === "pending" || status === "failure" || status === "merged") return status;');
     expect(app).toContain('if (status === "merged") return "GitHub PR merged";');
-    expect(app).toContain('const statusVisible = githubCiStatusRecent(flow) && (status !== "unknown" || Boolean(flow.githubCiDescription));');
+    expect(app).toContain('const statusVisible = status !== "unknown" || Boolean(flow.githubCiDescription);');
     expect(app).toContain('flow.githubCiDescription || "GitHub CI status unknown";');
-    expect(app).toContain('${status === "unknown" ? "!" : ""}</span>` : ""}');
+    expect(app).not.toContain("github-ci-dot");
     expect(app).toContain('href="${escapeAttribute(flow.prUrl)}"');
     expect(app).toContain('class="github-ci-pill${statusVisible ? ` github-ci-pill-${status}` : ""}"');
     expect(app).toContain('aria-label="${escapeAttribute(label)}" title="${escapeAttribute(title)}"');
     expect(app).toContain("function githubCiOnlyFlowChanges(previousFlows, nextFlows)");
-    expect(app).toContain("if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {\n        renderFlowPane();\n        return;\n      }");
+    expect(app).toContain("if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {\n        renderTickets();\n        renderFlowPane();\n        return;\n      }");
     expect(app).not.toContain("setInterval(() => void loadGithub");
-    expect(css).toContain(".github-ci-pill-success .github-ci-dot");
-    expect(css).toContain(".github-ci-pill-merged .github-ci-dot {\n  background: #8b5cf6;\n}");
-    expect(css).toContain(".github-ci-pill-pending .github-ci-dot");
-    expect(css).toContain(".github-ci-pill-unknown .github-ci-dot {\n  width: auto;\n  height: auto;");
-    expect(css).toContain("color: #cf222e;\n  font-size: 13px;\n  font-weight: 800;");
-    expect(css).toContain("body.theme-dark .github-ci-pill-unknown .github-ci-dot {\n  color: #ff7b72;\n}");
-    expect(css).toContain(".github-ci-pill-failure .github-ci-dot {\n  background: #ef4444;\n}");
+    expect(css).toContain(".github-ci-pill-success svg {\n  fill: #2da44e;\n}");
+    expect(css).toContain(".github-ci-pill-merged svg {\n  fill: #8b5cf6;\n}");
+    expect(css).toContain(".github-ci-pill-pending svg {\n  fill: #fbbf24;\n}");
+    expect(css).toContain(".github-ci-pill-unknown svg {\n  fill: #cf222e;\n}");
+    expect(css).toContain("body.theme-dark .github-ci-pill-unknown svg {\n  fill: #ff7b72;\n}");
+    expect(css).toContain(".github-ci-pill-failure svg {\n  fill: #ef4444;\n}");
   });
 
   test("interrupts active agent turns instead of killing the app server", () => {
@@ -2657,7 +2699,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".terminal-entry-body .ansi-underline");
   });
 
-  test("loads recent agent turns first and fetches older logs from the load more button", () => {
+  test("loads older terminal rows from the load more button", () => {
     expect(app).toContain("if (flow) {\n    await loadLogs(flow.id);");
     expect(app).not.toContain("loadAllLogs");
     expect(app).toContain("function appendLogEntry(log)");
@@ -2714,7 +2756,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("const before = state.firstLogId.get(id) || Number.MAX_SAFE_INTEGER;");
     expect(app).toContain('wsRequest("logs", { flowId: id, before, limit: LOG_PAGE_SIZE })');
     expect(app).toContain('wsRequest("logs", { flowId: id, after: cursor, limit: LOG_PAGE_SIZE })');
-    expect(app).toContain("if (terminalTurnCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;");
+    expect(app).toContain("if (terminalRowCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;");
     expect(app).toContain("if (!data.logs.length) break;");
     expect(app).toContain("if (data.logs.length < LOG_PAGE_SIZE) break;");
     expect(app).toContain("cursor = Math.max(cursor, highestLogId);");
@@ -2722,22 +2764,26 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("state.logBackfilledFlowIds.add(id);");
     expect(app).toContain("state.terminalVisibleTurnCounts.set(id, AGENT_TRACE_INITIAL_TURN_COUNT);");
     expect(app).toContain("async function loadOlderTerminalTraceMessages(options = {})");
-    expect(app).toContain("state.terminalVisibleTurnCounts.set(flowId, visibleCount + AGENT_TRACE_TURN_PAGE_SIZE);");
+    expect(app).toContain("const targetVisibleCount = visibleCount + AGENT_TRACE_TURN_PAGE_SIZE;");
+    expect(app).toContain("state.terminalVisibleTurnCounts.set(flowId, targetVisibleCount);");
+    expect(app).toContain("while (terminalRowCount(groups) < targetVisibleCount && !state.logOlderCompleteFlowIds.has(flowId))");
     expect(app).toContain('wsRequest("logs", { flowId, before, limit: LOG_PAGE_SIZE })');
     expect(app).toContain("function visibleTerminalGroups(flowId, groups)");
     expect(app).toContain("function terminalVisibleTurnStartIndex(flowId, groups)");
-    expect(app).toContain("if (!isSubmittedUserLogSource(groups[index].source)) continue;");
-    expect(app).toContain("if (seenTurns >= visibleTurns) return index;");
-    expect(app).toContain("function terminalTurnCount(groups)");
+    expect(app).toContain("if (!isSubmittedUserLogSource(groups[index].source) && !isAgentMessageSource(groups[index].source)) continue;");
+    expect(app).toContain("function terminalRowCount(groups)");
+    expect(app).toContain("return groups.filter((group) => isSubmittedUserLogSource(group.source) || isAgentMessageSource(group.source)).length;");
     expect(app).toContain("function terminalTraceCanLoadMore(flowId, groups)");
+    expect(app).toContain("return terminalRowCount(groups) > terminalVisibleTurnCount(flowId) || !state.logOlderCompleteFlowIds.has(flowId);");
     expect(app).toContain("if (canLoadMore) appendTerminalLoadMoreButton(fragment, { loading: loadMoreLoading });");
     expect(app).toContain("function appendTerminalLoadMoreButton(fragment, options = {})");
     expect(app).toContain('button.className = "terminal-load-more";');
     expect(app).toContain('button.textContent = options.loading ? "loading..." : "load more";');
     expect(app).toContain('event.target.closest(".terminal-load-more")');
     expect(app).toContain("if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true });");
-    expect(app).toContain("terminal.scrollTop = scrollTopBeforeRender + (terminal.scrollHeight - scrollHeightBeforeRender);");
+    expect(app).toContain("if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true, flowId });");
     expect(app).not.toContain("terminal.scrollTop <= 12 && !terminalAtLatest(terminal)");
+    expect(app).toContain("terminal.scrollTop = scrollTopBeforeRender + (terminal.scrollHeight - scrollHeightBeforeRender);");
     expect(css).toContain(".terminal-load-more-row");
     expect(css).toContain(".terminal-load-more {");
     expect(app).toContain("function loadSelectedFlowLogs(issueId, flowId, options = {})");
@@ -2747,6 +2793,27 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("requestFlowSnapshot(flow.id);");
     expect(app).toContain("if (data.flow) upsertFlow(data.flow);");
     expect(app).toContain("void loadLogs(flow.id, { resetCursor: true });");
+  });
+
+  test("counts only human prompts and turn-end responses for pagination", () => {
+    const flowId = "trace-pagination-flow";
+    state.terminalVisibleTurnCounts.set(flowId, 2);
+    const groups = [
+      { source: "user" },
+      { source: "agent:trace-group", children: [{ source: "user" }, { source: "agent:tool" }, { source: "agent:tool" }] },
+      { source: "agent:message" },
+      { source: "agent:thinking" },
+      { source: "user" },
+      { source: "agent:trace-group", children: [{ source: "agent:tool" }, { source: "agent:tool" }] },
+    ];
+
+    expect(terminalRowCount(groups)).toBe(3);
+    expect(terminalVisibleTurnStartIndex(flowId, groups)).toBe(2);
+    state.terminalVisibleTurnCounts.set(flowId, 3);
+    state.logOlderCompleteFlowIds.add(flowId);
+    expect(terminalTraceCanLoadMore(flowId, groups)).toBe(false);
+    state.terminalVisibleTurnCounts.delete(flowId);
+    state.logOlderCompleteFlowIds.delete(flowId);
   });
 
   test("keeps ticket switching scoped to the selected panes", () => {

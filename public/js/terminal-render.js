@@ -1,4 +1,4 @@
-import { renderInlineMarkdown, renderLinearMarkdown } from "../linear-markdown.js";
+import { linearImageSource, renderInlineMarkdown, renderLinearMarkdown } from "../linear-markdown.js";
 import { renderAnsiText } from "./ansi.js";
 import {
   AGENT_TRACE_INITIAL_TURN_COUNT,
@@ -14,10 +14,10 @@ import { agentWorkingForFlow, flowShellLive, syncAgentWorkingPushState, upsertFl
 import { applyFlowSplitSize, applyShellOutputSplitSize } from "./layout.js";
 import { deleteOutputLogGroup } from "./logs.js";
 import { api } from "./net.js";
-import { renderAgentImageChip } from "./prompt.js";
+import { agentImagePreviewSource, renderAgentImageChip } from "./prompt.js";
 import { splitAgentPaneFlowId, splitShellOutputPane, splitShellPaneFlowId, splitTerminal } from "./split.js";
 import { els, state } from "./state.js";
-import { isSubmittedUserLogSource, logMeta, shellOutputGroups, terminalGroups } from "./terminal-groups.js";
+import { isAgentMessageSource, isSubmittedUserLogSource, logMeta, shellOutputGroups, terminalGroups } from "./terminal-groups.js";
 import { copyTextToClipboard, escapeHtml, toast } from "./ui.js";
 
 export function shellOutputPane() {
@@ -228,19 +228,20 @@ export function splitTerminalAttachedImages(message) {
   return images.length ? { message: visibleMessage, images } : { message: text, images: [] };
 }
 
-export function renderTerminalAttachedImages(images) {
+export function renderTerminalAttachedImages(images, flowId) {
   if (!images.length) return "";
-  return `<div class="terminal-attached-images">${images.map((image) => renderAgentImageChip(image)).join("")}</div>`;
+  return `<div class="terminal-attached-images">${images.map((image) => renderAgentImageChip(image, { flowId })).join("")}</div>`;
 }
 
 export function renderTerminalMarkdownContent(message, options = {}) {
   const parsed = splitTerminalAttachedImages(message);
   return `${renderLinearMarkdown(parsed.message, "", {
-    images: false,
+    images: true,
     links: true,
     compactBlankLines: true,
     copyCode: options.copyCode !== false,
-  })}${renderTerminalAttachedImages(parsed.images)}`;
+    imageSource: (path) => path.startsWith("/") ? agentImagePreviewSource({ path }, options.flowId) : linearImageSource(path),
+  })}${renderTerminalAttachedImages(parsed.images, options.flowId)}`;
 }
 
 export function renderTerminalMarkdownOutput(message, options = {}) {
@@ -249,12 +250,13 @@ export function renderTerminalMarkdownOutput(message, options = {}) {
     : renderTerminalMarkdownContent(message, options);
 }
 
-export function renderTerminalStreamingTextOutput(message) {
+export function renderTerminalStreamingTextOutput(message, options = {}) {
   return `<div class="terminal-streaming-markdown">${renderLinearMarkdown(message, "", {
-    images: false,
+    images: true,
     links: true,
     compactBlankLines: true,
     copyCode: false,
+    imageSource: (path) => path.startsWith("/") ? agentImagePreviewSource({ path }, options.flowId) : linearImageSource(path),
   })}</div>`;
 }
 
@@ -519,10 +521,10 @@ export function appendTerminalBlock(fragment, group, options = {}) {
       body.innerHTML = renderTerminalMarkdownOutput(message, { raw: true });
     } else if (group.liveStreaming) {
       body.classList.add("terminal-streaming-output");
-      body.innerHTML = renderTerminalStreamingTextOutput(message);
+      body.innerHTML = renderTerminalStreamingTextOutput(message, { flowId: group.flowId });
       highlightCodeBlocks(body);
     } else {
-      body.innerHTML = renderTerminalMarkdownOutput(message, { copyCode: !group.turnPending });
+      body.innerHTML = renderTerminalMarkdownOutput(message, { copyCode: !group.turnPending, flowId: group.flowId });
       highlightCodeBlocks(body);
     }
   } else if (meta.tone === "output" || meta.tone === "error" || group.source === "serve" || group.source === "serve:stderr") {
@@ -963,11 +965,22 @@ export function renderableTerminalGroups(groups, options = {}) {
   if (!agentOutputSimpleMode(options.flowId)) return groups;
   const latestToolIndex = options.agentWorking && !hasLiveAgentReplyGroup(groups) ? latestAgentToolOutputGroupIndex(groups) : -1;
   const latestToolCallCount = latestToolIndex === -1 ? 0 : toolCallCountSincePreviousThought(groups, latestToolIndex);
+  const latestToolTurnStartId = groups[latestToolIndex]?.turnStartId;
+  const latestToolParentIndex = groups.findLastIndex(
+    (group, index) =>
+      index < latestToolIndex &&
+      latestToolTurnStartId &&
+      group.turnStartId === latestToolTurnStartId &&
+      !group.traceContent &&
+      isAgentThoughtOrMessageGroup(group),
+  );
+  if (latestToolIndex !== -1) {
+    groups[latestToolIndex].latestVisibleToolOutput = true;
+    groups[latestToolIndex].simpleModeToolCallCount = latestToolCallCount;
+  }
   const result = [];
   for (const [index, group] of groups.entries()) {
-    const latestVisibleToolOutput = index === latestToolIndex && isAgentToolOutputGroup(group);
-    group.latestVisibleToolOutput = latestVisibleToolOutput;
-    if (latestVisibleToolOutput) group.simpleModeToolCallCount = latestToolCallCount;
+    if (index === latestToolIndex && latestToolParentIndex !== -1) continue;
     if (group.source === "agent:trace-group") {
       result.push({ ...group, children: traceThoughtGroups(group.children), defaultOpen: false });
       continue;
@@ -975,27 +988,28 @@ export function renderableTerminalGroups(groups, options = {}) {
     if (group.traceContent && index !== latestToolIndex) continue;
     if (isAgentToolOutputGroup(group) && index !== latestToolIndex) continue;
     result.push(group);
+    if (index === latestToolParentIndex) result.push(groups[latestToolIndex]);
   }
   return result;
 }
 
-export function terminalTraceCanLoadMore(flowId, groups) {
-  return terminalVisibleTurnStartIndex(flowId, groups) > 0 || !state.logOlderCompleteFlowIds.has(flowId);
-}
-
 export function terminalVisibleTurnStartIndex(flowId, groups) {
-  const visibleTurns = terminalVisibleTurnCount(flowId);
-  let seenTurns = 0;
+  const visibleCount = terminalVisibleTurnCount(flowId);
+  let seen = 0;
   for (let index = groups.length - 1; index >= 0; index -= 1) {
-    if (!isSubmittedUserLogSource(groups[index].source)) continue;
-    seenTurns += 1;
-    if (seenTurns >= visibleTurns) return index;
+    if (!isSubmittedUserLogSource(groups[index].source) && !isAgentMessageSource(groups[index].source)) continue;
+    seen += 1;
+    if (seen >= visibleCount) return index;
   }
   return 0;
 }
 
-export function terminalTurnCount(groups) {
-  return groups.filter((group) => isSubmittedUserLogSource(group.source)).length;
+export function terminalRowCount(groups) {
+  return groups.filter((group) => isSubmittedUserLogSource(group.source) || isAgentMessageSource(group.source)).length;
+}
+
+export function terminalTraceCanLoadMore(flowId, groups) {
+  return terminalRowCount(groups) > terminalVisibleTurnCount(flowId) || !state.logOlderCompleteFlowIds.has(flowId);
 }
 
 export function scheduleLogRender(id, options = {}) {

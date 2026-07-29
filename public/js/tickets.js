@@ -385,6 +385,7 @@ export function renderTickets() {
         ticket.priority || "",
         ticket.project?.name || "",
         ticket.flowId || "",
+        renderGithubCiPill(flowForTicket(ticket)),
       ].join("\u001f"),
     )
     .join("\u001e")
@@ -1310,6 +1311,7 @@ export function renderTicketCard(ticket) {
     <div class="ticket-meta">
       ${renderLinearStatusIcon(ticket)}
       ${renderLinearPriorityIcon(ticket.priority)}
+      ${renderGithubCiPill(flowForTicket(ticket))}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>
     ${
@@ -1344,12 +1346,14 @@ export function renderTicketCard(ticket) {
       state.suppressTicketClick = false;
     }, 0);
   });
-  card.addEventListener("click", () => {
+  card.addEventListener("click", (event) => {
     if (state.suppressTicketClick) return;
+    if (event.target.closest(".github-ci-pill")) return;
     void openTicketInFlowPane(ticket);
   });
   card.addEventListener("contextmenu", (event) => showTicketOptionsMenu(event, ticket));
   card.addEventListener("keydown", (event) => {
+    if (event.target !== card) return;
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     void openTicketInFlowPane(ticket);

@@ -33,7 +33,7 @@ describe("Agent providers", () => {
 
   test("keeps codex behavior behind the codex provider", () => {
     expect(server).toContain("const codexProvider: AgentProvider = {");
-    expect(server).toContain('["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]');
+    expect(server).toContain('["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]');
     expect(server).toContain('const codexDefaultModel = "gpt-5.6-sol";');
     expect(server).toContain("model: flow.agentModel || codexDefaultModel,");
     expect(server).toContain("async function handleCodexSlashCommand(flow: Flow, command: string, message: string, userLogId: number)");
@@ -117,6 +117,15 @@ describe("Agent providers", () => {
     expect(server).toContain("agentContextTokensUsed: 0");
     expect(server).toContain("finishClaudeCompaction(runtime, subtype === \"success\");");
     expect(app).toContain('{ name: "/compact", description: "Compact the current Claude session context" }');
+    expect(server).toContain("applyFlagSettings(settings: { effortLevel?: ReasoningEffort; fastMode?: boolean })");
+    expect(server).toContain("fastMode: activeFlow.agentServiceTier === \"fast\"");
+    expect(server).toContain("query.applyFlagSettings({ effortLevel: reasoningEffort })");
+    expect(server).toContain("query.applyFlagSettings({ fastMode })");
+    expect(server).toContain('{ name: "/effort", description: "Set Claude reasoning effort"');
+    expect(server).toContain('{ name: "/fast", description: "Toggle fast mode for this flow" }');
+    expect(app).toContain('{ name: "/effort", description: "Set Claude reasoning effort" }');
+    expect(app).toContain('{ name: "/fast", description: "Toggle fast mode for this flow" }');
+    expect(app).toContain('"/effort": SLASH_COMMAND_EXPANSIONS["/effort"]');
   });
 
   test("switches providers as a fresh-session handoff with the full transcript", () => {

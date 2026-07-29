@@ -729,7 +729,7 @@ export function renderAgentImageContext(
 export function renderAgentImageChip(image, options = {}) {
   const label = image.name || imageLabelFromPath(image.relativePath || image.path) || "image";
   const removable = options.index !== undefined;
-  const previewSrc = agentImagePreviewSource(image);
+  const previewSrc = agentImagePreviewSource(image, options.flowId);
   const previewAttrs = previewSrc
     ? ` data-image-preview data-image-preview-src="${escapeAttribute(previewSrc)}" data-image-preview-alt="${escapeAttribute(label)}"`
     : "";
@@ -744,11 +744,11 @@ export function renderAgentImageChip(image, options = {}) {
   `;
 }
 
-export function agentImagePreviewSource(image) {
-  if (!state.selectedFlowId) return "";
+export function agentImagePreviewSource(image, flowId = state.selectedFlowId) {
+  if (!flowId) return "";
   const path = image.relativePath || image.path || "";
   if (!path) return "";
-  return `/api/flows/${encodeURIComponent(state.selectedFlowId)}/context-images/preview?path=${encodeURIComponent(path)}`;
+  return `/api/flows/${encodeURIComponent(flowId)}/context-images/preview?path=${encodeURIComponent(path)}`;
 }
 
 export function imageLabelFromPath(path) {

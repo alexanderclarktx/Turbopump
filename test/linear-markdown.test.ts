@@ -69,6 +69,17 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("\n        <figure");
   });
 
+  test("renders images through a custom source", () => {
+    const path = "/workspace/artifacts/proof.png";
+    const html = renderLinearMarkdown(`- [Proof](<${path}>)`, "", {
+      imageSource: (url) => `/preview?path=${encodeURIComponent(url)}`,
+    });
+
+    expect(html).toContain("<ul><li><figure");
+    expect(html).toContain(`src="/preview?path=${encodeURIComponent(path)}"`);
+    expect(html).not.toContain("<code>");
+  });
+
   test("escapes non-link HTML", () => {
     const html = renderLinearMarkdown('<script>alert("x")</script>');
 

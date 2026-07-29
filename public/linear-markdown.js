@@ -1,5 +1,6 @@
 export function renderLinearMarkdown(value, fallback = "", options = {}) {
   const { images = true, links = true, compactBlankLines = false, copyCode = true } = options;
+  const inlineOptions = { ...options, images, links };
   const text = String(value || fallback);
   if (!text) return "";
 
@@ -19,7 +20,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
-      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2], { images: false, links })}</h${level}>`);
+      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2], { ...inlineOptions, images: false })}</h${level}>`);
       index += 1;
       continue;
     }
@@ -27,7 +28,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
     if (/^>\s?/.test(line)) {
       const quote = [];
       while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quote.push(`&gt; ${renderInlineMarkdown(lines[index].replace(/^>\s?/, ""), { images, links })}`);
+        quote.push(`&gt; ${renderInlineMarkdown(lines[index].replace(/^>\s?/, ""), inlineOptions)}`);
         index += 1;
       }
       blocks.push(`<blockquote>${quote.join("<br>")}</blockquote>`);
@@ -35,7 +36,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
     }
 
     if (isTableStart(lines, index)) {
-      const parsed = renderTable(lines, index, { images, links });
+      const parsed = renderTable(lines, index, inlineOptions);
       blocks.push(parsed.html);
       index = parsed.index;
       continue;
@@ -43,7 +44,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
 
     const list = matchListLine(line);
     if (list) {
-      const parsed = renderList(lines, index, list.indent, list.ordered, { images, links }, list.number);
+      const parsed = renderList(lines, index, list.indent, list.ordered, inlineOptions, list.number);
       blocks.push(parsed.html);
       index = parsed.index;
       continue;
@@ -77,7 +78,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
       ) {
         break;
       }
-      paragraph.push(renderInlineMarkdown(current, { images, links }));
+      paragraph.push(renderInlineMarkdown(current, inlineOptions));
       index += 1;
     }
     blocks.push(paragraph.join("<br>"));
@@ -365,8 +366,8 @@ export function renderInlineMarkdown(value, options = {}) {
       html += `<strong>${renderInlineMarkdown(bold, options)}</strong>`;
     } else if (emphasis !== undefined) {
       html += `<em>${renderInlineMarkdown(emphasis, options)}</em>`;
-    } else if (imageMarker && images) {
-      const imageSrc = linearImageSource(url);
+    } else if (images && (imageMarker || (options.imageSource && isLocalImageLink(url)))) {
+      const imageSrc = (options.imageSource || linearImageSource)(url);
       html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" data-image-preview data-image-preview-alt="${escapeAttribute(label || "Linear attachment")}"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;
     } else if (isLocalFileLink(url)) {
       html += `<code>${escapeHtml(label || url)}</code>`;
@@ -390,6 +391,10 @@ function trimBareUrl(url) {
 function isLocalFileLink(url) {
   const value = String(url || "");
   return /^\/(?:Users|home|workspace|workspaces|tmp|private|var|Volumes)\//.test(value);
+}
+
+function isLocalImageLink(url) {
+  return isLocalFileLink(url) && /\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(url);
 }
 
 export function renderTextWithSentenceBreaks(value) {

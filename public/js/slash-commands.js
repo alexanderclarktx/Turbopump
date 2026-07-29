@@ -7,11 +7,8 @@ const AGENT_MODELS = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
   "claude-fable-5",
-  "claude-opus-4-8",
-  "claude-sonnet-5",
+  "claude-opus-5",
 ];
 
 export const SLASH_COMMANDS = [
@@ -51,6 +48,8 @@ export const SLASH_COMMAND_EXPANSIONS = {
 export const CLAUDE_SLASH_COMMANDS = [
   { name: "/clear", description: "Start a fresh Claude session for this flow" },
   { name: "/compact", description: "Compact the current Claude session context" },
+  { name: "/effort", description: "Set Claude reasoning effort" },
+  { name: "/fast", description: "Toggle fast mode for this flow" },
   { name: "/model", description: "Set the agent model for this flow" },
   { name: "/permissions", description: "Set Claude permissions for this flow" },
   { name: "/review", description: "Ask Claude to review the current changes" },
@@ -58,6 +57,7 @@ export const CLAUDE_SLASH_COMMANDS = [
 ];
 
 export const CLAUDE_SLASH_COMMAND_EXPANSIONS = {
+  "/effort": SLASH_COMMAND_EXPANSIONS["/effort"],
   "/model": SLASH_COMMAND_EXPANSIONS["/model"],
   "/permissions": SLASH_COMMAND_EXPANSIONS["/permissions"],
   "/review": SLASH_COMMAND_EXPANSIONS["/review"],
