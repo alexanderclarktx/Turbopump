@@ -50,10 +50,30 @@
               <span class="settings-section-chevron" aria-hidden="true">⌄</span>
             </button>
             <div class="settings-section-body">
-              <span id="linearState" class="pill">Linear disconnected</span>
+              <div class="integration-state">
+                <span id="linearState" class="pill">Linear disconnected</span>
+                <button id="disconnectLinear" class="integration-disconnect" type="button" aria-label="Disconnect Linear" hidden>×</button>
+              </div>
               <form id="linearKeyForm" class="linear-key-form">
                 <input id="linearApiKey" type="password" placeholder="Linear API key" autocomplete="off" />
                 <button type="submit">Connect Linear</button>
+              </form>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <button class="settings-section-toggle" type="button" aria-expanded="true">
+              <span>GitHub</span>
+              <span class="settings-section-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="settings-section-body">
+              <div class="integration-state">
+                <span id="githubState" class="pill">GitHub disconnected</span>
+                <button id="disconnectGithub" class="integration-disconnect" type="button" aria-label="Disconnect GitHub" hidden>×</button>
+              </div>
+              <form id="githubKeyForm" class="linear-key-form">
+                <input id="githubApiKey" type="password" placeholder="GitHub personal access token" autocomplete="off" />
+                <button type="submit">Connect GitHub</button>
               </form>
             </div>
           </section>

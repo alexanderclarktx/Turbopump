@@ -148,6 +148,15 @@ import {
   updateLinearState,
 } from "./js/tickets.js";
 
+function updateGithubState(github) {
+  els.githubState.textContent = github.signedIn
+    ? `GitHub connected: ${github.viewerName}`
+    : "GitHub disconnected";
+  els.githubState.classList.toggle("live", github.signedIn);
+  els.disconnectGithub.hidden = !github.signedIn;
+  els.githubKeyForm.classList.toggle("hidden", github.signedIn);
+}
+
 async function bootstrap() {
   applyTheme(state.theme);
   void updateBrowserTabNotification();
@@ -172,6 +181,7 @@ async function bootstrap() {
   state.linearSignedIn = data.linear.signedIn;
   setDefaultSettingsState(data.linear);
   updateLinearState(data.linear);
+  updateGithubState(data.github);
   renderEnvEditor(env.contents || "");
   state.lastSavedEnv = envEditorContents();
   render();
@@ -288,6 +298,40 @@ els.linearKeyForm.addEventListener("submit", async (event) => {
   } catch (error) {
     alert(error.message);
     els.ticketState.textContent = error.message;
+  }
+});
+
+els.githubKeyForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const apiKey = els.githubApiKey.value.trim();
+  if (!apiKey) return;
+  try {
+    const data = await api("/api/github/config", {
+      method: "PUT",
+      body: JSON.stringify({ apiKey }),
+    });
+    els.githubApiKey.value = "";
+    updateGithubState({ signedIn: true, viewerName: data.viewer.login });
+  } catch (error) {
+    alert(error.message);
+  }
+});
+
+els.disconnectLinear.addEventListener("click", async () => {
+  try {
+    await api("/api/linear/config", { method: "DELETE" });
+    updateLinearState({ signedIn: false });
+  } catch (error) {
+    alert(error.message);
+  }
+});
+
+els.disconnectGithub.addEventListener("click", async () => {
+  try {
+    await api("/api/github/config", { method: "DELETE" });
+    updateGithubState({ signedIn: false });
+  } catch (error) {
+    alert(error.message);
   }
 });
 

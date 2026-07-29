@@ -4,6 +4,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  realpathSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -143,11 +144,11 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
-const agentModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+const agentModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
 const codexDefaultModel = "gpt-5.6-sol";
 const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
 const defaultAgentProviderSettingKey = "defaultAgentProvider";
-const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"]);
+const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-5"]);
 const allAgentModels = [...agentModels, ...claudeAgentModels];
 const claudeDefaultModel = "claude-fable-5";
 const claudeCompactModel = "claude-haiku-4-5";
@@ -340,6 +341,7 @@ type ClaudeSdkMessage = Record<string, unknown> & { type?: string };
 type ClaudeQuery = AsyncIterable<ClaudeSdkMessage> & {
   interrupt(): Promise<void>;
   setModel(model?: string): Promise<void>;
+  applyFlagSettings(settings: { effortLevel?: ReasoningEffort; fastMode?: boolean }): Promise<void>;
 };
 
 type ClaudeSdkModule = {
@@ -1032,14 +1034,20 @@ async function saveFlowContextImages(flow: Flow, formData: FormData) {
 
 async function serveFlowContextImage(flow: Flow, rawPath: string) {
   if (!rawPath) return new Response("Image path is required.", { status: 400 });
-  const contextDir = join(flow.checkoutPath, ".flow", "context");
   const resolved = rawPath.startsWith("/") ? resolve(rawPath) : resolve(flow.checkoutPath, rawPath);
-  if (!pathIsInsideDirectory(resolved, contextDir)) return new Response("Not found", { status: 404 });
+  if (!pathIsInsideDirectory(resolved, flow.checkoutPath)) return new Response("Not found", { status: 404 });
   const contentType = imageContentType(resolved);
   if (!contentType) return new Response("Unsupported image type.", { status: 400 });
-  const file = Bun.file(resolved);
-  if (!(await file.exists())) return new Response("Not found", { status: 404 });
-  return new Response(file, { headers: { "content-type": contentType } });
+  let target: string;
+  try {
+    target = realpathSync(resolved);
+  } catch {
+    return new Response("Not found", { status: 404 });
+  }
+  if (!pathIsInsideDirectory(target, realpathSync(flow.checkoutPath))) {
+    return new Response("Not found", { status: 404 });
+  }
+  return new Response(Bun.file(target), { headers: { "content-type": contentType } });
 }
 
 function normalizePrUrl(value: unknown) {
@@ -1112,37 +1120,57 @@ function githubRollupState(check: { status?: string | null; conclusion?: string 
 
 async function getGithubCiStatus(flow: Flow) {
   try {
-    const pr = JSON.parse(await runGh(["pr", "view", flow.prUrl, "--json", "statusCheckRollup,headRefOid,state,url"], flow)) as {
-      headRefOid?: string;
-      state?: string;
-      url?: string;
-      statusCheckRollup?: Array<{
-        status?: string | null;
-        conclusion?: string | null;
-        state?: string | null;
-        detailsUrl?: string | null;
-        targetUrl?: string | null;
-      }>;
-    };
-    if (String(pr.state || "").toLowerCase() === "merged") {
+    const { owner, repo, number } = githubPullRequest(flow.prUrl);
+    const pr = await githubRequest<{
+      merged_at?: string | null;
+      html_url?: string;
+      head?: { sha?: string };
+    }>(`/repos/${owner}/${repo}/pulls/${number}`);
+    if (pr.merged_at) {
       return {
         state: "merged" as GithubCiState,
         prUrl: flow.prUrl,
-        sha: pr.headRefOid || "",
+        sha: pr.head?.sha || "",
         description: "GitHub PR merged.",
-        targetUrl: pr.url || flow.prUrl,
+        targetUrl: pr.html_url || flow.prUrl,
         checkedAt: now(),
       };
     }
-    const checks = pr.statusCheckRollup || [];
-    const states = checks.map(githubRollupState);
-    const state = combineGithubCiStates(states);
+    const sha = pr.head?.sha || "";
+    // ponytail: fine-grained PATs cannot read the Checks API; use GitHub App auth if third-party check runs need rollup.
+    const [runs, statuses] = await Promise.all([
+      githubRequest<{
+        workflow_runs?: Array<{
+          workflow_id?: number;
+          status?: string | null;
+          conclusion?: string | null;
+          html_url?: string | null;
+        }>;
+      }>(`/repos/${owner}/${repo}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`),
+      githubRequest<{
+        statuses?: Array<{
+          state?: string | null;
+          target_url?: string | null;
+        }>;
+      }>(`/repos/${owner}/${repo}/commits/${encodeURIComponent(sha)}/status`),
+    ]);
+    const seenWorkflowIds = new Set<number>();
+    const latestWorkflowRuns = (runs.workflow_runs || []).filter((run) => {
+      if (!run.workflow_id) return true;
+      if (seenWorkflowIds.has(run.workflow_id)) return false;
+      seenWorkflowIds.add(run.workflow_id);
+      return true;
+    });
+    const checks = [...latestWorkflowRuns, ...(statuses.statuses || [])];
+    const state = combineGithubCiStates(checks.map(githubRollupState));
+    const target = latestWorkflowRuns.find((run) => run.html_url)?.html_url
+      || statuses.statuses?.find((status) => status.target_url)?.target_url;
     return {
       state,
       prUrl: flow.prUrl,
-      sha: pr.headRefOid || "",
+      sha,
       description: state === "unknown" ? "No CI status found." : `GitHub CI ${state}.`,
-      targetUrl: checks.find((item) => item.detailsUrl || item.targetUrl)?.detailsUrl || checks.find((item) => item.targetUrl)?.targetUrl || pr.url || flow.prUrl,
+      targetUrl: target || pr.html_url || flow.prUrl,
       checkedAt: now(),
     };
   } catch (error) {
@@ -1495,26 +1523,33 @@ function runGit(args: string[], cwd = rootDir) {
   return stdout;
 }
 
-async function runGh(args: string[], flow?: Flow) {
-  const proc = Bun.spawn({
-    cmd: ["gh", ...args],
-    cwd: flow?.checkoutPath || rootDir,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: flow ? runtimeEnv(flow) : runtimeEnv(),
+function githubConfigPayload() {
+  const signedIn = Boolean(getSetting("githubApiKey"));
+  return { signedIn, viewerName: signedIn ? getSetting("githubViewerName") : "" };
+}
+
+function githubPullRequest(prUrl: string) {
+  const url = new URL(prUrl);
+  const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
+  if (url.hostname !== "github.com" || !match) throw new Error("PR URL must be a github.com pull request URL.");
+  return { owner: encodeURIComponent(match[1]), repo: encodeURIComponent(match[2]), number: match[3] };
+}
+
+async function githubRequest<T>(path: string, apiKey = getSetting("githubApiKey")) {
+  if (!apiKey) throw new Error("GitHub is not connected. Add a GitHub API key in settings.");
+  const response = await fetch(`https://api.github.com${path}`, {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${apiKey}`,
+      "x-github-api-version": "2026-03-10",
+    },
   });
-  const [stdoutText, stderrText, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  const stdout = stdoutText.trim();
-  const stderr = stderrText.trim();
-  if (exitCode !== 0) {
-    const output = stderr || stdout;
-    throw new Error(output ? `gh ${args[0] ?? ""} failed: ${output}` : `gh ${args[0] ?? ""} failed`);
+  const body = await response.json() as T & { message?: string };
+  if (!response.ok) {
+    const required = response.headers.get("x-accepted-github-permissions");
+    throw new Error(`${body.message || `GitHub request failed (${response.status}).`}${required ? ` Required permission: ${required}.` : ""}`);
   }
-  return stdout;
+  return body;
 }
 
 function parseLinearIssue(input: string) {
@@ -1935,7 +1970,7 @@ function getAgentDeveloperInstructionsTemplate() {
 }
 
 function flowDeveloperInstructions(flow: Flow) {
-  return renderAgentTemplate(getAgentDeveloperInstructionsTemplate(), flow);
+  return `${renderAgentTemplate(getAgentDeveloperInstructionsTemplate(), flow)}\n\nA built-in browser tool is not available. Use Playwright for browser automation and testing.`;
 }
 
 function codexThreadOverrides(flow: Flow) {
@@ -2790,10 +2825,11 @@ function claudePermissionOptions(flow: Flow): Record<string, unknown> {
   if (codexSandboxMode(flow) === "read-only") {
     return {
       permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
       disallowedTools: ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "KillShell"],
     };
   }
-  return { permissionMode: "bypassPermissions" };
+  return { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true };
 }
 
 function claudeRuntimeEnv(flow: Flow) {
@@ -2817,6 +2853,12 @@ async function startClaudeRuntime(flow: Flow) {
       systemPrompt: { type: "preset", preset: "claude_code", append: flowDeveloperInstructions(activeFlow) },
       includePartialMessages: true,
       ...(activeFlow.agentModel && claudeAgentModels.has(activeFlow.agentModel) ? { model: activeFlow.agentModel } : {}),
+      settings: {
+        ...(reasoningEfforts.has(activeFlow.agentReasoningEffort as ReasoningEffort)
+          ? { effortLevel: activeFlow.agentReasoningEffort }
+          : {}),
+        fastMode: activeFlow.agentServiceTier === "fast",
+      },
       ...(savedSessionId ? { resume: savedSessionId } : {}),
       ...claudePermissionOptions(activeFlow),
     },
@@ -3207,6 +3249,21 @@ function stopIdleClaudeRuntimeForSettingChange(flow: Flow) {
 }
 
 async function handleClaudeSlashCommand(flow: Flow, command: string, message: string, userLogId: number) {
+  if (command === "/fast") {
+    const fastMode = flow.agentServiceTier !== "fast";
+    await agentProcesses.get(flow.id)?.claude?.query.applyFlagSettings({ fastMode });
+    updateFlow(flow.id, { agentServiceTier: fastMode ? "fast" : "" });
+    insertLog(flow.id, "agent:status", fastMode ? "fast mode enabled" : "fast mode disabled");
+    return true;
+  }
+  if (command === "/effort") {
+    const reasoningEffort = slashCommandArgs(message).toLowerCase() as ReasoningEffort;
+    if (!reasoningEfforts.has(reasoningEffort)) throw new Error("Usage: /effort high|medium|low|xhigh");
+    await agentProcesses.get(flow.id)?.claude?.query.applyFlagSettings({ effortLevel: reasoningEffort });
+    updateFlow(flow.id, { agentReasoningEffort: reasoningEffort });
+    insertLog(flow.id, "agent:status", `reasoning effort set to ${reasoningEffort}`);
+    return true;
+  }
   if (command === "/permissions") {
     const agentSandbox = agentSandboxForSlashCommand(slashCommandArgs(message));
     if (!agentSandbox) throw new Error("Usage: /permissions read-only|workspace-write|full-access");
@@ -3317,6 +3374,8 @@ const claudeProvider: AgentProvider = {
   label: "claude",
   slashCommands: [
     { name: "/clear", description: "Start a fresh Claude session for this flow" },
+    { name: "/effort", description: "Set Claude reasoning effort", args: ["xhigh", "high", "medium", "low"] },
+    { name: "/fast", description: "Toggle fast mode for this flow" },
     { name: "/permissions", description: "Set Claude permissions for this flow", args: ["read-only", "workspace-write", "full-access"] },
     { name: "/status", description: "Show current flow status" },
     ...sharedSlashCommands,
@@ -4269,6 +4328,7 @@ async function handleApi(request: Request, url: URL) {
         agentCommand: normalizeAgentCommand(getSetting("agentCommand", defaultCodexAppServerCommand)),
       },
       linear: linearConfigPayload(),
+      github: githubConfigPayload(),
       agents: {
         developerInstructions: getAgentDeveloperInstructionsTemplate(),
         defaultDeveloperInstructions: defaultAgentDeveloperInstructions,
@@ -4340,6 +4400,23 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/linear/config" && request.method === "GET") {
     return json(linearConfigPayload());
+  }
+
+  if (url.pathname === "/api/github/config" && request.method === "PUT") {
+    const body = await readJson<{ apiKey: string }>(request);
+    const apiKey = body.apiKey?.trim() ?? "";
+    if (!apiKey) return json({ error: "GitHub API key is required." }, { status: 400 });
+    const viewer = await githubRequest<{ login: string }>("/user", apiKey);
+    setSetting("githubApiKey", apiKey);
+    setSetting("githubViewerName", viewer.login);
+    void pollSelectedGithubCiStatus();
+    return json({ ok: true, viewer });
+  }
+
+  if (url.pathname === "/api/github/config" && request.method === "DELETE") {
+    setSetting("githubApiKey", "");
+    setSetting("githubViewerName", "");
+    return json({ ok: true });
   }
 
   if (url.pathname === "/api/linear/config" && request.method === "PUT") {
@@ -4493,22 +4570,23 @@ async function handleApi(request: Request, url: URL) {
     }
 
     if (parts[3] === "meta" && request.method === "POST") {
+      const metadataFlow = flow.parentFlowId ? getFlow(flow.parentFlowId) ?? flow : flow;
       let fields: Partial<Flow>;
       try {
-        fields = await flowMetaUpdate(flow, await readJson<Record<string, unknown>>(request));
+        fields = await flowMetaUpdate(metadataFlow, await readJson<Record<string, unknown>>(request));
       } catch (error) {
         return json({ error: String(error) }, { status: 400 });
       }
       if (Object.keys(fields).length === 0) {
         return json({ error: "No supported flow metadata fields provided." }, { status: 400 });
       }
-      updateFlow(id, fields);
+      updateFlow(metadataFlow.id, fields);
       if (fields.prUrl !== undefined) {
-        insertLog(id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
-        if (selectedGithubCiFlowId === id) void pollSelectedGithubCiStatus();
+        insertLog(metadataFlow.id, "flow", fields.prUrl ? `PR set to ${fields.prUrl}\n` : "PR cleared\n");
+        if (selectedGithubCiFlowId === metadataFlow.id) void pollSelectedGithubCiStatus();
       }
-      if (fields.linearIssueId !== undefined) insertLog(id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
-      return json({ ok: true, flow: clientFlow(getFlow(id) ?? flow) });
+      if (fields.linearIssueId !== undefined) insertLog(metadataFlow.id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
+      return json({ ok: true, flow: clientFlow(getFlow(metadataFlow.id) ?? metadataFlow) });
     }
 
     if (parts[3] === "split" && request.method === "POST") {

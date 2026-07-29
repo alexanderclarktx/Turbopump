@@ -156,6 +156,7 @@ export function connectWs() {
         return;
       }
       if (githubCiOnlyFlowChanges(previousFlows, state.flows)) {
+        renderTickets();
         renderFlowPane();
         return;
       }

@@ -16,7 +16,7 @@ import {
   renderLogs,
   renderShellOutputPane,
   terminalForFlowLogs,
-  terminalTurnCount,
+  terminalRowCount,
   terminalVisibleTurnCount,
 } from "./terminal-render.js";
 import { sortedLinearTickets } from "./tickets.js";
@@ -97,7 +97,7 @@ export async function loadLogs(id, options = {}) {
       }
       const flow = state.flows.find((item) => item.id === id) || null;
       const groups = terminalGroups(state.logs.get(id) || [], flow);
-      if (terminalTurnCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;
+      if (terminalRowCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;
     }
     state.logBackfilledFlowIds.add(id);
     state.terminalVisibleTurnCounts.set(id, AGENT_TRACE_INITIAL_TURN_COUNT);
@@ -155,34 +155,33 @@ export async function loadOlderTerminalTraceMessages(options = {}) {
     preserveScrollTop: Boolean(options.preserveScrollTop),
     suppressIncoming: true,
   };
-
   const visibleCount = terminalVisibleTurnCount(flowId);
-  state.terminalVisibleTurnCounts.set(flowId, visibleCount + AGENT_TRACE_TURN_PAGE_SIZE);
-  pauseTerminalFollow();
-
   const flow = state.flows.find((item) => item.id === flowId) || null;
-  const groups = terminalGroups(state.logs.get(flowId) || [], flow);
-  if (terminalTurnCount(groups) > visibleCount || state.logOlderCompleteFlowIds.has(flowId)) {
+  let groups = terminalGroups(state.logs.get(flowId) || [], flow);
+  if (terminalRowCount(groups) <= visibleCount && state.logOlderCompleteFlowIds.has(flowId)) return;
+
+  const targetVisibleCount = visibleCount + AGENT_TRACE_TURN_PAGE_SIZE;
+  state.terminalVisibleTurnCounts.set(flowId, targetVisibleCount);
+  pauseTerminalFollow();
+  if (terminalRowCount(groups) >= targetVisibleCount || state.logOlderCompleteFlowIds.has(flowId)) {
     renderLogs(flowId, renderOptions);
     return;
   }
 
   state.logOlderLoadingFlowIds.add(flowId);
-  renderLogs(flowId, renderOptions);
   try {
-    const before = state.firstLogId.get(flowId) || Number.MAX_SAFE_INTEGER;
-    const data = await wsRequest("logs", { flowId, before, limit: LOG_PAGE_SIZE });
-    if (!data.logs.length) {
-      state.logOlderCompleteFlowIds.add(flowId);
-      renderLogs(flowId, renderOptions);
-      return;
+    while (terminalRowCount(groups) < targetVisibleCount && !state.logOlderCompleteFlowIds.has(flowId)) {
+      const before = state.firstLogId.get(flowId) || Number.MAX_SAFE_INTEGER;
+      const data = await wsRequest("logs", { flowId, before, limit: LOG_PAGE_SIZE });
+      if (!data.logs.length) {
+        state.logOlderCompleteFlowIds.add(flowId);
+        break;
+      }
+      for (const log of data.logs) appendLogEntry(log);
+      rememberLoadedLogBounds(flowId, data.logs);
+      if (data.logs.length < LOG_PAGE_SIZE) state.logOlderCompleteFlowIds.add(flowId);
+      groups = terminalGroups(state.logs.get(flowId) || [], flow);
     }
-    for (const log of data.logs) {
-      appendLogEntry(log);
-    }
-    rememberLoadedLogBounds(flowId, data.logs);
-    if (data.logs.length < LOG_PAGE_SIZE) state.logOlderCompleteFlowIds.add(flowId);
-    renderLogs(flowId, renderOptions);
   } finally {
     state.logOlderLoadingFlowIds.delete(flowId);
     renderLogs(flowId, renderOptions);

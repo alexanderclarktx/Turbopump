@@ -344,6 +344,7 @@ export function appendTerminalGroup(groups, log, options = {}) {
     lastAt: log.lastCreatedAt || log.createdAt,
     boundaryBefore: Boolean(options.forceNew),
     traceContent: Boolean(options.traceContent),
+    turnStartId: options.turnStartId || 0,
   };
   groups.push(group);
   return group;
@@ -472,10 +473,14 @@ export function terminalGroups(logs, flow) {
   );
   const traceGroups = new Map();
   let activeAgentMessageGroup = null;
+  let activeAgentTurnStartId = 0;
   let forceTerminalGroupBoundary = false;
   let traceRangeIndex = 0;
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
+    if (log.source === "agent:status" && /^turn started\b/.test(String(log.message || "").trim())) {
+      activeAgentTurnStartId = Number(log.id);
+    }
     if (isAgentMessageBoundarySource(log.source)) {
       activeAgentMessageGroup = null;
       forceTerminalGroupBoundary = true;
@@ -521,6 +526,7 @@ export function terminalGroups(logs, flow) {
         forceNew: forceTerminalGroupBoundary,
         traceContent: true,
         mergeWith: activeAgentMessageGroup,
+        turnStartId: activeAgentTurnStartId,
       });
       if (isAgentMessageSource(log.source)) activeAgentMessageGroup = group;
       forceTerminalGroupBoundary = false;
@@ -530,6 +536,7 @@ export function terminalGroups(logs, flow) {
     const group = appendTerminalGroup(groups, log, {
       forceNew: forceTerminalGroupBoundary,
       mergeWith: activeAgentMessageGroup,
+      turnStartId: activeAgentTurnStartId,
     });
     if (isAgentMessageSource(log.source)) activeAgentMessageGroup = group;
     forceTerminalGroupBoundary = false;

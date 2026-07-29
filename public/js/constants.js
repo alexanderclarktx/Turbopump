@@ -42,8 +42,6 @@ export const LOG_PREFETCH_BATCH_SIZE = 1;
 
 export const LOG_PREFETCH_MAX_FLOW_COUNT = 3;
 
-export const GITHUB_CI_RECENT_MS = 30 * 60 * 1000;
-
 export const LOG_PAGE_SIZE = 1000;
 
 export const AGENT_TRACE_INITIAL_TURN_COUNT = 12;
