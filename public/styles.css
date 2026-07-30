@@ -1975,10 +1975,16 @@ body.theme-dark .ticket-flow-start:focus-visible {
   background: #22c55e;
 }
 
-.ticket-id {
+.ticket-id-row {
   position: absolute;
   right: 10px;
   bottom: 7px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ticket-id {
   max-width: 82px;
   color: var(--accent);
   font-size: 11px;
@@ -2027,7 +2033,7 @@ body.theme-dark .ticket-flow-start:focus-visible {
 
 .ticket-card > .ticket-meta {
   align-self: stretch;
-  padding-right: 88px;
+  padding-right: 107px;
 }
 
 .ticket-card > .ticket-meta span {

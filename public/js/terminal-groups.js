@@ -2,16 +2,16 @@ import { flowAgentRunning, flowShellRunning } from "./flows.js";
 import { state } from "./state.js";
 import { formatTerminalMessage } from "./terminal-render.js";
 
-export function agentSenderLabel() {
+export function agentSenderLabel(agentModel, agentProvider) {
   const flow = state.flows.find((item) => item.id === state.selectedFlowId) || null;
-  const model = String(flow?.agentModel || "").trim();
-  if (!model) return flow?.agentProvider === "claude" ? "claude" : "codex";
+  const model = String(agentModel ?? flow?.agentModel ?? "").trim();
+  if (!model) return (agentProvider ?? flow?.agentProvider) === "claude" ? "claude" : "codex";
   return model.replace(/^claude-/, "");
 }
 
-export function logMeta(source) {
+export function logMeta(source, agentLabel = "") {
   const userLabel = state.linearViewer?.name || state.linearViewerName || "user";
-  const agentLabel = agentSenderLabel();
+  agentLabel ||= agentSenderLabel();
   if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };
   const map = {
     user: { label: userLabel, marker: ">", tone: "user" },
@@ -115,6 +115,11 @@ export function isAgentTurnEndedLog(log) {
     log.source === "agent:status" &&
     /^turn (completed|failed|canceled|cancelled|interrupted|stopped)\b/.test(String(log.message || "").trim())
   );
+}
+
+export function agentModelFromStatus(log) {
+  if (log.source !== "agent:status") return "";
+  return String(log.message || "").match(/^(?:model set to|turn started \S+ model)\s+([^;\s]+)/)?.[1] || "";
 }
 
 export function isShellExitLog(log) {
@@ -345,6 +350,7 @@ export function appendTerminalGroup(groups, log, options = {}) {
     boundaryBefore: Boolean(options.forceNew),
     traceContent: Boolean(options.traceContent),
     turnStartId: options.turnStartId || 0,
+    agentLabel: options.agentLabel || "",
   };
   groups.push(group);
   return group;
@@ -456,6 +462,7 @@ export function isHiddenTerminalLog(log) {
 export function terminalGroups(logs, flow) {
   const groups = [];
   const normalizedLogs = agentPaneLogs(logs, flow);
+  let agentLabel = agentSenderLabel(flow?.agentModel, flow?.agentProvider);
   const agentTurnEndIds = normalizedLogs
     .filter(isAgentTurnEndedLog)
     .map((log) => Number(log.id))
@@ -478,6 +485,8 @@ export function terminalGroups(logs, flow) {
   let traceRangeIndex = 0;
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
+    const statusModel = agentModelFromStatus(log);
+    if (statusModel) agentLabel = agentSenderLabel(statusModel);
     if (log.source === "agent:status" && /^turn started\b/.test(String(log.message || "").trim())) {
       activeAgentTurnStartId = Number(log.id);
     }
@@ -527,6 +536,7 @@ export function terminalGroups(logs, flow) {
         traceContent: true,
         mergeWith: activeAgentMessageGroup,
         turnStartId: activeAgentTurnStartId,
+        agentLabel,
       });
       if (isAgentMessageSource(log.source)) activeAgentMessageGroup = group;
       forceTerminalGroupBoundary = false;
@@ -537,6 +547,7 @@ export function terminalGroups(logs, flow) {
       forceNew: forceTerminalGroupBoundary,
       mergeWith: activeAgentMessageGroup,
       turnStartId: activeAgentTurnStartId,
+      agentLabel,
     });
     if (isAgentMessageSource(log.source)) activeAgentMessageGroup = group;
     forceTerminalGroupBoundary = false;

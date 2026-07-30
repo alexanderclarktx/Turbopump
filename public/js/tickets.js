@@ -1306,11 +1306,13 @@ export function renderTicketCard(ticket) {
   card.dataset.issue = ticket.identifier;
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
   card.innerHTML = `
-    <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
+    <div class="ticket-id-row">
+      ${renderLinearPriorityIcon(ticket.priority)}
+      <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
+    </div>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
       ${renderLinearStatusIcon(ticket)}
-      ${renderLinearPriorityIcon(ticket.priority)}
       ${renderGithubCiPill(flowForTicket(ticket))}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>

@@ -2277,7 +2277,8 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     const turn = params.turn as { id?: string } | undefined;
     runtime.activeTurnId = turn?.id;
     setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
-    insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId ?? ""}`);
+    const model = getFlow(runtime.flowId)?.agentModel || codexDefaultModel;
+    insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId ?? ""} model ${model}`);
     updateFlow(runtime.flowId, { agentStatus: "running" });
     return;
   }
@@ -3099,7 +3100,8 @@ async function sendClaudeTurn(runtime: RuntimeProcess, flow: Flow, message: stri
   runtime.activeTurnId = `claude-${claude.turnCounter}`;
   runtime.activeTurnTraceAfterLogId = userLogId || undefined;
   setActiveTurnId(runtime.flowId, runtime.activeTurnId);
-  insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId}`);
+  const model = getFlow(runtime.flowId)?.agentModel || claudeDefaultModel;
+  insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId} model ${model}`);
   updateFlow(runtime.flowId, { agentStatus: "running" });
 }
 

@@ -1163,7 +1163,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('state.linearViewerName = linear.viewerName || state.linearViewer?.name || "";');
     expect(app).toContain("state.linearViewerName = data.viewer?.name || state.linearViewerName;");
     expect(app).toContain('const userLabel = state.linearViewer?.name || state.linearViewerName || "user";');
-    expect(app).toContain("function agentSenderLabel()");
+    expect(app).toContain("function agentSenderLabel(agentModel, agentProvider)");
     expect(app).toContain('return model.replace(/^claude-/, "");');
     expect(app).toContain('user: { label: userLabel, marker: ">", tone: "user" }');
     expect(app).not.toContain('user: { label: "user", marker: ">", tone: "user" }');
@@ -1200,12 +1200,12 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("grid-template-rows: auto minmax(0, 1fr) auto;");
     expect(css).toContain(".ticket-drawer h2 {\n  margin: 0;\n  color: var(--ink);\n  font-size: 15px;\n  font-weight: 700;");
     expect(css).toContain(".ticket-flow-corner {\n  position: absolute;\n  right: 8px;\n  top: var(--ticket-card-title-y);");
-    expect(css).toContain(".ticket-id {\n  position: absolute;\n  right: 10px;\n  bottom: 7px;");
+    expect(css).toContain(".ticket-id-row {\n  position: absolute;\n  right: 10px;\n  bottom: 7px;");
     expect(css).toContain(".ticket-card .ticket-title {\n  grid-column: 1 / -1;\n  grid-row: 1;");
     expect(css).toContain("color: var(--ink);\n  font-size: 13px;\n  line-height: 1.25;\n  font-weight: 650;");
     expect(css).toContain(".ticket-card.in-flow .ticket-title {\n  padding-right: 32px;\n}");
     expect(css).toContain(".ticket-meta {\n  grid-column: 1 / -1;\n  grid-row: 3;");
-    expect(css).toContain(".ticket-card > .ticket-meta {\n  align-self: stretch;\n  padding-right: 88px;\n}");
+    expect(css).toContain(".ticket-card > .ticket-meta {\n  align-self: stretch;\n  padding-right: 107px;\n}");
   });
 
   test("lets the Linear pane status pill edit issue status", () => {
@@ -1257,7 +1257,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".linear-status-pill .linear-status-icon,\n.linear-status-option .linear-status-icon");
   });
 
-  test("shows Linear ticket status and priority icons before the project at the bottom left", () => {
+  test("shows Linear status at the bottom left and priority beside the ticket id", () => {
     expect(app).toContain("function renderLinearPriorityIcon(priority, options = {})");
     expect(app).toContain("function linearPriorityBarCount(priority)");
     expect(app).toContain("if (value === 1) return 3;");
@@ -1266,14 +1266,13 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('<span class="ticket-priority${urgent ? " urgent" : ""}">');
     expect(app).not.toContain('<span class="ticket-priority${urgent ? " urgent" : ""}" aria-label=');
     expect(app).toContain('<svg viewBox="0 0 16 14" aria-hidden="true" focusable="false">');
-    expect(app).toContain("${renderLinearStatusIcon(ticket)}\n      ${renderLinearPriorityIcon(ticket.priority)}");
-    expect(app).toContain("${renderLinearPriorityIcon(ticket.priority)}\n      ${renderGithubCiPill(flowForTicket(ticket))}");
+    expect(app).toContain("${renderLinearPriorityIcon(ticket.priority)}\n      <span class=\"ticket-id\">");
+    expect(app).toContain("${renderLinearStatusIcon(ticket)}\n      ${renderGithubCiPill(flowForTicket(ticket))}");
     expect(app).toContain("renderGithubCiPill(flowForTicket(ticket)),");
     expect(app).toContain("${renderLinearPriorityIcon(ticket.priority)}");
     expect(app).not.toContain('const priorityName = ticket.priority ? `P${ticket.priority}` : "";');
     expect(app).not.toContain('<span class="ticket-priority">${escapeHtml(priorityName)}</span>');
-    expect(app.indexOf("${renderLinearStatusIcon(ticket)}")).toBeLessThan(app.indexOf("${renderLinearPriorityIcon(ticket.priority)}"));
-    expect(app.indexOf("${renderLinearPriorityIcon(ticket.priority)}")).toBeLessThan(app.indexOf('class="ticket-project"'));
+    expect(app.indexOf("${renderLinearPriorityIcon(ticket.priority)}")).toBeLessThan(app.indexOf('class="ticket-id"'));
     expect(css).toContain(".ticket-meta {\n  grid-column: 1 / -1;\n  grid-row: 3;\n  display: flex;");
     expect(css).toContain("justify-content: flex-start;");
     expect(css).toContain(".ticket-meta .linear-status-icon {\n  width: 15px;");
@@ -3181,6 +3180,25 @@ describe("Turbopump pane markup", () => {
       message: string;
     }>;
     expect(boundedReplies.map((group) => group.message)).toEqual(["first", "second"]);
+  });
+
+  test("keeps historical agent labels after a model switch", () => {
+    const groups = terminalGroups(
+      [
+        { id: 1, flowId: "flow-1", source: "agent:message", message: "from sol", createdAt: "2026-07-30T10:00:00.000Z" },
+        { id: 2, flowId: "flow-1", source: "user", message: "/model claude-opus-5", createdAt: "2026-07-30T10:01:00.000Z" },
+        { id: 3, flowId: "flow-1", source: "agent:status", message: "model set to claude-opus-5; the next message starts a fresh session", createdAt: "2026-07-30T10:01:01.000Z" },
+        { id: 4, flowId: "flow-1", source: "user", message: "continue", createdAt: "2026-07-30T10:02:00.000Z" },
+        { id: 5, flowId: "flow-1", source: "agent:message", message: "from opus", createdAt: "2026-07-30T10:02:01.000Z" },
+        { id: 6, flowId: "flow-1", source: "user", message: "continue", createdAt: "2026-07-30T10:03:00.000Z" },
+        { id: 7, flowId: "flow-1", source: "agent:status", message: "turn started abc model gpt-5.6-terra", createdAt: "2026-07-30T10:03:01.000Z" },
+        { id: 8, flowId: "flow-1", source: "agent:message", message: "from terra", createdAt: "2026-07-30T10:03:02.000Z" },
+      ],
+      { agentModel: "gpt-5.6-sol", agentStatus: "idle" },
+    );
+    const replies = groups.filter((group: { source: string }) => group.source === "agent:message");
+
+    expect(replies.map((group: { agentLabel: string }) => group.agentLabel)).toEqual(["gpt-5.6-sol", "opus-5", "gpt-5.6-terra"]);
   });
 
   test("repaints agent logs after navigating through a ticket without a flow", () => {

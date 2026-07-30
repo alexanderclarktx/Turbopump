@@ -460,7 +460,7 @@ export function appendTerminalBlock(fragment, group, options = {}) {
     return;
   }
 
-  const meta = logMeta(group.source);
+  const meta = logMeta(group.source, group.agentLabel);
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
   if (group.source === "shell:status") block.classList.add("terminal-entry-shell-status");
@@ -868,6 +868,7 @@ export function terminalGroupSignaturePart(group) {
     logIds.length,
     group.createdAt,
     group.lastAt,
+    group.agentLabel || "",
     String(group.message || "").length,
     group.latestVisibleToolOutput ? "preview" : "",
     group.simpleModeToolCallCount ?? "",
