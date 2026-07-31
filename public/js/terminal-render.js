@@ -1101,7 +1101,6 @@ export function renderLogs(id, options = {}) {
   else if (options.preserveScrollTop) {
     terminal.scrollTop = scrollTopBeforeRender + (terminal.scrollHeight - scrollHeightBeforeRender);
   }
-  renderShellOutputPane(id);
 }
 
 export function appendTerminalLoadMoreButton(fragment, options = {}) {

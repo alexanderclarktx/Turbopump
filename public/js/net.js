@@ -137,9 +137,10 @@ export function connectWs() {
   ws.addEventListener("message", async (event) => {
     const message = JSON.parse(event.data);
     if (message.event === "response" && handleWsResponse(message)) return;
-    if (message.event === "flows") {
+    if (message.event === "flows" || message.event === "flow") {
       const previousFlows = state.flows;
-      setFlows(message.payload);
+      if (message.event === "flows") setFlows(message.payload);
+      else upsertFlow(message.payload);
       if (runtimeOnlyFlowChanges(previousFlows, state.flows)) {
         renderTickets();
         const flow = selectedFlow();

@@ -2055,6 +2055,23 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("branch.textContent = branchName;");
   });
 
+  test("keeps high-volume update paths compact", () => {
+    expect(server).toContain('"agent:thinking", "agent:cmd", "shell:output"');
+    expect(server).toContain('const streamingLogsCompactedSettingKey = "streamingLogsCompactedV2";');
+    expect(server).toContain("deleteCompactedLogRunStmt.run(flowId, rows[start].source, rows[start].id, rows[end - 1].id);");
+    expect(server).toContain("compactFlowStreamingLogs(flow.id, commandLogId);");
+    expect(server).toContain("const row = traceLogCountStmt.get(flowId, afterId, beforeId)");
+    expect(server).not.toContain("const logs = (logsAfterStmt.all(flowId, afterId)");
+    expect(server).toContain('if (flow) broadcast("flow", clientFlow(flow));');
+    expect(app).toContain('if (message.event === "flows" || message.event === "flow")');
+    expect(app).toContain('if (message.event === "flows") setFlows(message.payload);');
+    expect(app).toContain("else upsertFlow(message.payload);");
+    expect(server).toContain("const [namesResult, numstatResult] = await Promise.all([");
+
+    const renderLogsSource = app.slice(app.indexOf("export function renderLogs("), app.indexOf("export function appendTerminalLoadMoreButton("));
+    expect(renderLogsSource.match(/renderShellOutputPane\(id\)/g)).toHaveLength(1);
+  });
+
   test("lets agents update flow metadata including PR URL", () => {
     expect(server).toContain('if (parts[3] === "meta" && request.method === "POST")');
     expect(server).toContain("async function flowMetaUpdate(flow: Flow, body: Record<string, unknown>): Promise<Partial<Flow>>");
@@ -2780,7 +2797,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('button.textContent = options.loading ? "loading..." : "load more";');
     expect(app).toContain('event.target.closest(".terminal-load-more")');
     expect(app).toContain("if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true });");
-    expect(app).toContain("if (!loadMore.disabled) void loadOlderTerminalTraceMessages({ preserveScrollTop: true, flowId });");
+    expect(app).toContain("if (!loadMore.disabled && flowId) void loadOlderTerminalTraceMessages({ preserveScrollTop: true, flowId });");
     expect(app).not.toContain("terminal.scrollTop <= 12 && !terminalAtLatest(terminal)");
     expect(app).toContain("terminal.scrollTop = scrollTopBeforeRender + (terminal.scrollHeight - scrollHeightBeforeRender);");
     expect(css).toContain(".terminal-load-more-row");
@@ -2920,8 +2937,8 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('source === "user" || source === "user:queued"');
     expect(server).toContain("function isAgentMessageBoundarySource(source: string)");
     expect(server).toContain('return source === "agent:message-boundary";');
-    expect(server).toContain("function isTraceCountSource(source: string)");
-    expect(server).toContain('return !isAgentMessageBoundarySource(source) && source !== "user:queued";');
+    expect(server).toContain("const traceLogCountStmt = db.query(`");
+    expect(server).toContain("source not in ('agent:message-boundary', 'user:queued')");
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("const prompt = latestUserLogBeforeStmt.get(flowId, beforeId)");
     expect(server).toContain("createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);");
@@ -2936,7 +2953,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);");
     expect(server).toContain('if (item.type === "agentMessage")');
     expect(server).toContain('return { source: "agent:message-boundary", message: "" };');
-    expect(server).toContain("(log) => log.id < beforeId && isTraceCountSource(log.source)");
+    expect(server).toContain("const row = traceLogCountStmt.get(flowId, afterId, beforeId)");
     expect(server).not.toContain("const isSteerMessage = Boolean(message && existingRuntime?.activeTurnId);");
     expect(server).not.toContain("if (isSteerMessage) createTurnTraceGroup(flow.id, userLogId);");
     expect(server).toContain('insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');

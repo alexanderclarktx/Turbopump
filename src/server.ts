@@ -403,12 +403,16 @@ const deleteLogsByFlowIdStmt = db.query("delete from logs where flowId = ?");
 const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
 );
-const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
 const logsPageStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc limit ?");
 const logsBeforePageStmt = db.query(`
   select * from (
     select * from logs where flowId = ? and id < ? order by id desc limit ?
   ) order by id asc
+`);
+const traceLogCountStmt = db.query(`
+  select count(*) as count
+  from logs
+  where flowId = ? and id > ? and id < ? and source not in ('agent:message-boundary', 'user:queued')
 `);
 const latestLogIdStmt = db.query("select id from logs where flowId = ? order by id desc limit 1");
 const shellOutputStateStmt = db.query("select clearAfterLogId from shell_output_state where flowId = ?");
@@ -461,10 +465,11 @@ function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
 }
 
-const compactableLogSources = new Set(["agent:message", "agent:reasoning", "agent:thinking"]);
-const streamingLogsCompactedSettingKey = "streamingLogsCompactedV1";
+const compactableLogSources = new Set(["agent:message", "agent:reasoning", "agent:thinking", "agent:cmd", "shell:output"]);
+const streamingLogsCompactedSettingKey = "streamingLogsCompactedV2";
 const logsForCompactionStmt = db.query("select id, source, message from logs where flowId = ? and id > ? order by id asc");
 const updateLogMessageStmt = db.query("update logs set message = ? where id = ?");
+const deleteCompactedLogRunStmt = db.query("delete from logs where flowId = ? and source = ? and id > ? and id <= ?");
 const logFlowIdsStmt = db.query("select distinct flowId from logs");
 
 function compactFlowStreamingLogs(flowId: string, afterId = 0) {
@@ -475,7 +480,7 @@ function compactFlowStreamingLogs(flowId: string, afterId = 0) {
     let message = "";
     for (let index = start; index < end; index += 1) message += rows[index].message;
     updateLogMessageStmt.run(message, rows[start].id);
-    for (let index = start + 1; index < end; index += 1) deleteLogByIdStmt.run(rows[index].id);
+    deleteCompactedLogRunStmt.run(flowId, rows[start].source, rows[start].id, rows[end - 1].id);
     removed += end - start - 1;
   };
   db.transaction(() => {
@@ -1231,7 +1236,8 @@ function updateFlow(id: string, fields: Partial<Flow>) {
     now(),
     id,
   );
-  broadcast("flows", listClientFlows());
+  const flow = getFlow(id);
+  if (flow) broadcast("flow", clientFlow(flow));
 }
 
 function pathIsInsideDirectory(path: string, directory: string) {
@@ -2190,17 +2196,11 @@ function isAgentMessageBoundarySource(source: string) {
   return source === "agent:message-boundary";
 }
 
-function isTraceCountSource(source: string) {
-  return !isAgentMessageBoundarySource(source) && source !== "user:queued";
-}
-
 function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
   if (beforeId <= afterId) return;
 
-  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter(
-    (log) => log.id < beforeId && isTraceCountSource(log.source),
-  );
-  const traceCount = logs.length;
+  const row = traceLogCountStmt.get(flowId, afterId, beforeId) as { count: number } | null;
+  const traceCount = row?.count ?? 0;
   if (traceCount <= 1) return;
 
   insertLog(
@@ -3670,6 +3670,7 @@ function startShellCommand(flow: Flow, userCommand: string) {
       const code = await proc.exited;
       await Promise.all([stdoutDone, stderrDone]);
       if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
+      compactFlowStreamingLogs(flow.id, commandLogId);
       const resultLogId = insertLog(
         flow.id,
         "shell:result",
@@ -4273,8 +4274,10 @@ async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
     }
   }
 
-  const namesResult = await run(["diff", "--name-only", "-z", baseRef], { trim: false });
-  const numstatResult = await run(["diff", "--find-renames", "--numstat", baseRef], { trim: false });
+  const [namesResult, numstatResult] = await Promise.all([
+    run(["diff", "--name-only", "-z", baseRef], { trim: false }),
+    run(["diff", "--find-renames", "--numstat", baseRef], { trim: false }),
+  ]);
   const names = namesResult.ok ? namesResult.text : "";
   let additions = 0;
   let deletions = 0;
