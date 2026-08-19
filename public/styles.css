@@ -1061,6 +1061,15 @@ body.theme-dark .terminal-entry-stderr .terminal-entry-body {
   min-height: 220px;
 }
 
+.env-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.env-actions button {
+  font-size: 12px;
+}
+
 .env-editor {
   display: grid;
   min-width: 0;
@@ -2273,6 +2282,10 @@ body.theme-dark .ticket-flow-start:focus-visible {
   grid-area: shell-col;
 }
 
+.terminal-panel:not(.shell-output-visible) .shell-column {
+  display: none;
+}
+
 .terminal-panel.agent-split-open .agent-column {
   grid-template-rows: minmax(0, var(--agent-split-size, 50%)) minmax(0, 1fr);
 }
@@ -2773,11 +2786,11 @@ body.theme-dark .github-ci-pill {
 }
 
 .github-ci-pill-unknown svg {
-  fill: #cf222e;
+  fill: #57606a;
 }
 
 body.theme-dark .github-ci-pill-unknown svg {
-  fill: #ff7b72;
+  fill: #8c959f;
 }
 
 .github-ci-pill-failure svg {
@@ -3659,6 +3672,27 @@ body.markdown-table-resizing {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.terminal-trace-changes {
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.terminal-trace-additions {
+  color: #15803d;
+}
+
+.terminal-trace-deletions {
+  color: #dc2626;
+}
+
+body.theme-dark .terminal-trace-additions {
+  color: #4ade80;
+}
+
+body.theme-dark .terminal-trace-deletions {
+  color: #f87171;
 }
 
 .terminal-entry-body {

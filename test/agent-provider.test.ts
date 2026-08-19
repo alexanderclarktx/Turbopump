@@ -87,7 +87,7 @@ describe("Agent providers", () => {
     expect(server).toContain("...claudeContextWindowMetadata(message),");
     expect(server).toContain("updateFlow(runtime.flowId, claudeContextUsageFlowUpdate(runtime, usage));");
     expect(server).toContain("function finishClaudeTurn(runtime: RuntimeProcess, message: ClaudeSdkMessage)");
-    expect(server).toContain("createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);");
+    expect(server).toContain("fileChangesSince(runtime.flowId, activeTurnTree),");
   });
 
   test("routes slash commands through the active provider", () => {

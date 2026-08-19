@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 
 type ThreadStartSource = "startup" | "clear";
@@ -76,6 +76,12 @@ type DiffFile = {
   path: string;
   additions: number | null;
   deletions: number | null;
+};
+
+type FileChanges = {
+  files: number;
+  additions: number;
+  deletions: number;
 };
 
 type UploadedImage = File;
@@ -311,6 +317,7 @@ type RuntimeProcess = {
   threadId?: string;
   activeTurnId?: string;
   activeTurnTraceAfterLogId?: number;
+  activeTurnTree?: string;
   compacting?: boolean;
   compactingStartedAt?: number;
   compactionPromptLogId?: number;
@@ -1369,6 +1376,7 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
 
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   insertLog(flow.id, "agent:error", `agent heartbeat timed out after ${Math.round(staleMs / 1000)}s\n`);
   updateFlow(flow.id, { agentStatus: "failed" });
   return getFlow(flow.id) ?? flow;
@@ -1512,13 +1520,13 @@ function gitCommandLabel(args: string[]) {
   return `git ${args[0] ?? ""}`.trim();
 }
 
-function runGit(args: string[], cwd = rootDir) {
+function runGit(args: string[], cwd = rootDir, env = process.env) {
   const result = Bun.spawnSync({
     cmd: ["git", ...args],
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: process.env,
+    env,
   });
   const stdout = result.stdout.toString().trim();
   const stderr = result.stderr.toString().trim();
@@ -1527,6 +1535,34 @@ function runGit(args: string[], cwd = rootDir) {
     throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
   }
   return stdout;
+}
+
+function worktreeTree(flow: Flow) {
+  const indexPath = join(tmpdir(), `turbopump-${crypto.randomUUID()}.index`);
+  const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+  try {
+    runGit(["read-tree", "HEAD"], flow.checkoutPath, env);
+    runGit(["add", "-A", "--"], flow.checkoutPath, env);
+    return runGit(["write-tree"], flow.checkoutPath, env);
+  } catch {
+    return "";
+  } finally {
+    rmSync(indexPath, { force: true });
+    rmSync(`${indexPath}.lock`, { force: true });
+  }
+}
+
+function fileChangesSince(flowId: string, beforeTree = ""): FileChanges | undefined {
+  const flow = getFlow(flowId);
+  if (!flow?.checkoutPath || !beforeTree) return;
+  try {
+    const afterTree = worktreeTree(flow);
+    if (!afterTree || afterTree === beforeTree) return;
+    const summary = parseGitNumstat(runGit(["diff", "--numstat", beforeTree, afterTree], flow.checkoutPath));
+    return summary.files.length ? { ...summary, files: summary.files.length } : undefined;
+  } catch {
+    return;
+  }
 }
 
 function githubConfigPayload() {
@@ -2196,7 +2232,13 @@ function isAgentMessageBoundarySource(source: string) {
   return source === "agent:message-boundary";
 }
 
-function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
+function createTraceGroupBetweenLogs(
+  flowId: string,
+  afterId: number,
+  beforeId: number,
+  kind = "",
+  fileChanges?: FileChanges,
+) {
   if (beforeId <= afterId) return;
 
   const row = traceLogCountStmt.get(flowId, afterId, beforeId) as { count: number } | null;
@@ -2211,6 +2253,7 @@ function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: 
       beforeId,
       count: traceCount,
       ...(kind ? { kind } : {}),
+      ...(fileChanges ? { fileChanges } : {}),
     }),
   );
 }
@@ -2222,11 +2265,16 @@ function createCompletedTurnTraceGroup(flowId: string, beforeId: number) {
   createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);
 }
 
-function createCompletedTurnTraceGroupAfterLog(flowId: string, afterId: number | undefined, beforeId: number) {
+function createCompletedTurnTraceGroupAfterLog(
+  flowId: string,
+  afterId: number | undefined,
+  beforeId: number,
+  fileChanges?: FileChanges,
+) {
   const turnStartId = afterId || (latestUserLogBeforeStmt.get(flowId, beforeId) as { id: number } | null)?.id || 0;
   if (turnStartId) compactFlowStreamingLogs(flowId, turnStartId);
   if (afterId) {
-    createTraceGroupBetweenLogs(flowId, afterId, beforeId);
+    createTraceGroupBetweenLogs(flowId, afterId, beforeId, "", fileChanges);
     return;
   }
   createCompletedTurnTraceGroup(flowId, beforeId);
@@ -2256,6 +2304,7 @@ function finishCodexCompaction(runtime: RuntimeProcess, params: Record<string, u
   updateRuntimeThreadFromParams(runtime, params);
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   runtime.compacting = false;
   runtime.compactingStartedAt = undefined;
   const compactionPromptLogId = runtime.compactionPromptLogId;
@@ -2288,13 +2337,22 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     if (!turn?.id || turn.id === runtime.activeTurnId) runtime.activeTurnId = undefined;
     if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
     const activeTurnTraceAfterLogId = runtime.activeTurnTraceAfterLogId;
-    if (!runtime.activeTurnId) runtime.activeTurnTraceAfterLogId = undefined;
+    const activeTurnTree = runtime.activeTurnTree;
+    if (!runtime.activeTurnId) {
+      runtime.activeTurnTraceAfterLogId = undefined;
+      runtime.activeTurnTree = undefined;
+    }
     if (runtime.compacting && turn?.status !== "failed") {
       finishCodexCompaction(runtime, params);
       return;
     }
     const turnStatusLogId = insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
-    createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);
+    createCompletedTurnTraceGroupAfterLog(
+      runtime.flowId,
+      activeTurnTraceAfterLogId,
+      turnStatusLogId + 1,
+      fileChangesSince(runtime.flowId, activeTurnTree),
+    );
     if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     if (runtime.compacting) {
       runtime.compacting = false;
@@ -2555,15 +2613,18 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
       if (!isNoActiveTurnSteerError(error)) throw error;
       runtime.activeTurnId = undefined;
       runtime.activeTurnTraceAfterLogId = undefined;
+      runtime.activeTurnTree = undefined;
       setActiveTurnId(runtime.flowId);
       insertLog(runtime.flowId, "agent:status", "stale active turn cleared before starting a new turn");
     }
   }
+  const activeTurnTree = worktreeTree(flow);
   const response = (await sendCodexRequest(runtime, "turn/start", codexTurnParams(runtime, flow, message))) as {
     turn?: { id?: string };
   };
   runtime.activeTurnId = response.turn?.id;
   runtime.activeTurnTraceAfterLogId = userLogId || undefined;
+  runtime.activeTurnTree = activeTurnTree;
   setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
 }
 
@@ -2689,6 +2750,7 @@ async function ensureCodexRuntime(flow: Flow) {
 async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   if (runtime.activeTurnId) throw new Error("Cannot clear while a Codex turn is running.");
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   runtime.compacting = false;
   runtime.compactingStartedAt = undefined;
   runtime.compactionPromptLogId = undefined;
@@ -2704,6 +2766,7 @@ async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   runtime.threadId = thread.id;
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   setActiveTurnId(flow.id);
   setSetting(codexThreadSettingKey(flow.id), thread.id);
   updateFlow(flow.id, {
@@ -2981,6 +3044,7 @@ function finishClaudeCompaction(runtime: RuntimeProcess, succeeded: boolean) {
   runtime.compactionPromptLogId = undefined;
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   setActiveTurnId(runtime.flowId);
   const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", succeeded ? "context compacted" : "compact failed");
   deleteQueuedAgentMessagePlaceholders(runtime);
@@ -3003,15 +3067,22 @@ function finishClaudeTurn(runtime: RuntimeProcess, message: ClaudeSdkMessage) {
   const interrupted = flowBefore?.agentStatus === "interrupting";
   const failed = !interrupted && subtype !== "success";
   const activeTurnTraceAfterLogId = runtime.activeTurnTraceAfterLogId;
+  const activeTurnTree = runtime.activeTurnTree;
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   setActiveTurnId(runtime.flowId);
   const turnStatusLogId = insertLog(
     runtime.flowId,
     "agent:status",
     `turn ${interrupted ? "interrupted" : failed ? "failed" : "completed"}`,
   );
-  createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);
+  createCompletedTurnTraceGroupAfterLog(
+    runtime.flowId,
+    activeTurnTraceAfterLogId,
+    turnStatusLogId + 1,
+    fileChangesSince(runtime.flowId, activeTurnTree),
+  );
   if (failed) {
     const detail = typeof message.result === "string" && message.result.trim() ? message.result : subtype || "unknown error";
     insertLog(runtime.flowId, "agent:error", `${detail}\n`);
@@ -3089,6 +3160,7 @@ async function sendClaudeTurn(runtime: RuntimeProcess, flow: Flow, message: stri
   if (!claude) throw new Error("Claude session is not ready.");
   runtime.lastSeenAt = Date.now();
   const steering = Boolean(runtime.activeTurnId);
+  const activeTurnTree = steering ? "" : worktreeTree(flow);
   claude.pushInput({
     type: "user",
     message: { role: "user", content: [{ type: "text", text: message }] },
@@ -3099,6 +3171,7 @@ async function sendClaudeTurn(runtime: RuntimeProcess, flow: Flow, message: stri
   claude.turnCounter += 1;
   runtime.activeTurnId = `claude-${claude.turnCounter}`;
   runtime.activeTurnTraceAfterLogId = userLogId || undefined;
+  runtime.activeTurnTree = activeTurnTree;
   setActiveTurnId(runtime.flowId, runtime.activeTurnId);
   const model = getFlow(runtime.flowId)?.agentModel || claudeDefaultModel;
   insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId} model ${model}`);
@@ -3729,6 +3802,7 @@ async function interruptAgent(flowId: string) {
   }
   if ((!runtime.claude && !runtime.threadId) || !runtime.activeTurnId) {
     runtime.activeTurnTraceAfterLogId = undefined;
+    runtime.activeTurnTree = undefined;
     setActiveTurnId(flowId);
     updateFlow(flowId, { agentStatus: "idle" });
     return;
@@ -3742,6 +3816,7 @@ async function interruptAgent(flowId: string) {
     if (!isNoActiveTurnInterruptError(error)) throw error;
     runtime.activeTurnId = undefined;
     runtime.activeTurnTraceAfterLogId = undefined;
+    runtime.activeTurnTree = undefined;
     setActiveTurnId(flowId);
     insertLog(flowId, "agent:status", "interrupt ignored: no active turn");
     updateFlow(flowId, { agentStatus: "idle" });
@@ -4232,6 +4307,27 @@ async function syncAssignedLinearIssues(apiKey?: string) {
   return linearTicketsPayload(viewer, false, workflowStates);
 }
 
+function parseGitNumstat(text: string) {
+  let additions = 0;
+  let deletions = 0;
+  const files: DiffFile[] = [];
+  for (const line of text.split("\n")) {
+    const [added, deleted, ...pathParts] = line.split("\t");
+    const path = pathParts.join("\t").trim();
+    if (!path) continue;
+    const addedCount = Number(added);
+    const deletedCount = Number(deleted);
+    if (Number.isFinite(addedCount)) additions += addedCount;
+    if (Number.isFinite(deletedCount)) deletions += deletedCount;
+    files.push({
+      path,
+      additions: Number.isFinite(addedCount) ? addedCount : null,
+      deletions: Number.isFinite(deletedCount) ? deletedCount : null,
+    });
+  }
+  return { additions, deletions, files };
+}
+
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   try {
     flow = assertFlowWorktree(flow);
@@ -4279,26 +4375,7 @@ async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
     run(["diff", "--find-renames", "--numstat", baseRef], { trim: false }),
   ]);
   const names = namesResult.ok ? namesResult.text : "";
-  let additions = 0;
-  let deletions = 0;
-  const files: DiffFile[] = [];
-  if (numstatResult.ok) {
-    for (const line of numstatResult.text.split("\n")) {
-      const [added, deleted] = line.split("\t");
-      const path = line.split("\t").slice(2).join("\t").trim();
-      const addedCount = Number(added);
-      const deletedCount = Number(deleted);
-      if (Number.isFinite(addedCount)) additions += addedCount;
-      if (Number.isFinite(deletedCount)) deletions += deletedCount;
-      if (path) {
-        files.push({
-          path,
-          additions: Number.isFinite(addedCount) ? addedCount : null,
-          deletions: Number.isFinite(deletedCount) ? deletedCount : null,
-        });
-      }
-    }
-  }
+  const { additions, deletions, files } = parseGitNumstat(numstatResult.ok ? numstatResult.text : "");
   const diff = {
     status: names.replaceAll("\0", "\n").trim(),
     names,

@@ -98,11 +98,19 @@ export function parseTraceGroup(log) {
     if (!Number.isFinite(afterId) || !Number.isFinite(beforeId) || beforeId <= afterId) return null;
     const count = Number(payload.count || 0);
     if (count <= 1) return null;
+    const changedFiles = Math.max(0, Number(payload.fileChanges?.files) || 0);
     return {
       afterId,
       beforeId,
       count,
       kind: typeof payload.kind === "string" ? payload.kind : "",
+      fileChanges: changedFiles
+        ? {
+            files: changedFiles,
+            additions: Math.max(0, Number(payload.fileChanges?.additions) || 0),
+            deletions: Math.max(0, Number(payload.fileChanges?.deletions) || 0),
+          }
+        : null,
       key: `${afterId}:${beforeId}`,
     };
   } catch {
@@ -525,6 +533,7 @@ export function terminalGroups(logs, flow) {
           displayLastAt: traceRange.displayLastAt,
           traceAfterId: traceRange.afterId,
           traceKind: traceRange.kind,
+          fileChanges: traceRange.fileChanges,
           defaultOpen: false,
           children: [],
         };

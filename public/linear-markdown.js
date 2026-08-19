@@ -348,7 +348,10 @@ function nextNonBlankLineIndex(lines, startIndex) {
 
 export function renderInlineMarkdown(value, options = {}) {
   const { images = true, links = true } = options;
-  const text = String(value || "");
+  const text = String(value || "").replace(
+    /\[(!\[[^\]]+\]\(\s*(?:<(?:https?:\/\/|\/)[^>]+>|(?:https?:\/\/[^\s<>()]+|\/(?:[^\s<>()]|\([^)]*\))+))\s*\))\]\(\s*(?:<(?:https?:\/\/|\/)[^>]+>|(?:https?:\/\/[^\s<>()]+|\/(?:[^\s<>()]|\([^)]*\))+))\s*\)/g,
+    "$1",
+  );
   const markdownPattern =
     /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/[^\s<>()]+|\/(?:[^\s<>()]|\([^)]*\))+)))\s*\)|(https?:\/\/[^\s<>()]+)/g;
   let cursor = 0;

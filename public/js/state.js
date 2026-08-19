@@ -256,6 +256,7 @@ export const els = {
   ticketSearchInput: document.querySelector("#ticketSearchInput"),
   closeTicketSearch: document.querySelector("#closeTicketSearch"),
   linearState: document.querySelector("#linearState"),
+  exportEnvironment: document.querySelector("#exportEnvironment"),
   envEditor: document.querySelector("#envEditor"),
   checkoutList: document.querySelector("#checkoutList"),
   ticketState: document.querySelector("#ticketState"),

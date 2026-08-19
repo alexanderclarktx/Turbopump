@@ -68,6 +68,7 @@ import { render } from "./js/render.js";
 import {
   agentConfigSignature,
   envEditorContents,
+  exportEnvironment,
   flushEnvSaveOnPageHide,
   handleEnvEditorChange,
   handleEnvEditorClick,
@@ -268,6 +269,8 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
   els.agentDeveloperInstructions.value = state.defaultAgentDeveloperInstructions;
   void saveAgentConfig().catch(reportAutoSaveError);
 });
+
+els.exportEnvironment.addEventListener("click", exportEnvironment);
 
 els.envEditor.addEventListener("input", handleEnvEditorInput);
 

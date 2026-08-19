@@ -33,6 +33,7 @@ const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const { terminalGroups } = await import("../public/js/terminal-groups.js");
 const { appendLogEntry } = await import("../public/js/logs.js");
 const { state } = await import("../public/js/state.js");
+const { environmentFileContents } = await import("../public/js/settings.js");
 const {
   formatTerminalElapsed,
   renderableTerminalGroups,
@@ -405,6 +406,7 @@ describe("Turbopump pane markup", () => {
   test("persists environment settings in a dedicated db table", () => {
     expect(html).toContain('<section class="settings-section environment-settings">');
     expect(html).toContain("<span>Environment</span>");
+    expect(html).toContain('<button id="exportEnvironment" type="button">Export .env</button>');
     expect(html).toContain('<div class="env-editor" id="envEditor" aria-label="Environment variables"></div>');
     expect(html).not.toContain('<textarea id="envEditor"');
     expect(css).toContain(".env-row {\n  display: grid;");
@@ -436,6 +438,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('els.envEditor.addEventListener("focusin", handleEnvEditorFocusIn);');
     expect(app).toContain('els.envEditor.addEventListener("change", handleEnvEditorChange);');
     expect(app).toContain('els.envEditor.addEventListener("click", handleEnvEditorClick);');
+    expect(app).toContain('els.exportEnvironment.addEventListener("click", exportEnvironment);');
     expect(app).toContain("function envEditorContents()");
     expect(app).toContain("function handleEnvEditorPaste(event)");
     expect(app).toContain("function activateEnvValueRow(valueRow)");
@@ -486,6 +489,22 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("accent-color: #d97706;");
     expect(css).toContain(".env-add-value");
     expect(css).toContain(".env-row:hover .env-add-value,\n.env-row:focus-within .env-add-value");
+  });
+
+  test("exports selected environment values and comments out alternatives", () => {
+    expect(
+      environmentFileContents([
+        {
+          key: "API_URL",
+          values: [
+            { value: "https://staging.example.com", active: false },
+            { value: "https://example.com", active: true },
+          ],
+        },
+        { key: "TOKEN", values: [{ value: "secret", active: true }] },
+      ]),
+    ).toBe("# API_URL=https://staging.example.com\nAPI_URL=https://example.com\nTOKEN=secret");
+    expect(app).toContain('link.download = ".env";');
   });
 
   test("makes settings sections collapsible", () => {
@@ -2139,8 +2158,8 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".github-ci-pill-success svg {\n  fill: #2da44e;\n}");
     expect(css).toContain(".github-ci-pill-merged svg {\n  fill: #8b5cf6;\n}");
     expect(css).toContain(".github-ci-pill-pending svg {\n  fill: #fbbf24;\n}");
-    expect(css).toContain(".github-ci-pill-unknown svg {\n  fill: #cf222e;\n}");
-    expect(css).toContain("body.theme-dark .github-ci-pill-unknown svg {\n  fill: #ff7b72;\n}");
+    expect(css).toContain(".github-ci-pill-unknown svg {\n  fill: #57606a;\n}");
+    expect(css).toContain("body.theme-dark .github-ci-pill-unknown svg {\n  fill: #8c959f;\n}");
     expect(css).toContain(".github-ci-pill-failure svg {\n  fill: #ef4444;\n}");
   });
 
@@ -2405,6 +2424,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("body.theme-dark .terminal-entry-working-agent .agent-working");
     expect(css).not.toContain(".agent-working.shell-working");
     expect(css).toContain(".terminal-panel.shell-output-visible");
+    expect(css).toContain(".terminal-panel:not(.shell-output-visible) .shell-column {\n  display: none;\n}");
     expect(css).toContain(
       "grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);",
     );
@@ -2930,7 +2950,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("create index if not exists logs_flow_id_id_idx on logs(flowId, id);");
     expect(server).toContain("create index if not exists logs_flow_id_source_id_idx on logs(flowId, source, id);");
     expect(server).toContain("create index if not exists flows_linear_issue_id_idx on flows(linearIssueId);");
-    expect(server).toContain('function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "")');
+    expect(server).toContain("function createTraceGroupBetweenLogs(");
     expect(server).toContain("if (traceCount <= 1) return;");
     expect(server).toContain('createTraceGroupBetweenLogs(flow.id, commandLogId, resultLogId + 1, "shell");');
     expect(server).toContain("function isUserLogSource(source: string)");
@@ -2942,15 +2962,15 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function createCompletedTurnTraceGroup(flowId: string, beforeId: number)");
     expect(server).toContain("const prompt = latestUserLogBeforeStmt.get(flowId, beforeId)");
     expect(server).toContain("createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);");
-    expect(server).toContain("function createCompletedTurnTraceGroupAfterLog(flowId: string, afterId: number | undefined, beforeId: number)");
-    expect(server).toContain("createTraceGroupBetweenLogs(flowId, afterId, beforeId);");
+    expect(server).toContain("function createCompletedTurnTraceGroupAfterLog(");
+    expect(server).toContain('createTraceGroupBetweenLogs(flowId, afterId, beforeId, "", fileChanges);');
     expect(server).not.toContain("function createAgentTraceGroupBeforeFinalResponse");
     expect(server).not.toContain("function createTraceGroupAfterPrompt");
     expect(server).not.toContain("function createTurnTraceGroup");
     expect(server).not.toContain("createAgentTraceGroupsBetweenLogs");
     expect(server).not.toContain("finalMessageStartIndex");
     expect(server).toContain('const turnStatusLogId = insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);');
-    expect(server).toContain("createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);");
+    expect(server).toContain("fileChangesSince(runtime.flowId, activeTurnTree),");
     expect(server).toContain('if (item.type === "agentMessage")');
     expect(server).toContain('return { source: "agent:message-boundary", message: "" };');
     expect(server).toContain("const row = traceLogCountStmt.get(flowId, afterId, beforeId)");
@@ -3012,7 +3032,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (count <= 1) continue;");
     expect(app).toContain(".filter(isTraceContentLog)");
     expect(app).toContain('range.kind !== "shell"');
-    expect(server).toContain("createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);");
+    expect(server).toContain("runtime.activeTurnTree = activeTurnTree;");
     expect(app).toContain("function isShellTraceGroupLog(log)");
     expect(app).toContain("if (isShellTraceGroupLog(log)) continue;");
     expect(app).toContain('kind: typeof payload.kind === "string" ? payload.kind : ""');
@@ -3055,6 +3075,10 @@ describe("Turbopump pane markup", () => {
       "const elapsed = formatTerminalElapsed(group.displayCreatedAt || group.createdAt, group.displayLastAt || group.lastAt);",
     );
     expect(app).toContain('label.textContent = elapsed ? `${meta.label} (${elapsed})` : meta.label;');
+    expect(app).toContain('changes.append(additions, " ", deletions);');
+    expect(server).toContain('runGit(["diff", "--numstat", beforeTree, afterTree], flow.checkoutPath)');
+    expect(css).toContain(".terminal-trace-additions {");
+    expect(css).toContain(".terminal-trace-deletions {");
     expect(app).toContain('details.dataset.traceKey = group.traceKey || "";');
     expect(app).toContain("details._traceChildren = group.children || [];");
     expect(app).toContain("if (isTerminalTraceGroupOpen(group)) {");
@@ -3163,6 +3187,32 @@ describe("Turbopump pane markup", () => {
     const trace = groups.find((group) => group.source === "agent:trace-group");
     expect(trace?.createdAt).toBe("2026-07-02T20:52:59.000Z");
     expect(formatTerminalElapsed(trace?.displayCreatedAt, trace?.displayLastAt)).toBe("10m 0s");
+  });
+
+  test("keeps per-turn file changes on persisted trace groups", () => {
+    const groups = terminalGroups(
+      [
+        { id: 1, flowId: "flow-1", source: "user", message: "change it", createdAt: "2026-08-04T12:00:00.000Z" },
+        { id: 2, flowId: "flow-1", source: "agent:status", message: "turn started abc", createdAt: "2026-08-04T12:00:00.100Z" },
+        { id: 3, flowId: "flow-1", source: "agent:reasoning", message: "editing", createdAt: "2026-08-04T12:00:01.000Z" },
+        { id: 4, flowId: "flow-1", source: "agent:tool", message: "apply_patch", createdAt: "2026-08-04T12:00:02.000Z" },
+        { id: 5, flowId: "flow-1", source: "agent:status", message: "turn completed", createdAt: "2026-08-04T12:00:03.000Z" },
+        {
+          id: 6,
+          flowId: "flow-1",
+          source: "agent:trace-group",
+          message: JSON.stringify({ afterId: 1, beforeId: 6, count: 4, fileChanges: { files: 2, additions: 12, deletions: 3 } }),
+          createdAt: "2026-08-04T12:00:03.100Z",
+        },
+      ],
+      { agentStatus: "idle" },
+    );
+
+    expect(groups.find((group) => group.source === "agent:trace-group")?.fileChanges).toEqual({
+      files: 2,
+      additions: 12,
+      deletions: 3,
+    });
   });
 
   test("keeps one agent message together when command output interleaves with its deltas", () => {
@@ -3356,7 +3406,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("activeTurnTraceAfterLogId?: number;");
     expect(server).toContain("compactionPromptLogId?: number;");
     expect(server).toContain("runtime.activeTurnTraceAfterLogId = userLogId || undefined;");
-    expect(server).toContain("createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);");
+    expect(server).toContain("runtime.activeTurnTree = activeTurnTree;");
     expect(server).toContain("function startNextQueuedAgentMessage(runtime: RuntimeProcess)");
     expect(server).toContain("create table if not exists queued_prompts");
     expect(server).toContain("function queuedPromptForFlow(flowId: string)");
