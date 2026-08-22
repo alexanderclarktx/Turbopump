@@ -1061,6 +1061,15 @@ body.theme-dark .terminal-entry-stderr .terminal-entry-body {
   min-height: 220px;
 }
 
+.env-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.env-actions button {
+  font-size: 12px;
+}
+
 .env-editor {
   display: grid;
   min-width: 0;
@@ -1834,6 +1843,10 @@ body.ticket-drawer-resizing main {
   outline: none;
 }
 
+.ticket-options-menu .danger {
+  color: var(--danger);
+}
+
 .ticket-card.agent-turn-notified:not(.active) {
   border-width: 2px;
   border-color: transparent;
@@ -1975,10 +1988,16 @@ body.theme-dark .ticket-flow-start:focus-visible {
   background: #22c55e;
 }
 
-.ticket-id {
+.ticket-id-row {
   position: absolute;
   right: 10px;
   bottom: 7px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ticket-id {
   max-width: 82px;
   color: var(--accent);
   font-size: 11px;
@@ -2027,7 +2046,7 @@ body.theme-dark .ticket-flow-start:focus-visible {
 
 .ticket-card > .ticket-meta {
   align-self: stretch;
-  padding-right: 88px;
+  padding-right: 107px;
 }
 
 .ticket-card > .ticket-meta span {
@@ -2267,6 +2286,10 @@ body.theme-dark .ticket-flow-start:focus-visible {
   grid-area: shell-col;
 }
 
+.terminal-panel:not(.shell-output-visible) .shell-column {
+  display: none;
+}
+
 .terminal-panel.agent-split-open .agent-column {
   grid-template-rows: minmax(0, var(--agent-split-size, 50%)) minmax(0, 1fr);
 }
@@ -2474,6 +2497,32 @@ body.flow-resizing .flow-content {
   min-height: 0;
 }
 
+.linear-create-ticket {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  min-height: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.linear-create-ticket:hover,
+.linear-create-ticket:focus-visible {
+  background: transparent;
+  color: var(--ink);
+}
+
+.linear-create-ticket .linear-logo {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+  stroke: none;
+}
+
 .linear-issue,
 .linear-comments {
   display: grid;
@@ -2492,21 +2541,20 @@ body.flow-resizing .flow-content {
   min-width: 0;
 }
 
-.linear-issue-header a {
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 700;
-  text-decoration: none;
-  transition:
-    color var(--motion-fast),
-    opacity var(--motion-fast);
-}
-
 .linear-issue-kicker {
   display: flex;
   align-items: center;
   gap: 8px;
+  height: 18px;
   min-width: 0;
+}
+
+.linear-issue-kicker a {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  text-decoration: none;
 }
 
 .linear-pin-toggle {
@@ -2562,6 +2610,10 @@ body.theme-dark .linear-pin-toggle.active {
 
 .linear-pin-toggle.active .linear-pin-icon path {
   fill: currentColor;
+}
+
+.linear-issue-kicker > .linear-pin-toggle:only-child {
+  margin-left: -4px;
 }
 
 .linear-issue-header h3,
@@ -2659,8 +2711,10 @@ body.theme-dark .linear-pin-toggle.active {
 
 .linear-meta {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  min-height: 22px;
 }
 
 .linear-meta > span:not(.linear-status-control):not(.linear-priority-control),
@@ -2767,11 +2821,11 @@ body.theme-dark .github-ci-pill {
 }
 
 .github-ci-pill-unknown svg {
-  fill: #cf222e;
+  fill: #57606a;
 }
 
 body.theme-dark .github-ci-pill-unknown svg {
-  fill: #ff7b72;
+  fill: #8c959f;
 }
 
 .github-ci-pill-failure svg {
@@ -3653,6 +3707,27 @@ body.markdown-table-resizing {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.terminal-trace-changes {
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.terminal-trace-additions {
+  color: #15803d;
+}
+
+.terminal-trace-deletions {
+  color: #dc2626;
+}
+
+body.theme-dark .terminal-trace-additions {
+  color: #4ade80;
+}
+
+body.theme-dark .terminal-trace-deletions {
+  color: #f87171;
 }
 
 .terminal-entry-body {

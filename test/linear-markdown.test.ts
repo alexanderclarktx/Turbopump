@@ -80,6 +80,18 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("<code>");
   });
 
+  test("renders linked images without leaking the outer link", () => {
+    const path = "/workspace/artifacts/proof.png";
+    const html = renderLinearMarkdown(`[![Proof](<${path}>)](<${path}>)`, "", {
+      imageSource: (url) => `/preview?path=${encodeURIComponent(url)}`,
+    });
+
+    expect(html).toContain(`<figcaption>Proof</figcaption>`);
+    expect(html).toContain(`src="/preview?path=${encodeURIComponent(path)}"`);
+    expect(html).not.toContain("![Proof");
+    expect(html).not.toContain("](&lt;");
+  });
+
   test("escapes non-link HTML", () => {
     const html = renderLinearMarkdown('<script>alert("x")</script>');
 

@@ -1,5 +1,5 @@
 import { renderLinearMarkdown } from "../linear-markdown.js";
-import { loadCheckouts } from "./checkouts.js";
+import { deleteCheckout, loadCheckouts } from "./checkouts.js";
 import {
   COLLAPSED_LINEAR_STATUSES_KEY,
   DEFAULT_FAVICON_HREF,
@@ -9,7 +9,6 @@ import {
   TICKET_START_AGENT_FLAME_PATH,
 } from "./constants.js";
 import {
-  createFlowFromTicket,
   flowAgentRunning,
   flowForLinearIssue,
   flowForTicket,
@@ -17,6 +16,7 @@ import {
   openTicketInFlowPane,
   renderFlowPane,
   renderGithubCiPill,
+  setFlows,
   startTicketAgentSession,
   upsertFlow,
 } from "./flows.js";
@@ -230,8 +230,8 @@ export function mergeLinearIssue(existing, incoming) {
 }
 
 export function syncLinearTicketsWithFlows() {
-  const flowsByIssue = new Map(state.flows.filter((flow) => !flow.parentFlowId).map((flow) => [flow.linearIssueId, flow]));
-  const baseTickets = state.linearTickets.filter((ticket) => !ticket.turbopumpFlowOnly || flowCanRenderTicket(flowsByIssue.get(ticket.identifier)));
+  const flowsByIssue = new Map(state.flows.filter((flow) => flow.linearIssueId && !flow.parentFlowId).map((flow) => [flow.linearIssueId, flow]));
+  const baseTickets = state.linearTickets.filter((ticket) => !ticket.localSession && (!ticket.turbopumpFlowOnly || flowCanRenderTicket(flowsByIssue.get(ticket.identifier))));
   const ticketIds = new Set(baseTickets.map((ticket) => ticket.identifier));
   const tickets = baseTickets.map((ticket) => {
     const flow = flowsByIssue.get(ticket.identifier);
@@ -240,19 +240,27 @@ export function syncLinearTicketsWithFlows() {
     return { ...ticket, flowId };
   });
   const canAddFlowOnlyTickets = state.linearTicketsLoaded || state.linearTickets.length > 0;
-  if (!canAddFlowOnlyTickets) {
-    state.linearTickets = tickets;
-    return;
+  if (canAddFlowOnlyTickets) {
+    for (const flow of state.flows) {
+      if (flow.parentFlowId || !flowCanRenderTicket(flow) || ticketIds.has(flow.linearIssueId)) continue;
+      tickets.push({
+        identifier: flow.linearIssueId,
+        title: flow.title || flow.linearIssueId,
+        url: flow.linearIssueUrl || "",
+        state: flow.linearStatus ? { name: flow.linearStatus } : null,
+        flowId: flow.id,
+        turbopumpFlowOnly: true,
+      });
+    }
   }
   for (const flow of state.flows) {
-    if (flow.parentFlowId || !flowCanRenderTicket(flow) || ticketIds.has(flow.linearIssueId)) continue;
+    if (flow.parentFlowId || flow.linearIssueId) continue;
     tickets.push({
-      identifier: flow.linearIssueId,
-      title: flow.title || flow.linearIssueId,
-      url: flow.linearIssueUrl || "",
-      state: flow.linearStatus ? { name: flow.linearStatus } : null,
+      identifier: flow.id,
+      title: flow.title || "new session",
+      state: { name: "Sessions" },
       flowId: flow.id,
-      turbopumpFlowOnly: true,
+      localSession: true,
     });
   }
   state.linearTickets = tickets;
@@ -442,7 +450,10 @@ export function sortedLinearTickets(tickets) {
 
 export function orderedPinnedTickets(tickets) {
   const ticketsByIdentifier = new Map(tickets.map((ticket) => [ticket.identifier, ticket]));
-  return [...state.pinnedLinearIssues].map((identifier) => ticketsByIdentifier.get(identifier)).filter(Boolean);
+  return [
+    ...tickets.filter((ticket) => ticket.localSession && !state.pinnedLinearIssues.has(ticket.identifier)),
+    ...[...state.pinnedLinearIssues].map((identifier) => ticketsByIdentifier.get(identifier)).filter(Boolean),
+  ];
 }
 
 export function groupedTicketsByLinearStatus(tickets) {
@@ -716,6 +727,12 @@ export function handleLinearOptionsClose(event) {
 
 export function handleLinearDetailClick(event) {
   if (!(event.target instanceof Element)) return;
+  const createButton = event.target.closest("[data-create-linear-ticket]");
+  if (createButton && els.flowPane.contains(createButton)) {
+    event.preventDefault();
+    void createLinearTicketForFlow(state.flows.find((flow) => flow.id === state.selectedFlowId));
+    return;
+  }
   const copyButton = event.target.closest("[data-code-copy]");
   if (copyButton && els.flowPane.contains(copyButton)) {
     event.preventDefault();
@@ -807,7 +824,7 @@ export function handleLinearTitleOutsidePointerDown(event) {
 }
 
 export function isLinearIssuePinned(identifier) {
-  return state.pinnedLinearIssues.has(identifier);
+  return state.linearTickets.some((ticket) => ticket.identifier === identifier && ticket.localSession) || state.pinnedLinearIssues.has(identifier);
 }
 
 export function persistPinnedLinearIssues() {
@@ -825,7 +842,9 @@ export function setPinnedLinearIssueOrder(identifiers) {
 }
 
 export function moveLinearIssueToPinnedPosition(identifier, index) {
-  const pinnedIssueIds = [...state.pinnedLinearIssues].filter((issueId) => issueId !== identifier);
+  const pinnedIssueIds = orderedPinnedTickets(state.linearTickets)
+    .map((ticket) => ticket.identifier)
+    .filter((issueId) => issueId !== identifier);
   const insertionIndex = Math.max(0, Math.min(index, pinnedIssueIds.length));
   pinnedIssueIds.splice(insertionIndex, 0, identifier);
   setPinnedLinearIssueOrder(pinnedIssueIds);
@@ -841,6 +860,37 @@ export function setLinearIssuePinned(identifier, pinned, options = {}) {
   renderTickets();
 }
 
+export async function deleteLinearTicket(ticket) {
+  const identifier = ticket?.identifier || "";
+  if (!identifier || !window.confirm(`Delete ${identifier} from Linear?`)) return;
+  els.ticketState.textContent = `Deleting ${identifier}.`;
+  try {
+    const data = await api(`/api/linear/issues/${encodeURIComponent(identifier)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ issueId: ticket.id }),
+    });
+    if (data.flows) setFlows(data.flows);
+    removeLinearIssueFromTurbopump(identifier);
+    renderTickets();
+    renderFlowPane();
+    els.ticketState.textContent = formatLastUpdated();
+  } catch (error) {
+    els.ticketState.textContent = error.message;
+    toast(error.message, { kind: "error" });
+  }
+}
+
+export async function deleteLocalSession(ticket) {
+  const flow = flowForTicket(ticket);
+  const checkoutName = flow?.checkoutPath?.split(/[\\/]/).pop() || "";
+  if (!checkoutName || !window.confirm("Delete this session and its worktree?")) return;
+  try {
+    await deleteCheckout(checkoutName);
+  } catch (error) {
+    toast(error.message, { kind: "error" });
+  }
+}
+
 export function showTicketOptionsMenu(event, ticket) {
   event.preventDefault();
   document.querySelector(".ticket-options-menu")?.remove();
@@ -848,21 +898,31 @@ export function showTicketOptionsMenu(event, ticket) {
   const menu = document.createElement("div");
   menu.className = "ticket-options-menu";
   menu.role = "menu";
-  menu.innerHTML = `<button type="button" role="menuitem">${pinned ? "Unpin" : "Pin"}</button>`;
+  menu.innerHTML = `
+    ${ticket.localSession ? "" : `<button type="button" role="menuitem">${pinned ? "Unpin" : "Pin"}</button>`}
+    <button class="danger" type="button" role="menuitem">Delete</button>
+  `;
   document.body.append(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - rect.width - 8))}px`;
   menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - rect.height - 8))}px`;
-  const button = menu.querySelector("button");
-  button.addEventListener("click", () => {
+  const pinButton = menu.querySelector("button:not(.danger)");
+  const deleteButton = menu.querySelector("button.danger");
+  pinButton?.addEventListener("click", () => {
     menu.remove();
     setLinearIssuePinned(ticket.identifier, !pinned, !pinned ? { position: "top" } : {});
   });
-  button.addEventListener("keydown", (keyEvent) => {
+  deleteButton.addEventListener("click", () => {
+    menu.remove();
+    void (ticket.localSession ? deleteLocalSession(ticket) : deleteLinearTicket(ticket));
+  });
+  menu.addEventListener("keydown", (keyEvent) => {
     if (keyEvent.key === "Escape") menu.remove();
   });
-  button.addEventListener("blur", () => window.setTimeout(() => menu.remove(), 0));
-  button.focus();
+  menu.addEventListener("focusout", (focusEvent) => {
+    if (!menu.contains(focusEvent.relatedTarget)) window.setTimeout(() => menu.remove(), 0);
+  });
+  menu.querySelector("button").focus();
 }
 
 export function focusLinearTicketCard(identifier) {
@@ -890,12 +950,12 @@ export function upsertLinearIssue(issue) {
 
 export function ticketCanMoveToStatus(issueId, group) {
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
-  return Boolean(ticket && group.stateId && (isLinearIssuePinned(issueId) || linearStatusId(ticket) !== group.stateId));
+  return Boolean(ticket && !ticket.localSession && group.stateId && (isLinearIssuePinned(issueId) || linearStatusId(ticket) !== group.stateId));
 }
 
 export function ticketWouldHighlightStatusGroup(issueId, group) {
   const ticket = state.linearTickets.find((item) => item.identifier === issueId);
-  return Boolean(ticket && group.stateId && linearStatusId(ticket) !== group.stateId);
+  return Boolean(ticket && !ticket.localSession && group.stateId && linearStatusId(ticket) !== group.stateId);
 }
 
 export function setTicketStatusGroupDragOver(groupElement, active) {
@@ -1089,9 +1149,9 @@ export async function updateLinearIssueTitle(issueId, title) {
   els.ticketState.textContent = `Renaming ${issueId}.`;
 
   try {
-    const data = await api(`/api/linear/issues/${encodeURIComponent(issueId)}/title`, {
+    const data = await api(ticket?.localSession && flow ? `/api/flows/${encodeURIComponent(flow.id)}/meta` : `/api/linear/issues/${encodeURIComponent(issueId)}/title`, {
       method: "POST",
-      body: JSON.stringify({ issueId: issue.id, title: nextTitle }),
+      body: JSON.stringify(ticket?.localSession ? { title: nextTitle } : { issueId: issue.id, title: nextTitle }),
     });
     if (data.issue) replaceLinearIssue(data.issue);
     if (data.flow) upsertFlow(data.flow);
@@ -1188,31 +1248,28 @@ export async function moveTicketToLinearPriority(issueId, priority) {
   }
 }
 
-export async function createPinnedLinearTicket() {
-  if (state.creatingLinearTicket) return;
+export async function createLinearTicketForFlow(flow) {
+  if (!flow?.id || flow.linearIssueId || state.creatingLinearTicket) return;
   state.creatingLinearTicket = true;
-  els.createLinearTicket.disabled = true;
-  els.ticketState.textContent = "Creating In Eng ticket.";
-
+  renderFlowPane();
   try {
-    const data = await api("/api/linear/issues", { method: "POST" });
-    const issue = data.issue;
+    const { issue } = await api("/api/linear/issues", { method: "POST" });
     if (!issue?.identifier) throw new Error("Linear did not return the created issue.");
+    const { flow: updatedFlow } = await api(`/api/flows/${encodeURIComponent(flow.id)}/meta`, {
+      method: "POST",
+      body: JSON.stringify({ linearIssueId: issue.identifier }),
+    });
     upsertLinearIssue(issue);
-    state.selectedLinearIssueId = issue.identifier;
-    localStorage.setItem("flow.selectedLinearIssueId", issue.identifier);
     state.linearDetails.set(issue.identifier, { loading: false, issue });
-    syncLinearTicketsWithFlows();
     setLinearIssuePinned(issue.identifier, true, { position: "top" });
-    await createFlowFromTicket(issue);
-    focusLinearTicketCard(issue.identifier);
-    els.ticketState.textContent = formatLastUpdated();
+    upsertFlow(updatedFlow);
+    renderTickets();
+    renderFlowPane();
   } catch (error) {
-    els.ticketState.textContent = error.message;
     toast(error.message, { kind: "error" });
   } finally {
     state.creatingLinearTicket = false;
-    els.createLinearTicket.disabled = false;
+    renderFlowPane();
   }
 }
 
@@ -1306,11 +1363,13 @@ export function renderTicketCard(ticket) {
   card.dataset.issue = ticket.identifier;
   const projectName = ticket.project?.name ? escapeHtml(ticket.project.name) : "";
   card.innerHTML = `
-    <span class="ticket-id">${escapeHtml(ticket.identifier)}</span>
+    <div class="ticket-id-row">
+      ${renderLinearPriorityIcon(ticket.priority)}
+      <span class="ticket-id">${escapeHtml(ticket.localSession ? "SESSION" : ticket.identifier)}</span>
+    </div>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
       ${renderLinearStatusIcon(ticket)}
-      ${renderLinearPriorityIcon(ticket.priority)}
       ${renderGithubCiPill(flowForTicket(ticket))}
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>
@@ -1428,31 +1487,42 @@ export function renderLinearComment(comment, nested = false) {
 
 export function renderLinearDetail(context, options = {}) {
   const container = els.flowPane.querySelector(".linear-detail");
-  const cached = options.light ? null : state.linearDetails.get(context.issueId);
+  const hasLinearIssue = Boolean(context.flow?.linearIssueId || (!context.flow && context.ticket));
+  const cached = options.light || !hasLinearIssue ? null : state.linearDetails.get(context.issueId);
   const issue = (options.light ? context.ticket || cached?.issue : cached?.issue || context.ticket) || {
     identifier: context.issueId,
     title: context.title,
     url: context.issueUrl,
   };
-  const loading = options.light || cached?.loading;
+  const loading = hasLinearIssue && (options.light || cached?.loading);
   const comments = options.light ? [] : issue.comments?.nodes || [];
   const commentTree = linearCommentTree(comments);
   const meta = [
     issue.project?.name,
     issue.estimate ? `${issue.estimate} pts` : "",
   ].filter(Boolean);
-  const priorityControl = renderLinearPriorityControl(issue);
+  const priorityControl = hasLinearIssue ? renderLinearPriorityControl(issue) : "";
   const statusName = issue.state?.name || context.ticket?.state?.name || "";
-  const statusControl = renderLinearStatusControl(issue, statusName);
+  const statusControl = hasLinearIssue ? renderLinearStatusControl(issue, statusName) : "";
   const githubCiPill = renderGithubCiPill(context.flow);
   const pinButton = renderLinearPinButton(issue);
   const title = issue.title || context.title;
   const issueId = issue.identifier || context.issueId;
   const editingTitle = state.editingLinearTitleIssueId === issueId;
+  const issueDescription = issue.description || "";
+  const descriptionHtml = issueDescription.trim()
+    ? `<div class="linear-description linear-markdown">${options.light ? escapeHtml(issueDescription) : renderLinearMarkdown(issueDescription, "")}</div>`
+    : "";
+  const createLinearLabel = state.creatingLinearTicket ? "Creating Linear ticket…" : "Create Linear ticket";
+  const linearLogo = `<svg class="linear-logo" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><path d="M1.225 61.523c-.223-.949.907-1.546 1.596-.857l36.512 36.512c.689.689.092 1.819-.857 1.597C20.052 94.452 5.548 79.948 1.225 61.523ZM.002 46.889a.973.973 0 0 0 .29.761L52.35 99.709a.973.973 0 0 0 .761.289 50.03 50.03 0 0 0 6.962-.926c.765-.157 1.03-1.096.478-1.648L2.576 39.449c-.552-.552-1.491-.287-1.648.478a50.048 50.048 0 0 0-.926 6.962ZM4.211 29.705a.994.994 0 0 0 .208 1.1l64.776 64.776a.994.994 0 0 0 1.1.208 50.058 50.058 0 0 0 5.185-2.684c.552-.328.637-1.087.183-1.541L8.436 24.337c-.454-.454-1.213-.369-1.541.183a50.059 50.059 0 0 0-2.684 5.185Zm8.448-11.631a.997.997 0 0 1-.044-1.354C21.78 6.459 35.111 0 49.952 0 77.593 0 100 22.407 100 50.048c0 14.841-6.459 28.173-16.72 37.338a.997.997 0 0 1-1.354-.045L12.659 18.074Z"/></svg>`;
+  const linearButton = hasLinearIssue
+    ? ""
+    : `<button class="linear-create-ticket" type="button" data-create-linear-ticket="true" aria-label="${createLinearLabel}" title="${createLinearLabel}" aria-busy="${state.creatingLinearTicket}"${state.creatingLinearTicket ? " disabled" : ""}>${linearLogo}</button>`;
   const titleHtml = editingTitle
     ? `<form class="linear-title-form" data-linear-title-form="true" data-issue="${escapeAttribute(issueId)}">
         <input class="linear-title-input" name="title" value="${escapeAttribute(title)}" autocomplete="off" required>
-        <button class="linear-title-edit linear-title-save" type="submit" aria-label="Save Linear title">
+        ${linearButton}
+        <button class="linear-title-edit linear-title-save" type="submit" aria-label="Save title">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M5 13l4 4L19 7" />
           </svg>
@@ -1460,26 +1530,21 @@ export function renderLinearDetail(context, options = {}) {
       </form>`
     : `<div class="linear-title-row">
         <h3>${escapeHtml(title)}</h3>
-        <button class="linear-title-edit" type="button" data-linear-title-edit="true" data-issue="${escapeAttribute(issueId)}" aria-label="Edit Linear title">
+        ${linearButton}
+        <button class="linear-title-edit" type="button" data-linear-title-edit="true" data-issue="${escapeAttribute(issueId)}" aria-label="Edit title">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 20h4L18.5 9.5l-4-4L4 16v4Z" />
             <path d="m13.5 6.5 4 4" />
           </svg>
         </button>
       </div>`;
-  const issueDescription = issue.description || "";
-  const descriptionHtml = issueDescription.trim()
-    ? `<div class="linear-description linear-markdown">${options.light ? escapeHtml(issueDescription) : renderLinearMarkdown(issueDescription, "")}</div>`
-    : "";
 
   const html = `
     <section class="linear-issue">
       <div class="linear-issue-header">
         <div>
           <div class="linear-issue-kicker">
-            <a href="${escapeAttribute(issue.url || context.issueUrl)}" target="_blank" rel="noreferrer">
-              ${escapeHtml(issue.identifier || context.issueId)}
-            </a>
+            ${hasLinearIssue ? `<a href="${escapeAttribute(issue.url || context.issueUrl)}" target="_blank" rel="noreferrer">${escapeHtml(issue.identifier || context.issueId)}</a>` : ""}
             ${pinButton}
           </div>
           ${titleHtml}
@@ -1493,7 +1558,7 @@ export function renderLinearDetail(context, options = {}) {
       </div>
       ${descriptionHtml}
     </section>
-    <section class="linear-comments">
+    ${hasLinearIssue ? `<section class="linear-comments">
       <header>
         <h3>Comments</h3>
         <span>${loading ? "Loading" : `${comments.length} loaded`}</span>
@@ -1505,7 +1570,7 @@ export function renderLinearDetail(context, options = {}) {
             ? commentTree.map((comment) => renderLinearComment(comment)).join("")
             : `<p class="linear-empty-copy">${loading ? "Loading comments." : "No comments."}</p>`
       }
-    </section>
+    </section>` : ""}
   `;
   if (container._linearDetailHtml === html) {
     updateMarkdownCodeCopyPositions(container);

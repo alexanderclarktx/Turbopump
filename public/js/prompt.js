@@ -4,9 +4,9 @@ import {
   flowAgentCompacting,
   flowAgentQueuedMessage,
   flowAgentRunning,
+  flowSelectionId,
   flowRuntimeActive,
   flowShellRunning,
-  linearIssueIdForFlowId,
   renderFlowPane,
   selectedFlow,
   selectedTicket,
@@ -96,7 +96,7 @@ export function clearPromptDraftForIssue(issueId, message = "") {
 
 export function clearQueuedPromptDraftState(flow, message = "") {
   const flowId = flow?.id || "";
-  const issueId = flow?.linearIssueId || linearIssueIdForFlowId(flowId);
+  const issueId = flowSelectionId(flow);
   if (state.queuedPrompt?.flowId === flowId) state.queuedPrompt = null;
   if (issueId) {
     clearPromptDraftForIssue(issueId, message);
@@ -532,8 +532,8 @@ export async function submitQueuedPromptMessage(queued, flow) {
     requestFlowSnapshot(flow.id);
     renderFlowPane();
     renderLogs(flow.id, { force: true, scrollToLatest: true });
-  } else if (flow.linearIssueId) {
-    const inputState = ticketInputState(flow.linearIssueId);
+  } else {
+    const inputState = ticketInputState(flowSelectionId(flow));
     if (inputState.promptValue === queued.message) inputState.promptValue = "";
   }
   renderTickets();

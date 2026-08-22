@@ -261,6 +261,27 @@ export function envEditorContents() {
   return lines.join("\n");
 }
 
+export function environmentFileContents(rows) {
+  const lines = [];
+  for (const row of rows) {
+    if (!row.key) continue;
+    const activeValue = row.values.filter((value) => value.active).at(-1) || row.values.at(-1);
+    for (const value of row.values) {
+      lines.push(`${value === activeValue ? "" : "# "}${row.key}=${value.value}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+export function exportEnvironment() {
+  const contents = environmentFileContents([...els.envEditor.querySelectorAll(".env-row")].map(envRowValues));
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([contents ? `${contents}\n` : ""], { type: "text/plain;charset=utf-8" }));
+  link.download = ".env";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
 export async function saveEnv() {
   clearTimeout(envSaveTimer);
   const contents = envEditorContents();

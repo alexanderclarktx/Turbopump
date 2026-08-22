@@ -1,5 +1,5 @@
 import { closeDiffViewer, loadFlowDiff, scheduleSelectedDiffFileSync, setSelectedDiffFile } from "./js/diff.js";
-import { flowAgentRunning, flowShellRunning, renderFlowPane, selectedFlow, setFlows } from "./js/flows.js";
+import { createSession, flowAgentRunning, flowShellRunning, renderFlowPane, selectedFlow, setFlows } from "./js/flows.js";
 import {
   closeImagePreview,
   endImagePreviewDrag,
@@ -68,6 +68,7 @@ import { render } from "./js/render.js";
 import {
   agentConfigSignature,
   envEditorContents,
+  exportEnvironment,
   flushEnvSaveOnPageHide,
   handleEnvEditorChange,
   handleEnvEditorClick,
@@ -132,7 +133,6 @@ import {
 } from "./js/terminal-render.js";
 import {
   closeTicketSearch,
-  createPinnedLinearTicket,
   handleLinearDetailClick,
   handleLinearOptionsClose,
   handleLinearOptionsOpen,
@@ -269,6 +269,8 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
   void saveAgentConfig().catch(reportAutoSaveError);
 });
 
+els.exportEnvironment.addEventListener("click", exportEnvironment);
+
 els.envEditor.addEventListener("input", handleEnvEditorInput);
 
 els.envEditor.addEventListener("change", handleEnvEditorChange);
@@ -337,7 +339,7 @@ els.disconnectGithub.addEventListener("click", async () => {
 
 els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets({ refreshDetails: true }));
 
-els.createLinearTicket.addEventListener("click", () => void createPinnedLinearTicket());
+els.createLinearTicket.addEventListener("click", () => void createSession());
 
 els.searchLinearTickets.addEventListener("click", openTicketSearch);
 

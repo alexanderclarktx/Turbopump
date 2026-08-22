@@ -460,7 +460,7 @@ export function appendTerminalBlock(fragment, group, options = {}) {
     return;
   }
 
-  const meta = logMeta(group.source);
+  const meta = logMeta(group.source, group.agentLabel);
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
   if (group.source === "shell:status") block.classList.add("terminal-entry-shell-status");
@@ -583,6 +583,19 @@ export function appendTerminalTraceGroup(fragment, group, options = {}) {
   const elapsed = formatTerminalElapsed(group.displayCreatedAt || group.createdAt, group.displayLastAt || group.lastAt);
   label.textContent = elapsed ? `${meta.label} (${elapsed})` : meta.label;
 
+  let changes = null;
+  if (group.fileChanges?.files) {
+    changes = document.createElement("span");
+    changes.className = "terminal-trace-changes";
+    const additions = document.createElement("span");
+    additions.className = "terminal-trace-additions";
+    additions.textContent = `+${group.fileChanges.additions}`;
+    const deletions = document.createElement("span");
+    deletions.className = "terminal-trace-deletions";
+    deletions.textContent = `-${group.fileChanges.deletions}`;
+    changes.append(additions, " ", deletions);
+  }
+
   const time = document.createElement("time");
   time.className = "terminal-entry-time";
   time.dateTime = group.createdAt;
@@ -593,7 +606,7 @@ export function appendTerminalTraceGroup(fragment, group, options = {}) {
     toggleTerminalTraceGroup(details);
   });
 
-  summary.replaceChildren(marker, label, time);
+  summary.replaceChildren(marker, label, ...(changes ? [changes] : []), time);
   details.replaceChildren(summary);
   if (isTerminalTraceGroupOpen(group)) {
     details.open = true;
@@ -855,7 +868,14 @@ export function appendTerminalWorkingBlock(fragment, runtimeKind = "agent") {
 
 export function terminalGroupSignaturePart(group) {
   if (group.source === "agent:trace-group" && group.traceKey && !isTerminalTraceGroupOpen(group)) {
-    return [group.source, group.traceKey, group.createdAt].join(":");
+    return [
+      group.source,
+      group.traceKey,
+      group.createdAt,
+      group.fileChanges?.files || 0,
+      group.fileChanges?.additions || 0,
+      group.fileChanges?.deletions || 0,
+    ].join(":");
   }
   const logIds = group.logIds || [group.id];
   const firstLogId = logIds[0] ?? group.id;
@@ -868,6 +888,7 @@ export function terminalGroupSignaturePart(group) {
     logIds.length,
     group.createdAt,
     group.lastAt,
+    group.agentLabel || "",
     String(group.message || "").length,
     group.latestVisibleToolOutput ? "preview" : "",
     group.simpleModeToolCallCount ?? "",
@@ -1100,7 +1121,6 @@ export function renderLogs(id, options = {}) {
   else if (options.preserveScrollTop) {
     terminal.scrollTop = scrollTopBeforeRender + (terminal.scrollHeight - scrollHeightBeforeRender);
   }
-  renderShellOutputPane(id);
 }
 
 export function appendTerminalLoadMoreButton(fragment, options = {}) {

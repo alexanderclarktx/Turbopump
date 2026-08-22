@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 
 type ThreadStartSource = "startup" | "clear";
@@ -76,6 +76,12 @@ type DiffFile = {
   path: string;
   additions: number | null;
   deletions: number | null;
+};
+
+type FileChanges = {
+  files: number;
+  additions: number;
+  deletions: number;
 };
 
 type UploadedImage = File;
@@ -311,6 +317,7 @@ type RuntimeProcess = {
   threadId?: string;
   activeTurnId?: string;
   activeTurnTraceAfterLogId?: number;
+  activeTurnTree?: string;
   compacting?: boolean;
   compactingStartedAt?: number;
   compactionPromptLogId?: number;
@@ -403,12 +410,16 @@ const deleteLogsByFlowIdStmt = db.query("delete from logs where flowId = ?");
 const latestUserLogBeforeStmt = db.query(
   "select id from logs where flowId = ? and source = 'user' and id < ? order by id desc limit 1",
 );
-const logsAfterStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc");
 const logsPageStmt = db.query("select * from logs where flowId = ? and id > ? order by id asc limit ?");
 const logsBeforePageStmt = db.query(`
   select * from (
     select * from logs where flowId = ? and id < ? order by id desc limit ?
   ) order by id asc
+`);
+const traceLogCountStmt = db.query(`
+  select count(*) as count
+  from logs
+  where flowId = ? and id > ? and id < ? and source not in ('agent:message-boundary', 'user:queued')
 `);
 const latestLogIdStmt = db.query("select id from logs where flowId = ? order by id desc limit 1");
 const shellOutputStateStmt = db.query("select clearAfterLogId from shell_output_state where flowId = ?");
@@ -461,10 +472,11 @@ function setSetting(key: string, value: string) {
   setSettingStmt.run(key, value);
 }
 
-const compactableLogSources = new Set(["agent:message", "agent:reasoning", "agent:thinking"]);
-const streamingLogsCompactedSettingKey = "streamingLogsCompactedV1";
+const compactableLogSources = new Set(["agent:message", "agent:reasoning", "agent:thinking", "agent:cmd", "shell:output"]);
+const streamingLogsCompactedSettingKey = "streamingLogsCompactedV2";
 const logsForCompactionStmt = db.query("select id, source, message from logs where flowId = ? and id > ? order by id asc");
 const updateLogMessageStmt = db.query("update logs set message = ? where id = ?");
+const deleteCompactedLogRunStmt = db.query("delete from logs where flowId = ? and source = ? and id > ? and id <= ?");
 const logFlowIdsStmt = db.query("select distinct flowId from logs");
 
 function compactFlowStreamingLogs(flowId: string, afterId = 0) {
@@ -475,7 +487,7 @@ function compactFlowStreamingLogs(flowId: string, afterId = 0) {
     let message = "";
     for (let index = start; index < end; index += 1) message += rows[index].message;
     updateLogMessageStmt.run(message, rows[start].id);
-    for (let index = start + 1; index < end; index += 1) deleteLogByIdStmt.run(rows[index].id);
+    deleteCompactedLogRunStmt.run(flowId, rows[start].source, rows[start].id, rows[end - 1].id);
     removed += end - start - 1;
   };
   db.transaction(() => {
@@ -845,8 +857,20 @@ function clientFlow(flow: Flow, clearAfterLogId = shellOutputClearAfterLogId(flo
 }
 
 function listClientFlows() {
+  deleteMissingWorktreeSessions();
   const clearAfterLogIds = shellOutputClearAfterLogIds();
   return listFlows().map((flow) => clientFlow(flow, clearAfterLogIds.get(flow.id) ?? 0));
+}
+
+function deleteMissingWorktreeSessions() {
+  for (const flow of listFlows()) {
+    if (flow.parentFlowId || !flow.checkoutPath || existsSync(flow.checkoutPath)) continue;
+    const companion = companionFlowFor(flow.id);
+    if (companion) stopFlowRuntimesForDelete(companion.id);
+    stopFlowRuntimesForDelete(flow.id);
+    if (companion) deleteFlowTraceData(companion.id);
+    deleteFlowTraceData(flow.id);
+  }
 }
 
 function worktreeNameFromPath(path: string) {
@@ -930,7 +954,11 @@ function deleteWorktree(name: string) {
   if (companion) stopFlowRuntimesForDelete(companion.id);
   if (flow) stopFlowRuntimesForDelete(flow.id);
   if (existsSync(repoCheckoutDir) && isGitWorktree(target)) {
-    runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
+    try {
+      runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
+    } catch {
+      rmSync(target, { recursive: true, force: true });
+    }
     runGit(["worktree", "prune"], repoCheckoutDir);
   } else {
     rmSync(target, { recursive: true, force: true });
@@ -1075,6 +1103,10 @@ function normalizeLinearIssueId(value: unknown) {
 
 async function flowMetaUpdate(flow: Flow, body: Record<string, unknown>): Promise<Partial<Flow>> {
   const fields: Partial<Flow> = {};
+  if ("title" in body) {
+    if (typeof body.title !== "string" || !body.title.trim()) throw new Error("Title is required.");
+    fields.title = body.title.trim();
+  }
   if ("prUrl" in body) {
     fields.prUrl = normalizePrUrl(body.prUrl);
     fields.githubCiStatus = "unknown";
@@ -1231,7 +1263,8 @@ function updateFlow(id: string, fields: Partial<Flow>) {
     now(),
     id,
   );
-  broadcast("flows", listClientFlows());
+  const flow = getFlow(id);
+  if (flow) broadcast("flow", clientFlow(flow));
 }
 
 function pathIsInsideDirectory(path: string, directory: string) {
@@ -1251,6 +1284,13 @@ function assertFlowWorktree(flow: Flow) {
 
 function ensureFlowWorktree(flow: Flow) {
   if (flowHasWorktree(flow)) return flow;
+
+  if (flow.checkoutPath && !existsSync(flow.checkoutPath)) {
+    deleteMissingWorktreeSessions();
+    broadcast("flows", listClientFlows());
+    broadcast("checkouts", listWorktrees());
+    throw new Error("Session was deleted because its worktree no longer exists.");
+  }
 
   const parent = flow.parentFlowId ? getFlow(flow.parentFlowId) : null;
   if (parent) {
@@ -1363,6 +1403,7 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
 
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   insertLog(flow.id, "agent:error", `agent heartbeat timed out after ${Math.round(staleMs / 1000)}s\n`);
   updateFlow(flow.id, { agentStatus: "failed" });
   return getFlow(flow.id) ?? flow;
@@ -1506,13 +1547,13 @@ function gitCommandLabel(args: string[]) {
   return `git ${args[0] ?? ""}`.trim();
 }
 
-function runGit(args: string[], cwd = rootDir) {
+function runGit(args: string[], cwd = rootDir, env = process.env) {
   const result = Bun.spawnSync({
     cmd: ["git", ...args],
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: process.env,
+    env,
   });
   const stdout = result.stdout.toString().trim();
   const stderr = result.stderr.toString().trim();
@@ -1521,6 +1562,34 @@ function runGit(args: string[], cwd = rootDir) {
     throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
   }
   return stdout;
+}
+
+function worktreeTree(flow: Flow) {
+  const indexPath = join(tmpdir(), `turbopump-${crypto.randomUUID()}.index`);
+  const env = { ...process.env, GIT_INDEX_FILE: indexPath };
+  try {
+    runGit(["read-tree", "HEAD"], flow.checkoutPath, env);
+    runGit(["add", "-A", "--"], flow.checkoutPath, env);
+    return runGit(["write-tree"], flow.checkoutPath, env);
+  } catch {
+    return "";
+  } finally {
+    rmSync(indexPath, { force: true });
+    rmSync(`${indexPath}.lock`, { force: true });
+  }
+}
+
+function fileChangesSince(flowId: string, beforeTree = ""): FileChanges | undefined {
+  const flow = getFlow(flowId);
+  if (!flow?.checkoutPath || !beforeTree) return;
+  try {
+    const afterTree = worktreeTree(flow);
+    if (!afterTree || afterTree === beforeTree) return;
+    const summary = parseGitNumstat(runGit(["diff", "--numstat", beforeTree, afterTree], flow.checkoutPath));
+    return summary.files.length ? { ...summary, files: summary.files.length } : undefined;
+  } catch {
+    return;
+  }
 }
 
 function githubConfigPayload() {
@@ -1581,7 +1650,7 @@ function invalidateLinearIssue(identifier: string) {
   deleteLinearIssueStmt.run(issueId);
   for (const flow of listFlows()) {
     if (flow.linearIssueId !== issueId) continue;
-    updateFlow(flow.id, { linearIssueUrl: "", linearStatus: "" });
+    updateFlow(flow.id, { linearIssueId: "", linearIssueUrl: "", linearStatus: "" });
   }
 }
 
@@ -2190,17 +2259,17 @@ function isAgentMessageBoundarySource(source: string) {
   return source === "agent:message-boundary";
 }
 
-function isTraceCountSource(source: string) {
-  return !isAgentMessageBoundarySource(source) && source !== "user:queued";
-}
-
-function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: number, kind = "") {
+function createTraceGroupBetweenLogs(
+  flowId: string,
+  afterId: number,
+  beforeId: number,
+  kind = "",
+  fileChanges?: FileChanges,
+) {
   if (beforeId <= afterId) return;
 
-  const logs = (logsAfterStmt.all(flowId, afterId) as LogRow[]).filter(
-    (log) => log.id < beforeId && isTraceCountSource(log.source),
-  );
-  const traceCount = logs.length;
+  const row = traceLogCountStmt.get(flowId, afterId, beforeId) as { count: number } | null;
+  const traceCount = row?.count ?? 0;
   if (traceCount <= 1) return;
 
   insertLog(
@@ -2211,6 +2280,7 @@ function createTraceGroupBetweenLogs(flowId: string, afterId: number, beforeId: 
       beforeId,
       count: traceCount,
       ...(kind ? { kind } : {}),
+      ...(fileChanges ? { fileChanges } : {}),
     }),
   );
 }
@@ -2222,11 +2292,16 @@ function createCompletedTurnTraceGroup(flowId: string, beforeId: number) {
   createTraceGroupBetweenLogs(flowId, prompt.id, beforeId);
 }
 
-function createCompletedTurnTraceGroupAfterLog(flowId: string, afterId: number | undefined, beforeId: number) {
+function createCompletedTurnTraceGroupAfterLog(
+  flowId: string,
+  afterId: number | undefined,
+  beforeId: number,
+  fileChanges?: FileChanges,
+) {
   const turnStartId = afterId || (latestUserLogBeforeStmt.get(flowId, beforeId) as { id: number } | null)?.id || 0;
   if (turnStartId) compactFlowStreamingLogs(flowId, turnStartId);
   if (afterId) {
-    createTraceGroupBetweenLogs(flowId, afterId, beforeId);
+    createTraceGroupBetweenLogs(flowId, afterId, beforeId, "", fileChanges);
     return;
   }
   createCompletedTurnTraceGroup(flowId, beforeId);
@@ -2256,6 +2331,7 @@ function finishCodexCompaction(runtime: RuntimeProcess, params: Record<string, u
   updateRuntimeThreadFromParams(runtime, params);
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   runtime.compacting = false;
   runtime.compactingStartedAt = undefined;
   const compactionPromptLogId = runtime.compactionPromptLogId;
@@ -2277,7 +2353,8 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     const turn = params.turn as { id?: string } | undefined;
     runtime.activeTurnId = turn?.id;
     setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
-    insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId ?? ""}`);
+    const model = getFlow(runtime.flowId)?.agentModel || codexDefaultModel;
+    insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId ?? ""} model ${model}`);
     updateFlow(runtime.flowId, { agentStatus: "running" });
     return;
   }
@@ -2287,13 +2364,22 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
     if (!turn?.id || turn.id === runtime.activeTurnId) runtime.activeTurnId = undefined;
     if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
     const activeTurnTraceAfterLogId = runtime.activeTurnTraceAfterLogId;
-    if (!runtime.activeTurnId) runtime.activeTurnTraceAfterLogId = undefined;
+    const activeTurnTree = runtime.activeTurnTree;
+    if (!runtime.activeTurnId) {
+      runtime.activeTurnTraceAfterLogId = undefined;
+      runtime.activeTurnTree = undefined;
+    }
     if (runtime.compacting && turn?.status !== "failed") {
       finishCodexCompaction(runtime, params);
       return;
     }
     const turnStatusLogId = insertLog(runtime.flowId, "agent:status", `turn ${turn?.status ?? "completed"}`);
-    createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);
+    createCompletedTurnTraceGroupAfterLog(
+      runtime.flowId,
+      activeTurnTraceAfterLogId,
+      turnStatusLogId + 1,
+      fileChangesSince(runtime.flowId, activeTurnTree),
+    );
     if (turn?.error?.message) insertLog(runtime.flowId, "agent:error", `${turn.error.message}\n`);
     if (runtime.compacting) {
       runtime.compacting = false;
@@ -2554,15 +2640,18 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
       if (!isNoActiveTurnSteerError(error)) throw error;
       runtime.activeTurnId = undefined;
       runtime.activeTurnTraceAfterLogId = undefined;
+      runtime.activeTurnTree = undefined;
       setActiveTurnId(runtime.flowId);
       insertLog(runtime.flowId, "agent:status", "stale active turn cleared before starting a new turn");
     }
   }
+  const activeTurnTree = worktreeTree(flow);
   const response = (await sendCodexRequest(runtime, "turn/start", codexTurnParams(runtime, flow, message))) as {
     turn?: { id?: string };
   };
   runtime.activeTurnId = response.turn?.id;
   runtime.activeTurnTraceAfterLogId = userLogId || undefined;
+  runtime.activeTurnTree = activeTurnTree;
   setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
 }
 
@@ -2688,6 +2777,7 @@ async function ensureCodexRuntime(flow: Flow) {
 async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   if (runtime.activeTurnId) throw new Error("Cannot clear while a Codex turn is running.");
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   runtime.compacting = false;
   runtime.compactingStartedAt = undefined;
   runtime.compactionPromptLogId = undefined;
@@ -2703,6 +2793,7 @@ async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   runtime.threadId = thread.id;
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   setActiveTurnId(flow.id);
   setSetting(codexThreadSettingKey(flow.id), thread.id);
   updateFlow(flow.id, {
@@ -2980,6 +3071,7 @@ function finishClaudeCompaction(runtime: RuntimeProcess, succeeded: boolean) {
   runtime.compactionPromptLogId = undefined;
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   setActiveTurnId(runtime.flowId);
   const contextCompactedLogId = insertLog(runtime.flowId, "agent:status", succeeded ? "context compacted" : "compact failed");
   deleteQueuedAgentMessagePlaceholders(runtime);
@@ -3002,15 +3094,22 @@ function finishClaudeTurn(runtime: RuntimeProcess, message: ClaudeSdkMessage) {
   const interrupted = flowBefore?.agentStatus === "interrupting";
   const failed = !interrupted && subtype !== "success";
   const activeTurnTraceAfterLogId = runtime.activeTurnTraceAfterLogId;
+  const activeTurnTree = runtime.activeTurnTree;
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
+  runtime.activeTurnTree = undefined;
   setActiveTurnId(runtime.flowId);
   const turnStatusLogId = insertLog(
     runtime.flowId,
     "agent:status",
     `turn ${interrupted ? "interrupted" : failed ? "failed" : "completed"}`,
   );
-  createCompletedTurnTraceGroupAfterLog(runtime.flowId, activeTurnTraceAfterLogId, turnStatusLogId + 1);
+  createCompletedTurnTraceGroupAfterLog(
+    runtime.flowId,
+    activeTurnTraceAfterLogId,
+    turnStatusLogId + 1,
+    fileChangesSince(runtime.flowId, activeTurnTree),
+  );
   if (failed) {
     const detail = typeof message.result === "string" && message.result.trim() ? message.result : subtype || "unknown error";
     insertLog(runtime.flowId, "agent:error", `${detail}\n`);
@@ -3088,6 +3187,7 @@ async function sendClaudeTurn(runtime: RuntimeProcess, flow: Flow, message: stri
   if (!claude) throw new Error("Claude session is not ready.");
   runtime.lastSeenAt = Date.now();
   const steering = Boolean(runtime.activeTurnId);
+  const activeTurnTree = steering ? "" : worktreeTree(flow);
   claude.pushInput({
     type: "user",
     message: { role: "user", content: [{ type: "text", text: message }] },
@@ -3098,8 +3198,10 @@ async function sendClaudeTurn(runtime: RuntimeProcess, flow: Flow, message: stri
   claude.turnCounter += 1;
   runtime.activeTurnId = `claude-${claude.turnCounter}`;
   runtime.activeTurnTraceAfterLogId = userLogId || undefined;
+  runtime.activeTurnTree = activeTurnTree;
   setActiveTurnId(runtime.flowId, runtime.activeTurnId);
-  insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId}`);
+  const model = getFlow(runtime.flowId)?.agentModel || claudeDefaultModel;
+  insertLog(runtime.flowId, "agent:status", `turn started ${runtime.activeTurnId} model ${model}`);
   updateFlow(runtime.flowId, { agentStatus: "running" });
 }
 
@@ -3521,7 +3623,12 @@ async function startQueuedPromptIfReady(flowId: string) {
   const queued = queuedPromptForFlow(flowId);
   if (!flow || !queued) return false;
   const runtime = agentProcesses.get(flowId);
-  if (runtime?.stopping || runtime?.compacting || runtime?.activeTurnId) return false;
+  if (
+    ["running", "interrupting"].includes(flow.agentStatus) ||
+    runtime?.stopping ||
+    runtime?.compacting ||
+    runtime?.activeTurnId
+  ) return false;
 
   clearQueuedPrompt(flowId, { broadcast: false });
   try {
@@ -3604,7 +3711,7 @@ async function startAgent(flow: Flow, userMessage = "") {
     updateFlow(flow.id, { agentStatus: "running" });
     return;
   }
-  if (userMessage && (await handleSlashCommand(flow, userMessage))) return;
+  if (message.startsWith("/") && (await handleSlashCommand(flow, userMessage))) return;
   updateFlow(flow.id, {
     agentStatus: message ? "running" : "idle",
   });
@@ -3668,6 +3775,7 @@ function startShellCommand(flow: Flow, userCommand: string) {
       const code = await proc.exited;
       await Promise.all([stdoutDone, stderrDone]);
       if (shellProcesses.get(flow.id)?.proc === proc) shellProcesses.delete(flow.id);
+      compactFlowStreamingLogs(flow.id, commandLogId);
       const resultLogId = insertLog(
         flow.id,
         "shell:result",
@@ -3726,6 +3834,7 @@ async function interruptAgent(flowId: string) {
   }
   if ((!runtime.claude && !runtime.threadId) || !runtime.activeTurnId) {
     runtime.activeTurnTraceAfterLogId = undefined;
+    runtime.activeTurnTree = undefined;
     setActiveTurnId(flowId);
     updateFlow(flowId, { agentStatus: "idle" });
     return;
@@ -3739,6 +3848,7 @@ async function interruptAgent(flowId: string) {
     if (!isNoActiveTurnInterruptError(error)) throw error;
     runtime.activeTurnId = undefined;
     runtime.activeTurnTraceAfterLogId = undefined;
+    runtime.activeTurnTree = undefined;
     setActiveTurnId(flowId);
     insertLog(flowId, "agent:status", "interrupt ignored: no active turn");
     updateFlow(flowId, { agentStatus: "idle" });
@@ -4009,6 +4119,21 @@ async function updateLinearIssueTitle(identifier: string, issueId: string, title
   return { issue, flow: flow ? getFlow(flow.id) : null };
 }
 
+async function deleteLinearIssue(identifier: string, issueId: string) {
+  const data = await linearGraphql<{ issueDelete?: { success: boolean } }>(
+    `
+      mutation DeleteIssue($id: String!) {
+        issueDelete(id: $id) {
+          success
+        }
+      }
+    `,
+    { id: issueId || identifier },
+  );
+  if (!data.issueDelete?.success) throw new Error("Linear did not delete the issue.");
+  invalidateLinearIssue(identifier);
+}
+
 function linearWorkflowKey(name = "") {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -4229,6 +4354,27 @@ async function syncAssignedLinearIssues(apiKey?: string) {
   return linearTicketsPayload(viewer, false, workflowStates);
 }
 
+function parseGitNumstat(text: string) {
+  let additions = 0;
+  let deletions = 0;
+  const files: DiffFile[] = [];
+  for (const line of text.split("\n")) {
+    const [added, deleted, ...pathParts] = line.split("\t");
+    const path = pathParts.join("\t").trim();
+    if (!path) continue;
+    const addedCount = Number(added);
+    const deletedCount = Number(deleted);
+    if (Number.isFinite(addedCount)) additions += addedCount;
+    if (Number.isFinite(deletedCount)) deletions += deletedCount;
+    files.push({
+      path,
+      additions: Number.isFinite(addedCount) ? addedCount : null,
+      deletions: Number.isFinite(deletedCount) ? deletedCount : null,
+    });
+  }
+  return { additions, deletions, files };
+}
+
 async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
   try {
     flow = assertFlowWorktree(flow);
@@ -4271,29 +4417,12 @@ async function getDiff(flow: Flow, options: { patch?: boolean } = {}) {
     }
   }
 
-  const namesResult = await run(["diff", "--name-only", "-z", baseRef], { trim: false });
-  const numstatResult = await run(["diff", "--find-renames", "--numstat", baseRef], { trim: false });
+  const [namesResult, numstatResult] = await Promise.all([
+    run(["diff", "--name-only", "-z", baseRef], { trim: false }),
+    run(["diff", "--find-renames", "--numstat", baseRef], { trim: false }),
+  ]);
   const names = namesResult.ok ? namesResult.text : "";
-  let additions = 0;
-  let deletions = 0;
-  const files: DiffFile[] = [];
-  if (numstatResult.ok) {
-    for (const line of numstatResult.text.split("\n")) {
-      const [added, deleted] = line.split("\t");
-      const path = line.split("\t").slice(2).join("\t").trim();
-      const addedCount = Number(added);
-      const deletedCount = Number(deleted);
-      if (Number.isFinite(addedCount)) additions += addedCount;
-      if (Number.isFinite(deletedCount)) deletions += deletedCount;
-      if (path) {
-        files.push({
-          path,
-          additions: Number.isFinite(addedCount) ? addedCount : null,
-          deletions: Number.isFinite(deletedCount) ? deletedCount : null,
-        });
-      }
-    }
-  }
+  const { additions, deletions, files } = parseGitNumstat(numstatResult.ok ? numstatResult.text : "");
   const diff = {
     status: names.replaceAll("\0", "\n").trim(),
     names,
@@ -4340,7 +4469,7 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/checkouts" && request.method === "GET") {
-    return json({ checkouts: listWorktrees() });
+    return json({ flows: listClientFlows(), checkouts: listWorktrees() });
   }
 
   if (parts[0] === "api" && parts[1] === "checkouts" && parts[2] && request.method === "DELETE") {
@@ -4445,6 +4574,14 @@ async function handleApi(request: Request, url: URL) {
     return json({ ok: true, ...result });
   }
 
+  if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && request.method === "DELETE") {
+    const body = await readJson<{ issueId?: string }>(request);
+    await deleteLinearIssue(decodeURIComponent(parts[3]), body.issueId || "");
+    broadcast("flows", listClientFlows());
+    broadcast("checkouts", listWorktrees());
+    return json({ ok: true, flows: listClientFlows() });
+  }
+
   if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && request.method === "GET") {
     const issue = await fetchLinearIssueDetail(decodeURIComponent(parts[3]));
     if (!issue) return json({ error: "Linear issue not found" }, { status: 404 });
@@ -4479,20 +4616,19 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/flows" && request.method === "POST") {
     const body = await readJson<{
-      issue: string;
+      issue?: string;
       title?: string;
       url?: string;
       linearStatus?: string;
       state?: { name?: string } | null;
     }>(request);
     const parsed = parseLinearIssue(body.issue || "");
-    if (!parsed.identifier) return json({ error: "Linear issue URL or key is required" }, { status: 400 });
-    const existing = getFlowByIssue(parsed.identifier);
+    const existing = parsed.identifier ? getFlowByIssue(parsed.identifier) : null;
     if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
 
     const id = crypto.randomUUID();
     const linearIssue = cachedLinearIssue(parsed.identifier);
-    const { target, branch, baseSha } = createWorktree(id, parsed.identifier);
+    const { target, branch, baseSha } = createWorktree(id, parsed.identifier || `session-${id.slice(0, 8)}`);
     const createdAt = now();
     db.query(`
       insert into flows (
@@ -4503,7 +4639,7 @@ async function handleApi(request: Request, url: URL) {
       id,
       parsed.identifier,
       body.url?.trim() || linearIssue?.url || parsed.url,
-      body.title?.trim() || linearIssue?.title || parsed.identifier,
+      body.title?.trim() || linearIssue?.title || parsed.identifier || "new session",
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
       "",
       defaultAgentProviderKind(),
