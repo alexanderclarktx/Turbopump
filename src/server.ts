@@ -857,8 +857,20 @@ function clientFlow(flow: Flow, clearAfterLogId = shellOutputClearAfterLogId(flo
 }
 
 function listClientFlows() {
+  deleteMissingWorktreeSessions();
   const clearAfterLogIds = shellOutputClearAfterLogIds();
   return listFlows().map((flow) => clientFlow(flow, clearAfterLogIds.get(flow.id) ?? 0));
+}
+
+function deleteMissingWorktreeSessions() {
+  for (const flow of listFlows()) {
+    if (flow.parentFlowId || !flow.checkoutPath || existsSync(flow.checkoutPath)) continue;
+    const companion = companionFlowFor(flow.id);
+    if (companion) stopFlowRuntimesForDelete(companion.id);
+    stopFlowRuntimesForDelete(flow.id);
+    if (companion) deleteFlowTraceData(companion.id);
+    deleteFlowTraceData(flow.id);
+  }
 }
 
 function worktreeNameFromPath(path: string) {
@@ -942,7 +954,11 @@ function deleteWorktree(name: string) {
   if (companion) stopFlowRuntimesForDelete(companion.id);
   if (flow) stopFlowRuntimesForDelete(flow.id);
   if (existsSync(repoCheckoutDir) && isGitWorktree(target)) {
-    runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
+    try {
+      runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
+    } catch {
+      rmSync(target, { recursive: true, force: true });
+    }
     runGit(["worktree", "prune"], repoCheckoutDir);
   } else {
     rmSync(target, { recursive: true, force: true });
@@ -1087,6 +1103,10 @@ function normalizeLinearIssueId(value: unknown) {
 
 async function flowMetaUpdate(flow: Flow, body: Record<string, unknown>): Promise<Partial<Flow>> {
   const fields: Partial<Flow> = {};
+  if ("title" in body) {
+    if (typeof body.title !== "string" || !body.title.trim()) throw new Error("Title is required.");
+    fields.title = body.title.trim();
+  }
   if ("prUrl" in body) {
     fields.prUrl = normalizePrUrl(body.prUrl);
     fields.githubCiStatus = "unknown";
@@ -1264,6 +1284,13 @@ function assertFlowWorktree(flow: Flow) {
 
 function ensureFlowWorktree(flow: Flow) {
   if (flowHasWorktree(flow)) return flow;
+
+  if (flow.checkoutPath && !existsSync(flow.checkoutPath)) {
+    deleteMissingWorktreeSessions();
+    broadcast("flows", listClientFlows());
+    broadcast("checkouts", listWorktrees());
+    throw new Error("Session was deleted because its worktree no longer exists.");
+  }
 
   const parent = flow.parentFlowId ? getFlow(flow.parentFlowId) : null;
   if (parent) {
@@ -1623,7 +1650,7 @@ function invalidateLinearIssue(identifier: string) {
   deleteLinearIssueStmt.run(issueId);
   for (const flow of listFlows()) {
     if (flow.linearIssueId !== issueId) continue;
-    updateFlow(flow.id, { linearIssueUrl: "", linearStatus: "" });
+    updateFlow(flow.id, { linearIssueId: "", linearIssueUrl: "", linearStatus: "" });
   }
 }
 
@@ -3596,7 +3623,12 @@ async function startQueuedPromptIfReady(flowId: string) {
   const queued = queuedPromptForFlow(flowId);
   if (!flow || !queued) return false;
   const runtime = agentProcesses.get(flowId);
-  if (runtime?.stopping || runtime?.compacting || runtime?.activeTurnId) return false;
+  if (
+    ["running", "interrupting"].includes(flow.agentStatus) ||
+    runtime?.stopping ||
+    runtime?.compacting ||
+    runtime?.activeTurnId
+  ) return false;
 
   clearQueuedPrompt(flowId, { broadcast: false });
   try {
@@ -3679,7 +3711,7 @@ async function startAgent(flow: Flow, userMessage = "") {
     updateFlow(flow.id, { agentStatus: "running" });
     return;
   }
-  if (userMessage && (await handleSlashCommand(flow, userMessage))) return;
+  if (message.startsWith("/") && (await handleSlashCommand(flow, userMessage))) return;
   updateFlow(flow.id, {
     agentStatus: message ? "running" : "idle",
   });
@@ -4087,6 +4119,21 @@ async function updateLinearIssueTitle(identifier: string, issueId: string, title
   return { issue, flow: flow ? getFlow(flow.id) : null };
 }
 
+async function deleteLinearIssue(identifier: string, issueId: string) {
+  const data = await linearGraphql<{ issueDelete?: { success: boolean } }>(
+    `
+      mutation DeleteIssue($id: String!) {
+        issueDelete(id: $id) {
+          success
+        }
+      }
+    `,
+    { id: issueId || identifier },
+  );
+  if (!data.issueDelete?.success) throw new Error("Linear did not delete the issue.");
+  invalidateLinearIssue(identifier);
+}
+
 function linearWorkflowKey(name = "") {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -4422,7 +4469,7 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/checkouts" && request.method === "GET") {
-    return json({ checkouts: listWorktrees() });
+    return json({ flows: listClientFlows(), checkouts: listWorktrees() });
   }
 
   if (parts[0] === "api" && parts[1] === "checkouts" && parts[2] && request.method === "DELETE") {
@@ -4527,6 +4574,14 @@ async function handleApi(request: Request, url: URL) {
     return json({ ok: true, ...result });
   }
 
+  if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && request.method === "DELETE") {
+    const body = await readJson<{ issueId?: string }>(request);
+    await deleteLinearIssue(decodeURIComponent(parts[3]), body.issueId || "");
+    broadcast("flows", listClientFlows());
+    broadcast("checkouts", listWorktrees());
+    return json({ ok: true, flows: listClientFlows() });
+  }
+
   if (parts[0] === "api" && parts[1] === "linear" && parts[2] === "issues" && parts[3] && request.method === "GET") {
     const issue = await fetchLinearIssueDetail(decodeURIComponent(parts[3]));
     if (!issue) return json({ error: "Linear issue not found" }, { status: 404 });
@@ -4561,20 +4616,19 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/flows" && request.method === "POST") {
     const body = await readJson<{
-      issue: string;
+      issue?: string;
       title?: string;
       url?: string;
       linearStatus?: string;
       state?: { name?: string } | null;
     }>(request);
     const parsed = parseLinearIssue(body.issue || "");
-    if (!parsed.identifier) return json({ error: "Linear issue URL or key is required" }, { status: 400 });
-    const existing = getFlowByIssue(parsed.identifier);
+    const existing = parsed.identifier ? getFlowByIssue(parsed.identifier) : null;
     if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
 
     const id = crypto.randomUUID();
     const linearIssue = cachedLinearIssue(parsed.identifier);
-    const { target, branch, baseSha } = createWorktree(id, parsed.identifier);
+    const { target, branch, baseSha } = createWorktree(id, parsed.identifier || `session-${id.slice(0, 8)}`);
     const createdAt = now();
     db.query(`
       insert into flows (
@@ -4585,7 +4639,7 @@ async function handleApi(request: Request, url: URL) {
       id,
       parsed.identifier,
       body.url?.trim() || linearIssue?.url || parsed.url,
-      body.title?.trim() || linearIssue?.title || parsed.identifier,
+      body.title?.trim() || linearIssue?.title || parsed.identifier || "new session",
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
       "",
       defaultAgentProviderKind(),

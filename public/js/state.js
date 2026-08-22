@@ -223,6 +223,7 @@ export const state = {
   deletingCheckoutNames: new Set(),
   deletingOutputLogIds: new Set(),
   creatingLinearTicket: false,
+  creatingSession: false,
   githubCiSelectedFlowId: "",
 };
 

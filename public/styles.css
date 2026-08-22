@@ -1843,6 +1843,10 @@ body.ticket-drawer-resizing main {
   outline: none;
 }
 
+.ticket-options-menu .danger {
+  color: var(--danger);
+}
+
 .ticket-card.agent-turn-notified:not(.active) {
   border-width: 2px;
   border-color: transparent;
@@ -2493,6 +2497,32 @@ body.flow-resizing .flow-content {
   min-height: 0;
 }
 
+.linear-create-ticket {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  min-height: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.linear-create-ticket:hover,
+.linear-create-ticket:focus-visible {
+  background: transparent;
+  color: var(--ink);
+}
+
+.linear-create-ticket .linear-logo {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+  stroke: none;
+}
+
 .linear-issue,
 .linear-comments {
   display: grid;
@@ -2511,21 +2541,20 @@ body.flow-resizing .flow-content {
   min-width: 0;
 }
 
-.linear-issue-header a {
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 700;
-  text-decoration: none;
-  transition:
-    color var(--motion-fast),
-    opacity var(--motion-fast);
-}
-
 .linear-issue-kicker {
   display: flex;
   align-items: center;
   gap: 8px;
+  height: 18px;
   min-width: 0;
+}
+
+.linear-issue-kicker a {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 18px;
+  text-decoration: none;
 }
 
 .linear-pin-toggle {
@@ -2581,6 +2610,10 @@ body.theme-dark .linear-pin-toggle.active {
 
 .linear-pin-toggle.active .linear-pin-icon path {
   fill: currentColor;
+}
+
+.linear-issue-kicker > .linear-pin-toggle:only-child {
+  margin-left: -4px;
 }
 
 .linear-issue-header h3,
@@ -2678,8 +2711,10 @@ body.theme-dark .linear-pin-toggle.active {
 
 .linear-meta {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  min-height: 22px;
 }
 
 .linear-meta > span:not(.linear-status-control):not(.linear-priority-control),

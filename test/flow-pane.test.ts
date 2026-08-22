@@ -275,6 +275,9 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function persistLinearIssueNotifications()");
     expect(app).toContain("function updateBrowserTabNotification()");
     expect(app).toContain("function notifyAgentTurnEnded(flowId)");
+    expect(app).toContain("function flowSelectionIdForFlowId(flowId)");
+    expect(app).toContain("return flowSelectionId(flowForId(flowId));");
+    expect(app).toContain("clearLinearIssueNotification(flowSelectionId(flow), { render: false });");
     expect(app).toContain("function canAcknowledgeSelectedNotification()");
     expect(app).toContain("function acknowledgeSelectedLinearIssueNotification()");
     expect(app).toContain("function refreshFlowDiffAfterAgentTurn(flowId)");
@@ -589,6 +592,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("scheduleCheckoutsLoaded();");
     expect(app).toContain("checkoutLoadFrame = requestAnimationFrame");
     expect(app).toContain("state.checkoutsLoading = true;");
+    expect(app).toContain('const data = await api("/api/checkouts");\n    if (data.flows) setFlows(data.flows);');
     expect(app).toContain("function renderLinearStatusIcon(status)");
     expect(app).toContain('if (key === "in-qa" || key === "qa") return "in-qa";');
     expect(app).toContain('if (key === "in-eng") return "in-eng";');
@@ -598,6 +602,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('["Linear", renderLinearStatusIcon(checkout.linearStatus)]');
     expect(app).not.toContain('["Phase", checkout.flowPhase || "No flow"]');
     expect(app).toContain("function deleteCheckout(name)");
+    expect(app).toContain("function nextSessionTicket(flow)");
+    expect(app).toContain('const nextTicket = flow?.id === state.selectedFlowId ? nextSessionTicket(flow) : null;');
+    expect(app).toContain('return tickets[index + 1] || tickets[index - 1] || null;');
+    expect(app).toContain("if (currentNextTicket) await openTicketInFlowPane(currentNextTicket);");
     expect(app).toContain("function clearFlowClientState(flowId)");
     expect(app).toContain("if (data.flows) setFlows(data.flows);");
     expect(app).toContain("if (data.checkouts) setCheckouts(data.checkouts);");
@@ -635,6 +643,11 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('url.pathname === "/api/checkouts"');
     expect(server).toContain('parts[0] === "api" && parts[1] === "checkouts"');
     expect(server).toContain("function deleteWorktree(name: string)");
+    expect(server).toContain("function deleteMissingWorktreeSessions()");
+    expect(server).toContain("if (flow.parentFlowId || !flow.checkoutPath || existsSync(flow.checkoutPath)) continue;");
+    expect(server).toContain("deleteMissingWorktreeSessions();\n  const clearAfterLogIds = shellOutputClearAfterLogIds();");
+    expect(server).toContain('throw new Error("Session was deleted because its worktree no longer exists.");');
+    expect(server).toContain('return json({ flows: listClientFlows(), checkouts: listWorktrees() });');
     expect(server).toContain("function deleteFlowTraceData(flowId: string)");
     expect(server).toContain("function stopFlowRuntimesForDelete(flowId: string)");
     expect(server).toContain("deleteLogsByFlowIdStmt.run(flowId);");
@@ -643,6 +656,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("deleteFlowByIdStmt.run(flowId);");
     expect(server).toContain('broadcast("flows", listClientFlows());');
     expect(server).toContain("return json({ ok: true, ...result, flows: listClientFlows(), checkouts: listWorktrees() });");
+    expect(server).toContain('try {\n      runGit(["worktree", "remove", "--force", target], repoCheckoutDir);\n    } catch {\n      rmSync(target, { recursive: true, force: true });');
     expect(server).toContain("rmSync(target, { recursive: true, force: true });");
   });
 
@@ -800,27 +814,51 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("function isLinearIssueNotFoundError(error: unknown)");
     expect(server).toContain("function invalidateLinearIssue(identifier: string)");
     expect(server).toContain("deleteLinearIssueStmt.run(issueId);");
-    expect(server).toContain('updateFlow(flow.id, { linearIssueUrl: "", linearStatus: "" });');
+    expect(server).toContain('updateFlow(flow.id, { linearIssueId: "", linearIssueUrl: "", linearStatus: "" });');
     expect(server).toContain("if (isLinearIssueNotFoundError(error)) {\n      invalidateLinearIssue(identifier);\n      return null;\n    }");
     expect(server).toContain("function cachedIssueLooksValid(issue: LinearIssue)");
     expect(server).toContain('issue.title !== "Untitled"');
   });
 
-  test("creates new pinned In Eng Linear tickets from the ticket drawer", () => {
+  test("creates sessions first and lets them create a Linear ticket later", () => {
     expect(html.indexOf('id="refreshLinearTickets"')).toBeLessThan(html.indexOf('id="createLinearTicket"'));
     expect(app).toContain("createLinearTicket: document.querySelector(\"#createLinearTicket\"),");
-    expect(app).toContain("async function createPinnedLinearTicket()");
-    expect(app).toContain('const data = await api("/api/linear/issues", { method: "POST" });');
+    expect(html).toContain('id="createLinearTicket" class="icon-button" type="button" aria-label="Create session"');
+    expect(app).toContain("async function createSession()");
+    expect(app).toContain('api("/api/flows", { method: "POST", body: "{}" })');
+    expect(app).toContain('els.createLinearTicket.addEventListener("click", () => void createSession());');
+    expect(server).toContain('createWorktree(id, parsed.identifier || `session-${id.slice(0, 8)}`)');
+    expect(server).toContain('parsed.identifier || "new session"');
+    expect(app).toContain('title: flow.title || "new session"');
+    expect(app).toContain('localSession: true');
+    expect(app).toContain("ticket.localSession && !state.pinnedLinearIssues.has(ticket.identifier)");
+    expect(app).toContain("ticket.identifier === identifier && ticket.localSession");
+    expect(app).toContain('data-create-linear-ticket="true"');
+    expect(app).toContain('aria-label="${createLinearLabel}" title="${createLinearLabel}"');
+    expect(app).toContain('<svg class="linear-logo" viewBox="0 0 100 100"');
+    expect(css).toContain(".linear-create-ticket .linear-logo");
+    expect(css).toContain(".linear-create-ticket {");
+    expect(app).toContain("const hasLinearIssue = Boolean(context.flow?.linearIssueId || (!context.flow && context.ticket));");
+    expect(app).toContain('const priorityControl = hasLinearIssue ? renderLinearPriorityControl(issue) : "";');
+    expect(app).toContain('const statusControl = hasLinearIssue ? renderLinearStatusControl(issue, statusName) : "";');
+    expect(app).toContain('const githubCiPill = renderGithubCiPill(context.flow);');
+    expect(app).toContain("const pinButton = renderLinearPinButton(issue);");
+    expect(app).toContain('<div class="linear-issue-kicker">');
+    expect(css).toContain(".linear-issue-kicker {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  height: 18px;");
+    expect(css).toContain(".linear-issue-kicker > .linear-pin-toggle:only-child {\n  margin-left: -4px;\n}");
+    expect(css).toContain(".linear-meta {\n  display: flex;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 6px;\n  min-height: 22px;");
+    expect(app).toContain('${hasLinearIssue ? `<a href="${escapeAttribute(issue.url || context.issueUrl)}" target="_blank" rel="noreferrer">${escapeHtml(issue.identifier || context.issueId)}</a>` : ""}');
+    expect(app).toContain('${pinButton}\n          </div>\n          ${titleHtml}');
+    expect(app).toContain('<h3>${escapeHtml(title)}</h3>\n        ${linearButton}');
+    expect(app).toContain('const linearButton = hasLinearIssue\n    ? ""');
+    expect(app).not.toContain('<a class="linear-create-ticket"');
+    expect(css).toContain("width: 12px;\n  height: 12px;");
+    expect(app).toContain("async function createLinearTicketForFlow(flow)");
+    expect(app).toContain('const { issue } = await api("/api/linear/issues", { method: "POST" });');
+    expect(app).toContain('api(`/api/flows/${encodeURIComponent(flow.id)}/meta`');
+    expect(app).toContain('body: JSON.stringify({ linearIssueId: issue.identifier })');
     expect(app).toContain('setLinearIssuePinned(issue.identifier, true, { position: "top" });');
-    expect(app).toContain("await createFlowFromTicket(issue);");
-    expect(app).not.toContain("state.pinnedLinearIssues.add(issue.identifier);");
     expect(app).toContain("state.linearDetails.set(issue.identifier, { loading: false, issue });");
-    expect(app).toContain("function focusLinearTicketCard(identifier)");
-    expect(app).toContain('const card = [...els.ticketGrid.querySelectorAll(".ticket-card")].find((item) => item.dataset.issue === identifier);');
-    expect(app).toContain('card?.focus({ preventScroll: true });');
-    expect(app).toContain('card?.scrollIntoView({ block: "nearest" });');
-    expect(app).toContain("focusLinearTicketCard(issue.identifier);");
-    expect(app).toContain('els.createLinearTicket.addEventListener("click", () => void createPinnedLinearTicket());');
     expect(server).toContain("async function createBlankInEngLinearIssue()");
     expect(server).toContain('linearWorkflowKey(state.name) === "in-eng"');
     expect(server).toContain("issueCreate(input: $input)");
@@ -970,7 +1008,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("if (!options.preserveQueuedPromptDraft) syncClearedQueuedPromptDrafts(state.flows, nextFlows);");
     expect(app).toContain("function syncClearedQueuedPromptDrafts(previousFlows, nextFlows)");
     expect(app).toContain("if (queuedPromptMessage(nextFlow)) continue;");
-    expect(app).toContain("clearPromptDraftForIssue(previousFlow.linearIssueId || linearIssueIdForFlowId(previousFlow.id), message);");
+    expect(app).toContain("clearPromptDraftForIssue(flowSelectionId(previousFlow), message);");
     expect(app).toContain("clearQueuedPromptDraftState(flow, queued.message);");
     expect(app).toContain("function updateFlowQueuedPrompt(flowId, queuedPrompt, options = {})");
     expect(app).toContain("if (queued?.flowId) updateFlowQueuedPrompt(queued.flowId, null, { preserveQueuedPromptDraft: true });");
@@ -1063,7 +1101,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("url: ticket.url,");
     expect(app).toContain("linearStatus: linearStatusName(ticket),");
     expect(server).toContain("const linearIssue = cachedLinearIssue(parsed.identifier);");
-    expect(server).toContain("const { target, branch, baseSha } = createWorktree(id, parsed.identifier);");
+    expect(server).toContain('const { target, branch, baseSha } = createWorktree(id, parsed.identifier || `session-${id.slice(0, 8)}`);');
     expect(server).not.toContain("cpSync(");
     expect(server).not.toContain('runGit(["clone", repoUrl, target]);');
     expect(server).not.toContain('runGit(["checkout", "-b", branch], target);');
@@ -1116,7 +1154,7 @@ describe("Turbopump pane markup", () => {
   });
 
   test("renders Linear pane priority as an editable pill with the same bar icon used in tickets", () => {
-    expect(app).toContain("const priorityControl = renderLinearPriorityControl(issue);");
+    expect(app).toContain('const priorityControl = hasLinearIssue ? renderLinearPriorityControl(issue) : "";');
     expect(app).toContain("${priorityControl}");
     expect(app).toContain("function renderLinearPriorityControl(issue)");
     expect(app).toContain("if (container._linearDetailHtml === html)");
@@ -1143,7 +1181,7 @@ describe("Turbopump pane markup", () => {
     expect(css).not.toContain(".linear-meta span,\n.linear-comments > header span");
   });
 
-  test("edits the Linear pane title inline and saves it to Linear", () => {
+  test("edits pane titles inline and saves them to Linear or the local session", () => {
     expect(app).toContain("editingLinearTitleIssueId: \"\"");
     expect(app).toContain("data-linear-title-edit=\"true\"");
     expect(app).toContain("data-linear-title-form=\"true\"");
@@ -1152,10 +1190,14 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("handleLinearTitleOutsidePointerDown");
     expect(app).toContain('event.key !== "Escape"');
     expect(app).toContain("async function updateLinearIssueTitle(issueId, title)");
-    expect(app).toContain('api(`/api/linear/issues/${encodeURIComponent(issueId)}/title`');
+    expect(app).toContain('`/api/linear/issues/${encodeURIComponent(issueId)}/title`');
+    expect(app).toContain('`/api/flows/${encodeURIComponent(flow.id)}/meta`');
+    expect(app).toContain('ticket?.localSession ? { title: nextTitle }');
     expect(server).toContain("async function updateLinearIssueTitle(identifier: string, issueId: string, title: string)");
     expect(server).toContain("issueUpdate(id: $id, input: { title: $title })");
     expect(server).toContain('parts[4] === "title" && request.method === "POST"');
+    expect(server).toContain('if ("title" in body)');
+    expect(server).toContain('fields.title = body.title.trim();');
     expect(css).toContain(".linear-title-edit");
     expect(css).toContain("field-sizing: content;");
     expect(css).toContain("border: 0;\n  background: transparent;\n  color: var(--ink);");
@@ -1201,9 +1243,9 @@ describe("Turbopump pane markup", () => {
   test("shows ticket id on cards and GitHub before Linear metadata in the Flow pane metadata row", () => {
     expect(app).toContain('class="ticket-meta"');
     expect(app).toContain('class="ticket-id"');
-    expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.identifier)}</span>');
+    expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.localSession ? "SESSION" : ticket.identifier)}</span>');
     expect(app).toContain("const statusName = issue.state?.name || context.ticket?.state?.name || \"\";");
-    expect(app).toContain("const statusControl = renderLinearStatusControl(issue, statusName);");
+    expect(app).toContain('const statusControl = hasLinearIssue ? renderLinearStatusControl(issue, statusName) : "";');
     expect(app).toContain("const githubCiPill = renderGithubCiPill(context.flow);");
     expect(app).toContain('${githubCiPill}\n        ${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}\n        ${statusControl}\n        ${priorityControl}');
     expect(app).not.toContain('const labels = issue.labels?.nodes || [];');
@@ -1327,7 +1369,6 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".pinned-ticket-separator");
     expect(css).toContain(".pinned-ticket-group .ticket-status-group-items");
     expect(css).toContain(".ticket-card.pinned");
-    expect(css).toContain(".linear-issue-kicker");
     expect(css).toContain(".linear-pin-toggle");
     expect(css).toContain("min-height: 18px;\n  padding: 0;\n  border: 0;\n  border-radius: 0;\n  background: transparent;");
     expect(css).toContain("body.theme-dark .linear-pin-toggle,\nbody.theme-dark .linear-pin-toggle:hover,\nbody.theme-dark .linear-pin-toggle:focus-visible,\nbody.theme-dark .linear-pin-toggle.active {\n  background: transparent;\n}");
@@ -1343,12 +1384,32 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".ticket-options-menu {");
   });
 
-  test("lets pinned Linear tickets be manually sorted", () => {
+  test("deletes a ticket from the right-click menu and Linear", () => {
+    expect(app).toContain('<button class="danger" type="button" role="menuitem">Delete</button>');
+    expect(app).toContain("deleteLinearTicket(ticket)");
+    expect(app).toContain("window.confirm(`Delete ${identifier} from Linear?`)");
+    expect(app).toContain('method: "DELETE"');
+    expect(server).toContain("issueDelete(id: $id)");
+    expect(server).toContain("invalidateLinearIssue(identifier);");
+    expect(server).toContain('request.method === "DELETE"');
+    expect(css).toContain(".ticket-options-menu .danger");
+  });
+
+  test("deletes a fresh session from its right-click menu", () => {
+    expect(app).toContain("async function deleteLocalSession(ticket)");
+    expect(app).toContain('window.confirm("Delete this session and its worktree?")');
+    expect(app).toContain("await deleteCheckout(checkoutName);");
+    expect(app).toContain("ticket.localSession ? deleteLocalSession(ticket) : deleteLinearTicket(ticket)");
+  });
+
+  test("lets pinned cards be manually sorted, including sessions without Linear tickets", () => {
     expect(app).toContain("function orderedPinnedTickets(tickets)");
+    expect(app).toContain("ticket.localSession && !state.pinnedLinearIssues.has(ticket.identifier)");
     expect(app).toContain(".concat(\"\\u001d\", [...state.pinnedLinearIssues].join(\"\\u001f\"))");
     expect(app).toContain(".concat(\"\\u001d\", state.ticketSearchOpen ? \"search-open\" : \"search-closed\", \"\\u001f\", searchQuery)");
     expect(app).toContain("function setPinnedLinearIssueOrder(identifiers)");
     expect(app).toContain("function moveLinearIssueToPinnedPosition(identifier, index)");
+    expect(app).toContain("const pinnedIssueIds = orderedPinnedTickets(state.linearTickets)");
     expect(app).toContain("function pinnedTicketDropIndex(event)");
     expect(app).toContain('event.currentTarget.querySelectorAll(".ticket-card.pinned:not(.dragging)")');
     expect(app).toContain("function updatePinnedTicketDropTarget(event)");
@@ -1713,7 +1774,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function ticketInCollapsedStatusGroup(identifier)");
     expect(app).toContain("function updateTicketSelectionCards(previousIssueId, nextIssueId)");
     expect(app).toContain("if (ticketInCollapsedStatusGroup(previousIssueId) || ticketInCollapsedStatusGroup(nextIssueId))");
-    expect(app).toContain("updateTicketSelectionCards(previousIssueId, flow.linearIssueId);");
+    expect(app).toContain("updateTicketSelectionCards(previousIssueId, state.selectedLinearIssueId);");
     expect(app).toContain("updateTicketSelectionCards(previousIssueId, ticket.identifier);");
     expect(app).toContain('.concat("\\u001d", state.selectedLinearIssueId);');
     expect(css).toContain(".ticket-status-separator");
@@ -1743,6 +1804,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function mergeLinearIssue(existing, incoming)");
     expect(app).toContain('api(`/api/linear/issues/${encodeURIComponent(issueId)}/status`');
     expect(app).toContain("card.draggable = true;");
+    expect(app).toContain("ticket && !ticket.localSession && group.stateId");
     expect(app).toContain('event.dataTransfer.setData("text/plain", ticket.identifier);');
     expect(app).toContain("const TICKET_DRAG_SCROLL_EDGE_PX = 72;");
     expect(app).toContain("function updateTicketDragAutoScroll(event)");
@@ -1787,17 +1849,18 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function flowUpdatedAtMs(flow)");
     expect(app).toContain("if (index !== -1 && flowUpdatedAtMs(flow) < flowUpdatedAtMs(next[index])) return;");
     expect(app).toContain("const selected = state.flows.find((flow) => flow.id === state.selectedFlowId);");
-    expect(app).toContain('localStorage.setItem("flow.selectedLinearIssueId", selected.linearIssueId);');
+    expect(app).toContain('localStorage.setItem("flow.selectedLinearIssueId", selectedId);');
     expect(app).toContain("const flowsByIssue = new Map");
-    expect(app).toContain("const baseTickets = state.linearTickets.filter((ticket) => !ticket.turbopumpFlowOnly || flowCanRenderTicket(flowsByIssue.get(ticket.identifier)));");
+    expect(app).toContain("const baseTickets = state.linearTickets.filter((ticket) => !ticket.localSession && (!ticket.turbopumpFlowOnly || flowCanRenderTicket(flowsByIssue.get(ticket.identifier))));");
     expect(app).toContain("const ticketIds = new Set(baseTickets.map((ticket) => ticket.identifier));");
     expect(app).toContain("function flowCanRenderTicket(flow)");
     expect(app).toContain('flow.title !== "Untitled"');
     expect(app).toContain("const canAddFlowOnlyTickets = state.linearTicketsLoaded || state.linearTickets.length > 0;");
-    expect(app).toContain("if (!canAddFlowOnlyTickets) {\n    state.linearTickets = tickets;\n    return;\n  }");
+    expect(app).toContain("if (canAddFlowOnlyTickets) {");
     expect(app).toContain("return { ...ticket, flowId };");
-    expect(app).toContain("tickets.push({\n      identifier: flow.linearIssueId,");
+    expect(app).toContain("identifier: flow.linearIssueId,");
     expect(app).toContain("turbopumpFlowOnly: true,");
+    expect(app).toContain("localSession: true,");
     expect(app).toContain("setFlows(message.payload);");
     expect(app).toContain("upsertFlow(data.flow);");
     expect(app).toContain("if (state.githubCiSelectedFlowId === flowId) state.githubCiSelectedFlowId = \"\";");
@@ -2095,6 +2158,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('if (parts[3] === "meta" && request.method === "POST")');
     expect(server).toContain("async function flowMetaUpdate(flow: Flow, body: Record<string, unknown>): Promise<Partial<Flow>>");
     expect(server).toContain('fields.prUrl = normalizePrUrl(body.prUrl);');
+    expect(server).toContain('fields.title = body.title.trim();');
     expect(server).toContain('fields.githubCiStatus = "unknown";');
     expect(server).toContain('fields.githubCiCheckedAt = "";');
     expect(server).toContain("const issue = await fetchLinearIssue(parsed.identifier);");
@@ -2857,7 +2921,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function updateTicketSelectionCards(previousIssueId, nextIssueId)");
     expect(app).toContain("function scheduleSelectedFlowPaneRender(issueId, flowId = \"\")");
     expect(app).toContain("function animateTicketSwitch()");
-    expect(app).toContain("updateTicketSelectionCards(previousIssueId, flow.linearIssueId);");
+    expect(app).toContain("updateTicketSelectionCards(previousIssueId, state.selectedLinearIssueId);");
     expect(app).toContain("updateTicketSelectionCards(previousIssueId, ticket.identifier);");
     const selectFlowBody = app.slice(app.indexOf("async function selectFlow(id)"), app.indexOf("async function openTicketInFlowPane(ticket)"));
     const openTicketBody = app.slice(app.indexOf("async function openTicketInFlowPane(ticket)"), app.indexOf("function renderFlowPane(options = {})"));
@@ -2865,15 +2929,15 @@ describe("Turbopump pane markup", () => {
     expect(openTicketBody).not.toContain("render();");
     expect(selectFlowBody).toContain("renderFlowPane({ light: true });");
     expect(openTicketBody).toContain("renderFlowPane({ light: true });");
-    expect(selectFlowBody).toContain("if (previousIssueId !== flow.linearIssueId) animateTicketSwitch();");
+    expect(selectFlowBody).toContain("if (previousIssueId !== state.selectedLinearIssueId) animateTicketSwitch();");
     expect(openTicketBody).toContain("if (previousIssueId !== ticket.identifier) animateTicketSwitch();");
-    expect(selectFlowBody).toContain("scheduleSelectedFlowPaneRender(flow.linearIssueId, id);");
+    expect(selectFlowBody).toContain("scheduleSelectedFlowPaneRender(state.selectedLinearIssueId, id);");
     expect(openTicketBody).toContain('scheduleSelectedFlowPaneRender(ticket.identifier, flow?.id || "");');
     expect(app).toContain("state.selectionRenderFrame = requestAnimationFrame(() => {\n    state.selectionRenderFrame = requestAnimationFrame(() => {");
     expect(app).toContain("const hasCachedLogs = flowId && ((state.logs.get(flowId) || []).length || state.logBackfilledFlowIds.has(flowId));");
     expect(app).toContain("if (flowId && !hasCachedLogs) {");
     expect(app).toContain("if (issueId === state.selectedLinearIssueId && flowId === state.selectedFlowId) renderFlowPane();");
-    expect(app).toContain('if (!options.light) void loadLinearDetail(issueId);');
+    expect(app).toContain('if (!options.light && flow?.linearIssueId) void loadLinearDetail(issueId);');
     expect(app).toContain('terminal.textContent = "Loading agent session.";');
     expect(app).not.toContain("const cachedLogs = state.logs.get(flow.id) || [];");
     expect(selectFlowBody).not.toContain("await loadLogs(id, { scrollToLatest: true, suppressIncoming: true });");
@@ -3414,6 +3478,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("const message = String(value ?? \"\");");
     expect(server).toContain("if (!message.trim()) throw new Error(\"Queued message cannot be blank.\");");
     expect(server).toContain("async function startQueuedPromptIfReady(flowId: string)");
+    expect(server).toContain('["running", "interrupting"].includes(flow.agentStatus)');
     expect(server).toContain("async function steerQueuedPrompt(flow: Flow)");
     expect(server).toContain("function isCompactSlashCommand(message: string)");
     expect(server).toContain("function isModelSlashCommand(message: string)");
@@ -3433,6 +3498,7 @@ describe("Turbopump pane markup", () => {
       server.indexOf("async function startAgent("),
       server.indexOf("function startShellCommand("),
     );
+    expect(startAgentBody).toContain('if (message.startsWith("/") && (await handleSlashCommand(flow, userMessage))) return;');
     expect(startAgentBody.indexOf("existingRuntime?.compacting")).toBeLessThan(
       startAgentBody.indexOf("handleSlashCommand(flow, userMessage)"),
     );
@@ -3669,7 +3735,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function syncTicketInputState(issueId)");
     expect(app).toContain("if (state.activeInputIssueId === nextIssueId) return;");
     expect(app).toContain("saveActiveTicketInputState();\n  state.activeInputIssueId = nextIssueId;\n  restoreTicketInputState(nextIssueId);");
-    expect(app).toContain("syncTicketInputState(issueId);");
+    expect(app).toContain("syncTicketInputState(selectionId);");
     expect(app).toContain("function renderHistorySearchIndicator(input = document.activeElement)");
     expect(app).toContain('input?.closest?.(".message-form")');
     expect(app).toContain("if (form && indicator.parentElement !== form) form.prepend(indicator);");
@@ -3768,6 +3834,12 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('rememberInputHistory(command, "shell");');
     expect(app).toContain('rememberInputHistory(message, "prompt");');
     expect(app).toContain("cancelHistorySearch();");
+  });
+
+  test("clears sent queued drafts for sessions without Linear tickets", () => {
+    expect(app).toContain("const issueId = flowSelectionId(flow);");
+    expect(app).toContain("const inputState = ticketInputState(flowSelectionId(flow));");
+    expect(app).toContain("clearPromptDraftForIssue(flowSelectionId(previousFlow), message);");
   });
 
   test("supports fast slash command as a toggle", () => {
@@ -3894,7 +3966,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('const anchoredTerminals = [...column.querySelectorAll(".terminal")].filter(terminalAtLatest);');
     expect(app).toContain("anchoredTerminals.forEach(scrollTerminalToLatestNow);");
     expect(app).toContain('column?.style.setProperty("--agent-split-size", `${applied}%`);');
-    expect(app).toContain("flow.linearIssueId === identifier && !flow.parentFlowId");
+    expect(app).toContain("flowSelectionId(flow) === identifier && !flow.parentFlowId");
 
     expect(server).toContain("parentFlowId text not null default ''");
     expect(server).toContain("tryMigration(\"alter table flows add column parentFlowId text not null default ''\");");

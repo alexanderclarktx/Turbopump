@@ -150,8 +150,12 @@ export function flowForId(flowId) {
   return state.flows.find((flow) => flow.id === flowId) || null;
 }
 
-export function linearIssueIdForFlowId(flowId) {
-  return flowForId(flowId)?.linearIssueId || "";
+export function flowSelectionIdForFlowId(flowId) {
+  return flowSelectionId(flowForId(flowId));
+}
+
+export function flowSelectionId(flow) {
+  return flow?.linearIssueId || flow?.id || "";
 }
 
 export function setFlows(flows, options = {}) {
@@ -163,9 +167,10 @@ export function setFlows(flows, options = {}) {
   }
   state.flows = nextFlows;
   const selected = state.flows.find((flow) => flow.id === state.selectedFlowId);
-  if (selected?.linearIssueId && state.selectedLinearIssueId !== selected.linearIssueId) {
-    state.selectedLinearIssueId = selected.linearIssueId;
-    localStorage.setItem("flow.selectedLinearIssueId", selected.linearIssueId);
+  const selectedId = flowSelectionId(selected);
+  if (selectedId && state.selectedLinearIssueId !== selectedId) {
+    state.selectedLinearIssueId = selectedId;
+    localStorage.setItem("flow.selectedLinearIssueId", selectedId);
   }
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
@@ -185,12 +190,12 @@ export function syncClearedQueuedPromptDrafts(previousFlows, nextFlows) {
     const nextFlow = nextById.get(previousFlow.id);
     if (queuedPromptMessage(nextFlow)) continue;
     if (state.queuedPrompt?.flowId === previousFlow.id) state.queuedPrompt = null;
-    clearPromptDraftForIssue(previousFlow.linearIssueId || linearIssueIdForFlowId(previousFlow.id), message);
+    clearPromptDraftForIssue(flowSelectionId(previousFlow), message);
   }
 }
 
 export function clearFlowClientState(flowId) {
-  clearLinearIssueNotification(linearIssueIdForFlowId(flowId), { render: false });
+  clearLinearIssueNotification(flowSelectionIdForFlowId(flowId), { render: false });
   state.logs.delete(flowId);
   state.logIds.delete(flowId);
   state.firstLogId.delete(flowId);
@@ -485,7 +490,7 @@ export function selectedTicket() {
 
 export function flowForLinearIssue(identifier) {
   if (!identifier) return null;
-  return state.flows.find((flow) => flow.linearIssueId === identifier && !flow.parentFlowId) || null;
+  return state.flows.find((flow) => flowSelectionId(flow) === identifier && !flow.parentFlowId) || null;
 }
 
 export function flowForTicket(ticket) {
@@ -505,15 +510,15 @@ export async function selectFlow(id) {
   if (!flow) return;
   const previousIssueId = state.selectedLinearIssueId;
   state.selectedFlowId = id;
-  state.selectedLinearIssueId = flow.linearIssueId;
-  clearLinearIssueNotification(flow.linearIssueId, { render: false });
+  state.selectedLinearIssueId = flowSelectionId(flow);
+  clearLinearIssueNotification(flowSelectionId(flow), { render: false });
   localStorage.setItem("flow.selectedFlowId", id);
-  localStorage.setItem("flow.selectedLinearIssueId", flow.linearIssueId);
+  localStorage.setItem("flow.selectedLinearIssueId", state.selectedLinearIssueId);
   resumeTerminalFollow();
-  updateTicketSelectionCards(previousIssueId, flow.linearIssueId);
+  updateTicketSelectionCards(previousIssueId, state.selectedLinearIssueId);
   renderFlowPane({ light: true });
-  if (previousIssueId !== flow.linearIssueId) animateTicketSwitch();
-  scheduleSelectedFlowPaneRender(flow.linearIssueId, id);
+  if (previousIssueId !== state.selectedLinearIssueId) animateTicketSwitch();
+  scheduleSelectedFlowPaneRender(state.selectedLinearIssueId, id);
 }
 
 export async function openTicketInFlowPane(ticket) {
@@ -565,18 +570,19 @@ export function renderFlowPane(options = {}) {
     localStorage.removeItem("flow.selectedLinearIssueId");
   }
   const issueId = flow?.linearIssueId || ticket?.identifier || "";
+  const selectionId = flowSelectionId(flow) || issueId;
   const title = flow?.title || ticket?.title || "";
   const issueUrl = flow?.linearIssueUrl || ticket?.url || "";
   const agentEnabled = repoUrlConfigured();
   const agentPanel = els.flowPane.querySelector(".agent-panel");
 
-  syncTicketInputState(issueId);
+  syncTicketInputState(selectionId);
   agentPanel.classList.toggle("disabled", !agentEnabled);
-  els.flowPane.classList.toggle("empty", !issueId);
+  els.flowPane.classList.toggle("empty", !flow && !ticket);
   renderAgentContext(flow || wouldBeAgentContext(ticket));
   syncAgentOutputToolbar(els.flowPane.querySelector(".agent-column > .agent-output-toolbar"), flow?.id || "");
   renderAgentImageContext();
-  if (!issueId) {
+  if (!flow && !ticket) {
     return;
   }
 
@@ -613,7 +619,7 @@ export function renderFlowPane(options = {}) {
     }
   }
   renderSplitPanes();
-  if (!options.light) void loadLinearDetail(issueId);
+  if (!options.light && flow?.linearIssueId) void loadLinearDetail(issueId);
   scheduleQueuedPromptFlush();
 }
 
@@ -651,6 +657,22 @@ export async function createFlowFromTicket(ticket, options = {}) {
       renderTickets();
       if (issueId === state.selectedLinearIssueId) renderFlowPane();
     }
+  }
+}
+
+export async function createSession() {
+  if (state.creatingSession) return;
+  state.creatingSession = true;
+  els.createLinearTicket.disabled = true;
+  try {
+    const data = await api("/api/flows", { method: "POST", body: "{}" });
+    upsertFlow(data.flow);
+    render();
+    await loadLogs(data.flow.id);
+    await selectFlow(data.flow.id);
+  } finally {
+    state.creatingSession = false;
+    els.createLinearTicket.disabled = false;
   }
 }
 

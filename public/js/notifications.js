@@ -1,6 +1,6 @@
 import { DEFAULT_FAVICON_HREF, NOTIFIED_LINEAR_ISSUES_KEY } from "./constants.js";
 import { loadFlowDiff } from "./diff.js";
-import { linearIssueIdForFlowId } from "./flows.js";
+import { flowSelectionIdForFlowId } from "./flows.js";
 import { state } from "./state.js";
 import { renderTickets } from "./tickets.js";
 
@@ -73,7 +73,7 @@ export function acknowledgeSelectedLinearIssueNotification() {
 }
 
 export function notifyAgentTurnEnded(flowId) {
-  const issueId = linearIssueIdForFlowId(flowId);
+  const issueId = flowSelectionIdForFlowId(flowId);
   if (!issueId || (issueId === state.selectedLinearIssueId && canAcknowledgeSelectedNotification())) return;
   state.notifiedLinearIssueIds.add(issueId);
   persistLinearIssueNotifications();
