@@ -11,6 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 
@@ -944,7 +945,7 @@ function worktreePathForName(name: string) {
   return target;
 }
 
-function deleteWorktree(name: string) {
+async function deleteWorktree(name: string) {
   const target = worktreePathForName(name);
   if (!existsSync(target)) throw new Error("Worktree not found.");
   const stats = statSync(target);
@@ -955,13 +956,13 @@ function deleteWorktree(name: string) {
   if (flow) stopFlowRuntimesForDelete(flow.id);
   if (existsSync(repoCheckoutDir) && isGitWorktree(target)) {
     try {
-      runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
+      await runGitAsync(["worktree", "remove", "--force", target], repoCheckoutDir);
     } catch {
-      rmSync(target, { recursive: true, force: true });
+      await rm(target, { recursive: true, force: true });
     }
-    runGit(["worktree", "prune"], repoCheckoutDir);
+    await runGitAsync(["worktree", "prune"], repoCheckoutDir);
   } else {
-    rmSync(target, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
   }
   if (companion) deleteFlowTraceData(companion.id);
   if (flow) deleteFlowTraceData(flow.id);
@@ -1562,6 +1563,26 @@ function runGit(args: string[], cwd = rootDir, env = process.env) {
     throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
   }
   return stdout;
+}
+
+async function runGitAsync(args: string[], cwd = rootDir, env = process.env) {
+  const result = Bun.spawn({
+    cmd: ["git", ...args],
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    env,
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(result.stdout).text(),
+    new Response(result.stderr).text(),
+    result.exited,
+  ]);
+  if (exitCode !== 0) {
+    const output = stderr.trim() || stdout.trim();
+    throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
+  }
+  return stdout.trim();
 }
 
 function worktreeTree(flow: Flow) {
@@ -4475,7 +4496,7 @@ async function handleApi(request: Request, url: URL) {
   if (parts[0] === "api" && parts[1] === "checkouts" && parts[2] && request.method === "DELETE") {
     let result: { deletedFlowId: string };
     try {
-      result = deleteWorktree(decodeURIComponent(parts[2]));
+      result = await deleteWorktree(decodeURIComponent(parts[2]));
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
     }

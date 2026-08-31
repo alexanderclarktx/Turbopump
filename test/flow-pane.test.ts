@@ -276,7 +276,10 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("function updateBrowserTabNotification()");
     expect(app).toContain("function notifyAgentTurnEnded(flowId)");
     expect(app).toContain("function flowSelectionIdForFlowId(flowId)");
-    expect(app).toContain("return flowSelectionId(flowForId(flowId));");
+    expect(app).toContain("return flowSelectionId(flowForId(flow?.parentFlowId) || flow);");
+    expect(app).toContain("function normalizeLinearIssueNotifications()");
+    expect(app).toContain("normalizeLinearIssueNotifications();");
+    expect(app).toContain("normalized !== state.selectedLinearIssueId || !canAcknowledgeSelectedNotification()");
     expect(app).toContain("clearLinearIssueNotification(flowSelectionId(flow), { render: false });");
     expect(app).toContain("function canAcknowledgeSelectedNotification()");
     expect(app).toContain("function acknowledgeSelectedLinearIssueNotification()");
@@ -656,8 +659,9 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("deleteFlowByIdStmt.run(flowId);");
     expect(server).toContain('broadcast("flows", listClientFlows());');
     expect(server).toContain("return json({ ok: true, ...result, flows: listClientFlows(), checkouts: listWorktrees() });");
-    expect(server).toContain('try {\n      runGit(["worktree", "remove", "--force", target], repoCheckoutDir);\n    } catch {\n      rmSync(target, { recursive: true, force: true });');
-    expect(server).toContain("rmSync(target, { recursive: true, force: true });");
+    expect(server).toContain('await runGitAsync(["worktree", "remove", "--force", target], repoCheckoutDir);');
+    expect(server).toContain("await rm(target, { recursive: true, force: true });");
+    expect(server).toContain("result = await deleteWorktree(decodeURIComponent(parts[2]));");
   });
 
   test("backs off noisy Linear connectivity failures", () => {
@@ -1092,7 +1096,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('runGit(["rev-parse", "HEAD"], repoCheckoutDir)');
     expect(server).toContain('runGit(["worktree", "add", "-b", branch, target, baseSha], repoCheckoutDir)');
     expect(server).toContain('branch = `${branch}-${flowId.slice(0, 8)}`;');
-    expect(server).toContain('runGit(["worktree", "remove", "--force", target], repoCheckoutDir);');
+    expect(server).toContain('await runGitAsync(["worktree", "remove", "--force", target], repoCheckoutDir);');
     expect(server).toContain('insertLog(id, "flow", `Created worktree ${branch}\\n`);');
     expect(server).not.toContain("flow:timing");
     expect(server).toContain("const linearIssueCache = new Map<string, LinearIssue>();");

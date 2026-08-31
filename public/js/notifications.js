@@ -55,6 +55,23 @@ export function persistLinearIssueNotifications() {
   localStorage.setItem(NOTIFIED_LINEAR_ISSUES_KEY, JSON.stringify([...state.notifiedLinearIssueIds]));
 }
 
+export function normalizeLinearIssueNotifications() {
+  let changed = false;
+  for (const identifier of state.notifiedLinearIssueIds) {
+    const normalized = flowSelectionIdForFlowId(identifier);
+    if (!normalized || normalized === identifier) continue;
+    state.notifiedLinearIssueIds.delete(identifier);
+    if (normalized !== state.selectedLinearIssueId || !canAcknowledgeSelectedNotification()) {
+      state.notifiedLinearIssueIds.add(normalized);
+    }
+    changed = true;
+  }
+  if (changed) {
+    persistLinearIssueNotifications();
+    void updateBrowserTabNotification();
+  }
+}
+
 export function clearLinearIssueNotification(identifier, options = {}) {
   if (!identifier || !state.notifiedLinearIssueIds.delete(identifier)) return false;
   persistLinearIssueNotifications();

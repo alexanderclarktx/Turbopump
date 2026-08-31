@@ -2,7 +2,7 @@ import { diffHasChanges, diffLoadingKey, loadFlowDiff, openDiffViewer, renderDif
 import { applyFlowSplitSize } from "./layout.js";
 import { loadLogs, scheduleTicketLogPrefetch } from "./logs.js";
 import { api, isGitCloneError, requestFlowSnapshot, wsRequest } from "./net.js";
-import { clearLinearIssueNotification } from "./notifications.js";
+import { clearLinearIssueNotification, normalizeLinearIssueNotifications } from "./notifications.js";
 import {
   clearPromptDraftForIssue,
   flashBlockedInput,
@@ -151,7 +151,8 @@ export function flowForId(flowId) {
 }
 
 export function flowSelectionIdForFlowId(flowId) {
-  return flowSelectionId(flowForId(flowId));
+  const flow = flowForId(flowId);
+  return flowSelectionId(flowForId(flow?.parentFlowId) || flow);
 }
 
 export function flowSelectionId(flow) {
@@ -166,6 +167,7 @@ export function setFlows(flows, options = {}) {
     if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
   }
   state.flows = nextFlows;
+  normalizeLinearIssueNotifications();
   const selected = state.flows.find((flow) => flow.id === state.selectedFlowId);
   const selectedId = flowSelectionId(selected);
   if (selectedId && state.selectedLinearIssueId !== selectedId) {
