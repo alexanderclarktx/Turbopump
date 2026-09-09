@@ -241,6 +241,88 @@ export function renderEnvEditor(contents) {
     els.envEditor.append(createEnvRow(group.key, group.values));
   }
   ensureTrailingEnvRow();
+  filterEnvironment();
+}
+
+const envFilterAnimations = new WeakMap();
+
+function setEnvRowFiltered(row, hidden) {
+  const previous = envFilterAnimations.get(row);
+  if (row.hidden === hidden && !previous) return;
+  if (!row.animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    previous?.cancel();
+    envFilterAnimations.delete(row);
+    row.hidden = hidden;
+    row.inert = hidden;
+    return;
+  }
+
+  // Read the current animated size before canceling so rapid typing reverses smoothly.
+  const style = getComputedStyle(row);
+  const from = {
+    height: `${row.getBoundingClientRect().height}px`,
+    paddingTop: row.hidden ? "0px" : style.paddingTop,
+    opacity: row.hidden ? "0" : style.opacity,
+  };
+  previous?.cancel();
+  row.hidden = false;
+  row.inert = hidden;
+  const to = {
+    height: hidden ? "0px" : `${row.getBoundingClientRect().height}px`,
+    paddingTop: hidden ? "0px" : getComputedStyle(row).paddingTop,
+    opacity: hidden ? "0" : "1",
+  };
+  const animation = row.animate([
+    { ...from, overflow: "hidden", boxSizing: "border-box" },
+    { ...to, overflow: "hidden", boxSizing: "border-box" },
+  ], { duration: 200, easing: "cubic-bezier(0.2, 0, 0, 1)", fill: "both" });
+  envFilterAnimations.set(row, animation);
+  animation.onfinish = () => {
+    if (envFilterAnimations.get(row) !== animation) return;
+    row.hidden = hidden;
+    animation.cancel();
+    envFilterAnimations.delete(row);
+  };
+}
+
+export function filterEnvironment() {
+  const query = els.envSearchInput.value.trim().toLowerCase();
+  let matches = 0;
+  for (const row of els.envEditor.querySelectorAll(".env-row")) {
+    const key = row.querySelector(".env-key").value.toLowerCase();
+    const hidden = Boolean(query) && !key.includes(query);
+    setEnvRowFiltered(row, hidden);
+    if (!hidden && key.trim()) matches += 1;
+  }
+  els.envSearchEmpty.hidden = !query || matches > 0;
+}
+
+export function toggleEnvironmentSearch() {
+  if (!els.envSearchInput.disabled) return closeEnvironmentSearch();
+  els.envSearchInput.disabled = false;
+  els.searchEnvironment.setAttribute("aria-expanded", "true");
+  els.envSearchInput.focus();
+}
+
+function closeEnvironmentSearch(restoreFocus = true) {
+  els.envSearchInput.disabled = true;
+  els.searchEnvironment.setAttribute("aria-expanded", "false");
+  els.envSearchInput.value = "";
+  filterEnvironment();
+  if (restoreFocus) els.searchEnvironment.focus();
+}
+
+export function handleEnvironmentSearchOutsideClick(event) {
+  if (els.envSearchInput.disabled || els.envSearchInput.value.trim()) return;
+  if (els.envSearchInput.parentElement.contains(event.target)) return;
+  closeEnvironmentSearch(false);
+}
+
+export function handleEnvironmentSearchKeydown(event) {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleEnvironmentSearch();
 }
 
 export function envEditorContents() {

@@ -92,6 +92,39 @@ describe("renderLinearMarkdown", () => {
     expect(html).not.toContain("](&lt;");
   });
 
+  test.each([
+    "artifacts/custom-mcp-chat/01-connect-card.png",
+    "./artifacts/setup.webp",
+    "../artifacts/approval.jpg",
+    "proof.png",
+    "artifacts/setup (approved).png",
+  ])("renders relative image links through a custom source: %s", (path) => {
+    for (const message of [`[Proof](${path})`, `![Proof](<${path}>)`, `[![Proof](<${path}>)](<${path}>)`]) {
+      // Paths containing spaces use Markdown's angle-bracket destination syntax.
+      if (path.includes(" ") && message === `[Proof](${path})`) continue;
+      const html = renderLinearMarkdown(message, "", {
+        imageSource: (url) => `/preview?path=${encodeURIComponent(url)}`,
+      });
+      expect(html).toContain(`src="/preview?path=${encodeURIComponent(path)}"`);
+      expect(html).toContain('data-image-preview');
+      expect(html).toContain('<figcaption>Proof</figcaption>');
+      expect(html).not.toContain("![Proof");
+    }
+  });
+
+  test("renders relative report links as code and respects disabled images", () => {
+    expect(renderLinearMarkdown("[Validation report](artifacts/custom-mcp-validation.md)")).toBe("<code>Validation report</code>");
+    expect(renderLinearMarkdown("[Proof](artifacts/proof.png)", "", { images: false })).toBe("<code>Proof</code>");
+  });
+
+  test.each(["javascript:alert(1)", "data:image/svg+xml,test", "//example.com/proof.png", "file:///tmp/proof.png"])(
+    "does not render unsupported destinations: %s", (url) => {
+      const html = renderLinearMarkdown(`![Proof](${url})`);
+      expect(html).not.toContain("<img");
+      expect(html).not.toContain("<a ");
+    },
+  );
+
   test("escapes non-link HTML", () => {
     const html = renderLinearMarkdown('<script>alert("x")</script>');
 
@@ -302,6 +335,35 @@ describe("renderLinearMarkdown", () => {
 });
 
 describe("renderInlineMarkdown", () => {
+  test("keeps images out of file cards when a file preview source is available", () => {
+    const options = {
+      fileSource: (path: string) => `/file?path=${encodeURIComponent(path)}`,
+      imageSource: (path: string) => `/image?path=${encodeURIComponent(path)}`,
+    };
+    for (const value of ["[Screenshot](proof.png)", "![Screenshot](proof.png)", "![Screenshot](image-without-extension)"]) {
+      const html = renderInlineMarkdown(value, options);
+      expect(html).toContain('<figure class="linear-image">');
+      expect(html).toContain("data-image-preview");
+      expect(html).not.toContain("file-link-card");
+      expect(renderInlineMarkdown(value, { ...options, images: false })).not.toContain("file-link-card");
+    }
+  });
+  test.each(["artifacts/report.md", "/repo/src/app.ts:12", "src/app.ts#L12", "./report (final).md"])("renders file cards with a preview source: %s", (path) => {
+    const html = renderInlineMarkdown(`[View](<${path}>)`, { fileSource: (path) => `/preview?path=${encodeURIComponent(path)}` });
+    expect(html).toContain('class="file-link-card"');
+    expect(html).toContain('data-file-preview ');
+    expect(html).toContain(`href="/preview?path=${encodeURIComponent(path)}"`);
+    expect(html).toContain('<span class="file-link-label">View</span>');
+    expect(html.replace(/<[^>]+>/g, "")).toBe("View");
+    expect(html).not.toContain('target="_blank"');
+  });
+  test("keeps unsafe links and code out of file cards", () => {
+    const options = { fileSource: (path: string) => path };
+    for (const value of ["[Bad](javascript:alert(1))", "[Bad](//example.com/file)", "`[Code](report.md)`"]) {
+      expect(renderInlineMarkdown(value, options)).not.toContain('class="file-link-card"');
+    }
+    expect(renderInlineMarkdown("[Report](report.md)", { ...options, links: false })).not.toContain('data-file-preview');
+  });
   test("renders inline code while escaping HTML", () => {
     const html = renderInlineMarkdown("Use `<apple>`.");
 

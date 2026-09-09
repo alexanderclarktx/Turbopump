@@ -2,7 +2,7 @@ import { flowSelectionId, openTicketInFlowPane, setFlows } from "./flows.js";
 import { api } from "./net.js";
 import { render } from "./render.js";
 import { els, state } from "./state.js";
-import { renderLinearStatusIcon } from "./tickets.js";
+import { renderLinearStatusIcon, renderTickets } from "./tickets.js";
 
 export let checkoutLoadFrame = 0;
 
@@ -68,16 +68,25 @@ function nextSessionTicket(flow) {
 }
 
 export async function deleteCheckout(name) {
-  if (!name) return;
+  if (!name || state.deletingCheckoutNames.has(name)) return;
   const flow = state.flows.find((item) => !item.parentFlowId && item.checkoutPath?.split(/[\\/]/).pop() === name);
   const nextTicket = flow?.id === state.selectedFlowId ? nextSessionTicket(flow) : null;
-  const data = await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
-  if (data.flows) setFlows(data.flows);
-  if (data.checkouts) setCheckouts(data.checkouts);
-  else state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
-  const currentNextTicket = state.linearTickets.find((ticket) => ticket.identifier === nextTicket?.identifier && ticket.flowId);
-  if (currentNextTicket) await openTicketInFlowPane(currentNextTicket);
-  render();
+  state.deletingCheckoutNames.add(name);
+  renderCheckouts();
+  renderTickets();
+  try {
+    const data = await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (data.flows) setFlows(data.flows);
+    if (data.checkouts) setCheckouts(data.checkouts);
+    else state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);
+    const currentNextTicket = state.linearTickets.find((ticket) => ticket.identifier === nextTicket?.identifier && ticket.flowId);
+    if (currentNextTicket) await openTicketInFlowPane(currentNextTicket);
+    render();
+  } finally {
+    state.deletingCheckoutNames.delete(name);
+    renderCheckouts();
+    renderTickets();
+  }
 }
 
 export function renderCheckoutCard(checkout) {
@@ -128,13 +137,9 @@ export function renderCheckoutCard(checkout) {
   `;
   button.addEventListener("click", async (event) => {
     event.stopPropagation();
-    state.deletingCheckoutNames.add(checkout.name);
-    renderCheckouts();
     try {
       await deleteCheckout(checkout.name);
     } catch (error) {
-      state.deletingCheckoutNames.delete(checkout.name);
-      renderCheckouts();
       alert(error.message);
     }
   });

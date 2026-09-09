@@ -1,13 +1,16 @@
 import { closeDiffViewer, loadFlowDiff, scheduleSelectedDiffFileSync, setSelectedDiffFile } from "./js/diff.js";
 import { createSession, flowAgentRunning, flowShellRunning, renderFlowPane, selectedFlow, setFlows } from "./js/flows.js";
+import { handleFilePreviewClick } from "./js/file-preview.js";
 import {
   closeImagePreview,
   endImagePreviewDrag,
   handleImagePreviewClick,
+  handleImagePreviewKeydown,
   handleImagePreviewPointerDown,
   handleImagePreviewPointerMove,
   handleImagePreviewWheel,
   imagePreviewFrame,
+  navigateImagePreview,
 } from "./js/image-preview.js";
 import {
   cancelHistorySearch,
@@ -19,6 +22,7 @@ import {
   applyShellOutputSplitSize,
   applyTheme,
   handleTicketDrawerResizeKeydown,
+  initializeResponsiveTicketDrawer,
   setFlowSplitSize,
   setLinearPaneHidden,
   setShellOutputSplitSize,
@@ -69,7 +73,10 @@ import {
   agentConfigSignature,
   envEditorContents,
   exportEnvironment,
+  filterEnvironment,
   flushEnvSaveOnPageHide,
+  handleEnvironmentSearchKeydown,
+  handleEnvironmentSearchOutsideClick,
   handleEnvEditorChange,
   handleEnvEditorClick,
   handleEnvEditorFocusIn,
@@ -88,6 +95,7 @@ import {
   setDefaultSettingsState,
   setSettingsCollapsed,
   toggleSettingsCollapsed,
+  toggleEnvironmentSearch,
   toggleSettingsSection,
 } from "./js/settings.js";
 import {
@@ -140,6 +148,7 @@ import {
   handleLinearTitleOutsidePointerDown,
   handleLinearTitleSubmit,
   handleTicketGridDragOver,
+  handleTicketSearchOutsideClick,
   hideFloatingLinearOptions,
   loadLinearTickets,
   openTicketSearch,
@@ -163,7 +172,7 @@ async function bootstrap() {
   renderSettingsSections();
   setSettingsCollapsed(state.settingsCollapsed);
   setTicketDrawerSize(state.ticketDrawerSize);
-  setTicketDrawerHidden(state.ticketDrawerHidden);
+  initializeResponsiveTicketDrawer();
   setFlowSplitSize(state.flowSplitSize);
   setShellOutputSplitSize(state.shellOutputSplitSize);
   setLinearPaneHidden(state.linearPaneHidden);
@@ -271,6 +280,11 @@ els.resetAgentDeveloperInstructions.addEventListener("click", () => {
 
 els.exportEnvironment.addEventListener("click", exportEnvironment);
 
+els.searchEnvironment.addEventListener("click", toggleEnvironmentSearch);
+els.envSearchInput.addEventListener("input", filterEnvironment);
+els.envSearchInput.addEventListener("keydown", handleEnvironmentSearchKeydown);
+document.addEventListener("click", handleEnvironmentSearchOutsideClick);
+
 els.envEditor.addEventListener("input", handleEnvEditorInput);
 
 els.envEditor.addEventListener("change", handleEnvEditorChange);
@@ -341,9 +355,10 @@ els.refreshLinearTickets.addEventListener("click", () => void loadLinearTickets(
 
 els.createLinearTicket.addEventListener("click", () => void createSession());
 
-els.searchLinearTickets.addEventListener("click", openTicketSearch);
-
-els.closeTicketSearch.addEventListener("click", closeTicketSearch);
+els.searchLinearTickets.addEventListener("click", () => {
+  if (state.ticketSearchOpen) closeTicketSearch();
+  else openTicketSearch();
+});
 
 els.ticketSearchInput.addEventListener("input", () => {
   state.ticketSearchQuery = els.ticketSearchInput.value;
@@ -353,8 +368,10 @@ els.ticketSearchInput.addEventListener("input", () => {
 els.ticketSearchInput.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   event.preventDefault();
+  event.stopPropagation();
   closeTicketSearch();
 });
+document.addEventListener("click", handleTicketSearchOutsideClick);
 
 els.ticketGrid.addEventListener("dragover", handleTicketGridDragOver);
 
@@ -774,6 +791,8 @@ els.diffModal?.addEventListener("click", (event) => {
 els.diffModal?.querySelector(".diff-modal-code")?.addEventListener("scroll", scheduleSelectedDiffFileSync, { passive: true });
 
 els.imagePreviewModal?.addEventListener("click", (event) => {
+  const arrow = event.target.closest?.("[data-image-preview-step]");
+  if (arrow) navigateImagePreview(Number(arrow.dataset.imagePreviewStep));
   if (event.target === els.imagePreviewModal) closeImagePreview();
 });
 
@@ -788,6 +807,8 @@ imagePreviewFrame?.addEventListener("pointerup", endImagePreviewDrag);
 imagePreviewFrame?.addEventListener("pointercancel", endImagePreviewDrag);
 
 els.flowPane.addEventListener("click", handleImagePreviewClick);
+els.flowPane.addEventListener("click", handleFilePreviewClick);
+document.querySelector("#filePreviewModal")?.addEventListener("click", handleImagePreviewClick);
 
 let titleResizeFrame = 0;
 
@@ -812,6 +833,7 @@ document.addEventListener("visibilitychange", acknowledgeSelectedLinearIssueNoti
 window.addEventListener("focus", acknowledgeSelectedLinearIssueNotification);
 
 document.addEventListener("keydown", (event) => {
+  if (handleImagePreviewKeydown(event)) return;
   if (event.key === "Escape" && els.imagePreviewModal && !els.imagePreviewModal.hidden) {
     event.preventDefault();
     closeImagePreview();

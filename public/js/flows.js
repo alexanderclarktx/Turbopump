@@ -26,6 +26,8 @@ import {
   animateTicketSwitch,
   linearStatusName,
   loadLinearDetail,
+  moveLinearIssueToPinnedPosition,
+  persistPinnedLinearIssues,
   renderLinearDetail,
   renderTickets,
   setLinearIssuePinned,
@@ -35,9 +37,10 @@ import {
 } from "./tickets.js";
 import { escapeAttribute, toast } from "./ui.js";
 
-const defaultCodexModel = "gpt-5.6-sol";
+const defaultCodexModel = "gpt-6-astra";
 const defaultClaudeModel = "claude-fable-5";
 const defaultCodexReasoningEffort = "medium";
+let pendingSessionRequest = null;
 
 export function githubCiStatus(flow) {
   const status = String(flow?.githubCiStatus || "unknown").toLowerCase();
@@ -581,7 +584,7 @@ export function renderFlowPane(options = {}) {
   syncTicketInputState(selectionId);
   agentPanel.classList.toggle("disabled", !agentEnabled);
   els.flowPane.classList.toggle("empty", !flow && !ticket);
-  renderAgentContext(flow || wouldBeAgentContext(ticket));
+  renderAgentContext(flow || (ticket?.pendingSession ? null : wouldBeAgentContext(ticket)));
   syncAgentOutputToolbar(els.flowPane.querySelector(".agent-column > .agent-output-toolbar"), flow?.id || "");
   renderAgentImageContext();
   if (!flow && !ticket) {
@@ -664,17 +667,47 @@ export async function createFlowFromTicket(ticket, options = {}) {
 
 export async function createSession() {
   if (state.creatingSession) return;
+  const sessionId = crypto.randomUUID();
+  const previousSelection = state.selectedLinearIssueId;
   state.creatingSession = true;
+  state.pendingSessionId = sessionId;
   els.createLinearTicket.disabled = true;
   try {
-    const data = await api("/api/flows", { method: "POST", body: "{}" });
+    syncLinearTicketsWithFlows();
+    moveLinearIssueToPinnedPosition(sessionId, 0);
+    els.ticketGrid.scrollTop = 0;
+    await openTicketInFlowPane(state.linearTickets.find((ticket) => ticket.identifier === sessionId));
+    promptInput()?.focus({ preventScroll: true });
+    pendingSessionRequest = api("/api/flows", { method: "POST", body: JSON.stringify({ sessionId }) });
+    const data = await pendingSessionRequest;
     upsertFlow(data.flow);
     render();
-    await loadLogs(data.flow.id);
-    await selectFlow(data.flow.id);
+    if (state.selectedLinearIssueId === sessionId) await selectFlow(data.flow.id);
+  } catch (error) {
+    toast(error.message || "Could not create session.", { kind: "error" });
   } finally {
+    const failed = !state.flows.some((flow) => flow.id === sessionId);
+    if (failed) {
+      state.pinnedLinearIssues.delete(sessionId);
+      persistPinnedLinearIssues();
+    }
+    state.pendingSessionId = "";
+    pendingSessionRequest = null;
     state.creatingSession = false;
     els.createLinearTicket.disabled = false;
+    syncLinearTicketsWithFlows();
+    renderTickets();
+    if (failed && state.selectedLinearIssueId === sessionId) {
+      const previousTicket = state.linearTickets.find((ticket) => ticket.identifier === previousSelection);
+      if (previousTicket) await openTicketInFlowPane(previousTicket);
+      else {
+        state.selectedFlowId = "";
+        state.selectedLinearIssueId = "";
+        localStorage.removeItem("flow.selectedFlowId");
+        localStorage.removeItem("flow.selectedLinearIssueId");
+        renderFlowPane();
+      }
+    }
   }
 }
 
@@ -683,6 +716,7 @@ export async function ensureSelectedFlow() {
   if (flow) return flow;
   const ticket = selectedTicket();
   if (!ticket) return null;
+  if (ticket.pendingSession) return (await pendingSessionRequest)?.flow || null;
   return createFlowFromTicket(ticket);
 }
 

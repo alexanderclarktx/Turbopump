@@ -12,11 +12,33 @@ export let imagePreviewOffsetY = 0;
 
 export let imagePreviewDrag = null;
 
-export function openImagePreview(src, alt = "") {
+export let imagePreviewItems = [];
+
+export let imagePreviewIndex = 0;
+
+let imagePreviewPreviousFocus = null;
+
+export function openImagePreview(src, alt = "", items = [{ src, alt }]) {
   if (!els.imagePreviewModal || !src) return;
   clearTimeout(imagePreviewTransitionTimer);
+  if (els.imagePreviewModal.hidden) imagePreviewPreviousFocus = document.activeElement;
+  imagePreviewItems = items.filter((item, index) => item.src && items.findIndex((other) => other.src === item.src) === index);
+  imagePreviewIndex = imagePreviewItems.findIndex((item) => item.src === src);
+  if (imagePreviewIndex < 0) {
+    imagePreviewIndex = imagePreviewItems.length;
+    imagePreviewItems.push({ src, alt });
+  }
+  renderImagePreview();
+  showModalElement(els.imagePreviewModal);
+  els.imagePreviewModal.querySelector(".image-preview-modal")?.focus({ preventScroll: true });
+}
+
+function renderImagePreview() {
+  const { src, alt } = imagePreviewItems[imagePreviewIndex];
   const image = els.imagePreviewModal.querySelector(".image-preview-frame img");
   const title = els.imagePreviewModal.querySelector("#imagePreviewTitle");
+  imagePreviewDrag = null;
+  els.imagePreviewModal.classList.remove("is-dragging");
   imagePreviewScale = 1;
   imagePreviewOffsetX = 0;
   imagePreviewOffsetY = 0;
@@ -24,7 +46,27 @@ export function openImagePreview(src, alt = "") {
   image.alt = alt;
   applyImagePreviewTransform();
   title.textContent = alt || "Image preview";
-  showModalElement(els.imagePreviewModal);
+  const frame = els.imagePreviewModal.querySelector(".image-preview-frame");
+  frame.scrollTop = 0;
+  frame.scrollLeft = 0;
+  els.imagePreviewModal.querySelector(".image-preview-count").textContent = `${imagePreviewIndex + 1} / ${imagePreviewItems.length}`;
+  for (const button of els.imagePreviewModal.querySelectorAll("[data-image-preview-step]")) {
+    button.disabled = imagePreviewItems.length < 2;
+  }
+}
+
+export function navigateImagePreview(step) {
+  if (!els.imagePreviewModal || els.imagePreviewModal.hidden || els.imagePreviewModal.classList.contains("is-closing") || imagePreviewItems.length < 2) return;
+  imagePreviewIndex = (imagePreviewIndex + step + imagePreviewItems.length) % imagePreviewItems.length;
+  renderImagePreview();
+}
+
+export function handleImagePreviewKeydown(event) {
+  if (!els.imagePreviewModal || els.imagePreviewModal.hidden || event.altKey || event.ctrlKey || event.metaKey) return false;
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return false;
+  event.preventDefault();
+  navigateImagePreview(event.key === "ArrowLeft" ? -1 : 1);
+  return true;
 }
 
 export function closeImagePreview() {
@@ -42,7 +84,10 @@ export function closeImagePreview() {
     image.style.removeProperty("--image-preview-x");
     image.style.removeProperty("--image-preview-y");
     els.imagePreviewModal.hidden = true;
+    imagePreviewItems = [];
     els.imagePreviewModal.classList.remove("is-closing");
+    imagePreviewPreviousFocus?.focus?.({ preventScroll: true });
+    imagePreviewPreviousFocus = null;
   }, MODAL_HIDE_DELAY_MS);
 }
 
@@ -108,7 +153,20 @@ export function handleImagePreviewClick(event) {
   const target = event.target.closest?.("[data-image-preview]");
   if (!target) return;
   event.preventDefault();
-  openImagePreview(target.dataset.imagePreviewSrc || target.href, target.dataset.imagePreviewAlt || target.querySelector("img")?.alt || "");
+  const scopeSelector = ".terminal-split-pane, .terminal-panel, .linear-panel";
+  const scope = target.closest(scopeSelector) || els.flowPane;
+  const items = [...scope.querySelectorAll("[data-image-preview]")]
+    .filter((item) => (item.closest(scopeSelector) || els.flowPane) === scope)
+    .map(imagePreviewItem);
+  const { src, alt } = imagePreviewItem(target);
+  openImagePreview(src, alt, items);
+}
+
+function imagePreviewItem(target) {
+  return {
+    src: target.dataset.imagePreviewSrc || target.getAttribute("href") || "",
+    alt: target.dataset.imagePreviewAlt || target.querySelector("img")?.alt || "",
+  };
 }
 
 export const imagePreviewFrame = els.imagePreviewModal?.querySelector(".image-preview-frame");

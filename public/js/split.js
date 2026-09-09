@@ -342,6 +342,7 @@ export async function submitSplitPromptMessage() {
   input.value = "";
   if (!slashCommand) state.pendingSplitAgentImages = [];
   resizeSplitPromptInput();
+  renderFlowPane();
   try {
     renderLogs(companion.id, { force: true, scrollToLatest: true });
     const data = await api(`/api/flows/${encodeURIComponent(companion.id)}/${flowAgentRunning(companion) ? "queued-prompt" : "message"}`, {

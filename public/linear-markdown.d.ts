@@ -7,6 +7,7 @@ export function renderLinearMarkdown(
     compactBlankLines?: boolean;
     copyCode?: boolean;
     imageSource?: (url: string) => string;
+    fileSource?: (url: string) => string;
   },
 ): string;
 
@@ -16,6 +17,7 @@ export function renderInlineMarkdown(
     images?: boolean;
     links?: boolean;
     imageSource?: (url: string) => string;
+    fileSource?: (url: string) => string;
   },
 ): string;
 

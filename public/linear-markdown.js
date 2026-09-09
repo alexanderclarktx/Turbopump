@@ -349,11 +349,11 @@ function nextNonBlankLineIndex(lines, startIndex) {
 export function renderInlineMarkdown(value, options = {}) {
   const { images = true, links = true } = options;
   const text = String(value || "").replace(
-    /\[(!\[[^\]]+\]\(\s*(?:<(?:https?:\/\/|\/)[^>]+>|(?:https?:\/\/[^\s<>()]+|\/(?:[^\s<>()]|\([^)]*\))+))\s*\))\]\(\s*(?:<(?:https?:\/\/|\/)[^>]+>|(?:https?:\/\/[^\s<>()]+|\/(?:[^\s<>()]|\([^)]*\))+))\s*\)/g,
+    /\[(!\[[^\]]+\]\(\s*(?:<[^>]+>|(?:[^\s<>()]|\([^)]*\))+)\s*\))\]\(\s*(?:<[^>]+>|(?:[^\s<>()]|\([^)]*\))+)\s*\)/g,
     "$1",
   );
   const markdownPattern =
-    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(!?)\[([^\]]+)\]\(\s*(?:<((?:https?:\/\/|\/)[^>]+)>|((?:https?:\/\/[^\s<>()]+|\/(?:[^\s<>()]|\([^)]*\))+)))\s*\)|(https?:\/\/[^\s<>()]+)/g;
+    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(!?)\[([^\]]+)\]\(\s*(?:<([^>]+)>|((?:[^\s<>()]|\([^)]*\))+))\s*\)|(https?:\/\/[^\s<>()]+)/g;
   let cursor = 0;
   let html = "";
 
@@ -369,6 +369,12 @@ export function renderInlineMarkdown(value, options = {}) {
       html += `<strong>${renderInlineMarkdown(bold, options)}</strong>`;
     } else if (emphasis !== undefined) {
       html += `<em>${renderInlineMarkdown(emphasis, options)}</em>`;
+    } else if (links && options.fileSource && !imageMarker && isLocalFileLink(url) && !isLocalImageLink(url)) {
+      const source = options.fileSource(url);
+      const name = url.split("/").pop() || url;
+      html += `<a class="file-link-card" href="${escapeAttribute(source)}" data-file-preview data-file-preview-path="${escapeAttribute(url)}" title="${escapeAttribute(label || name)}"><svg class="file-link-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M9 1.75H4a1.25 1.25 0 0 0-1.25 1.25v10A1.25 1.25 0 0 0 4 14.25h8A1.25 1.25 0 0 0 13.25 13V6L9 1.75Z"/><path d="M8.75 1.75V6h4.5"/></svg><span class="file-link-label">${escapeHtml(label || name)}</span></a>`;
+    } else if (!isSupportedLink(url)) {
+      html += renderTextWithSentenceBreaks(markdown);
     } else if (images && (imageMarker || (options.imageSource && isLocalImageLink(url)))) {
       const imageSrc = (options.imageSource || linearImageSource)(url);
       html += `<figure class="linear-image"><a href="${escapeAttribute(imageSrc)}" data-image-preview data-image-preview-alt="${escapeAttribute(label || "Linear attachment")}"><img src="${escapeAttribute(imageSrc)}" alt="${escapeAttribute(label || "Linear attachment")}" loading="lazy"></a>${label ? `<figcaption>${escapeHtml(label)}</figcaption>` : ""}</figure>`;
@@ -393,7 +399,16 @@ function trimBareUrl(url) {
 
 function isLocalFileLink(url) {
   const value = String(url || "");
-  return /^\/(?:Users|home|workspace|workspaces|tmp|private|var|Volumes)\//.test(value);
+  const path = value.replace(/(?::\d+(?::\d+)?|#L\d+(?:C\d+)?(?:-L?\d+)?)$/, "");
+  return /^\/(?!\/)/.test(path) || isRelativeFileLink(path);
+}
+
+function isRelativeFileLink(value) {
+  return /^[^\s/:?#\\][^:?#\\]*$/.test(value) && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function isSupportedLink(url) {
+  return /^https?:\/\//i.test(url) || /^\/(?!\/)/.test(url) || isRelativeFileLink(url);
 }
 
 function isLocalImageLink(url) {

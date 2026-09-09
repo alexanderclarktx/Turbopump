@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { serveFilePreview } from "./file-preview";
 import {
   appendFileSync,
   copyFileSync,
@@ -151,8 +152,8 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
-const agentModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
-const codexDefaultModel = "gpt-5.6-sol";
+const agentModels = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+const codexDefaultModel = "gpt-6-astra";
 const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
 const defaultAgentProviderSettingKey = "defaultAgentProvider";
 const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-5"]);
@@ -1398,16 +1399,7 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
     return getFlow(flow.id) ?? flow;
   }
 
-  const lastSeenAt = runtime.lastSeenAt ?? nowMs;
-  const staleMs = runtime.provider === "claude" ? claudeRuntimeStaleMs : agentRuntimeStaleMs;
-  if (nowMs - lastSeenAt <= staleMs) return flow;
-
-  runtime.activeTurnId = undefined;
-  runtime.activeTurnTraceAfterLogId = undefined;
-  runtime.activeTurnTree = undefined;
-  insertLog(flow.id, "agent:error", `agent heartbeat timed out after ${Math.round(staleMs / 1000)}s\n`);
-  updateFlow(flow.id, { agentStatus: "failed" });
-  return getFlow(flow.id) ?? flow;
+  return flow;
 }
 
 async function sweepAgentHeartbeats() {
@@ -2041,7 +2033,7 @@ function agentTemplateContext(flow: Flow) {
     title: flow.title,
     prUrl: flow.prUrl,
     checkoutPath: flow.checkoutPath,
-    flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/meta`,
+    flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/agent-meta`,
   };
 }
 
@@ -4159,7 +4151,9 @@ function linearWorkflowKey(name = "") {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-async function createBlankInEngLinearIssue() {
+async function createInEngLinearIssue(title: string) {
+  const issueTitle = title.trim();
+  if (!issueTitle) throw new Error("Linear title is required.");
   const data = await linearGraphql<{
     viewer: {
       id: string;
@@ -4235,7 +4229,7 @@ async function createBlankInEngLinearIssue() {
         teamId: state.team.id,
         stateId: state.id,
         assigneeId: data.viewer.id,
-        title: "turbopump placeholder",
+        title: issueTitle,
       },
     },
   );
@@ -4590,7 +4584,8 @@ async function handleApi(request: Request, url: URL) {
   }
 
   if (url.pathname === "/api/linear/issues" && request.method === "POST") {
-    const result = await createBlankInEngLinearIssue();
+    const body = await readJson<{ title?: string }>(request);
+    const result = await createInEngLinearIssue(body.title || "");
     setSetting("linearViewerName", result.viewer.name);
     return json({ ok: true, ...result });
   }
@@ -4637,6 +4632,7 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/flows" && request.method === "POST") {
     const body = await readJson<{
+      sessionId?: string;
       issue?: string;
       title?: string;
       url?: string;
@@ -4647,7 +4643,12 @@ async function handleApi(request: Request, url: URL) {
     const existing = parsed.identifier ? getFlowByIssue(parsed.identifier) : null;
     if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
 
-    const id = crypto.randomUUID();
+    if (body.sessionId !== undefined && (parsed.identifier || typeof body.sessionId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.sessionId))) {
+      return json({ error: "Invalid session ID" }, { status: 400 });
+    }
+    const id = body.sessionId || crypto.randomUUID();
+    const existingSession = getFlow(id);
+    if (existingSession) return json({ ok: true, alreadyExists: true, flow: clientFlow(existingSession) });
     const linearIssue = cachedLinearIssue(parsed.identifier);
     const { target, branch, baseSha } = createWorktree(id, parsed.identifier || `session-${id.slice(0, 8)}`);
     const createdAt = now();
@@ -4718,6 +4719,10 @@ async function handleApi(request: Request, url: URL) {
       }
     }
 
+    if (parts[3] === "files" && parts[4] === "preview" && request.method === "GET") {
+      return await serveFilePreview(assertFlowWorktree(flow).checkoutPath, url.searchParams.get("path") ?? "", url.searchParams.get("download") === "1");
+    }
+
     if (parts[3] === "context-images" && parts[4] === "preview" && request.method === "GET") {
       return await serveFlowContextImage(assertFlowWorktree(flow), url.searchParams.get("path") ?? "");
     }
@@ -4726,7 +4731,8 @@ async function handleApi(request: Request, url: URL) {
       return json(await getDiff(flow, { patch: url.searchParams.get("patch") === "1" }));
     }
 
-    if (parts[3] === "meta" && request.method === "POST") {
+    const agentMetadataRequest = parts[3] === "agent-meta";
+    if ((parts[3] === "meta" || agentMetadataRequest) && request.method === "POST") {
       const metadataFlow = flow.parentFlowId ? getFlow(flow.parentFlowId) ?? flow : flow;
       let fields: Partial<Flow>;
       try {
@@ -4743,7 +4749,9 @@ async function handleApi(request: Request, url: URL) {
         if (selectedGithubCiFlowId === metadataFlow.id) void pollSelectedGithubCiStatus();
       }
       if (fields.linearIssueId !== undefined) insertLog(metadataFlow.id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
-      return json({ ok: true, flow: clientFlow(getFlow(metadataFlow.id) ?? metadataFlow) });
+      return agentMetadataRequest
+        ? new Response(null, { status: 204 })
+        : json({ ok: true, flow: clientFlow(getFlow(metadataFlow.id) ?? metadataFlow) });
     }
 
     if (parts[3] === "split" && request.method === "POST") {

@@ -32,12 +32,15 @@ Object.defineProperty(globalThis, "document", {
 const { renderLinearMarkdown } = await import("../public/linear-markdown.js");
 const { terminalGroups } = await import("../public/js/terminal-groups.js");
 const { appendLogEntry } = await import("../public/js/logs.js");
-const { state } = await import("../public/js/state.js");
-const { environmentFileContents } = await import("../public/js/settings.js");
+const { state, els } = await import("../public/js/state.js");
+// @ts-expect-error The browser's JavaScript modules do not provide declarations.
+const imagePreview = await import("../public/js/image-preview.js");
+const { environmentFileContents, envEditorContents, filterEnvironment, toggleEnvironmentSearch, handleEnvironmentSearchKeydown, handleEnvironmentSearchOutsideClick } = await import("../public/js/settings.js");
 const {
   formatTerminalElapsed,
   renderableTerminalGroups,
   renderTerminalMarkdownOutput,
+  renderTerminalStreamingTextOutput,
   terminalRowCount,
   terminalTraceCanLoadMore,
   terminalVisibleTurnStartIndex,
@@ -46,6 +49,114 @@ const {
 const legacyFlowName = new RegExp(`${"water"}${"flow"}`, "i");
 
 describe("Turbopump pane markup", () => {
+  test("navigates session images with arrows, wraps, deduplicates, and resets zoom", () => {
+    const previousModal = els.imagePreviewModal;
+    const classes = new Set<string>();
+    const properties = new Map<string, unknown>();
+    const image = {
+      src: "", alt: "",
+      style: { setProperty: (key: string, value: unknown) => properties.set(key, value) },
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
+    };
+    const title = { textContent: "" };
+    const count = { textContent: "" };
+    const frame = { scrollTop: 20, scrollLeft: 30 };
+    const buttons = [{ disabled: false }, { disabled: false }];
+    const nodes: Record<string, unknown> = {
+      ".image-preview-frame img": image,
+      "#imagePreviewTitle": title,
+      ".image-preview-frame": frame,
+      ".image-preview-count": count,
+    };
+    const modal = {
+      hidden: true,
+      classList: {
+        add: (...names: string[]) => names.forEach((name) => classes.add(name)),
+        remove: (...names: string[]) => names.forEach((name) => classes.delete(name)),
+        contains: (name: string) => classes.has(name),
+      },
+      querySelector: (selector: string) => nodes[selector],
+      querySelectorAll: () => buttons,
+    };
+    els.imagePreviewModal = modal;
+    try {
+      const items = [{ src: "/a.png", alt: "First" }, { src: "/b.png", alt: "Second" }, { src: "/a.png", alt: "Duplicate" }];
+      imagePreview.openImagePreview("/b.png", "Second", items);
+      expect(image.src).toBe("/b.png");
+      expect(count.textContent).toBe("2 / 2");
+      expect(buttons.every((button) => !button.disabled)).toBe(true);
+      let prevented = false;
+      expect(imagePreview.handleImagePreviewKeydown({ key: "ArrowRight", preventDefault: () => { prevented = true; } })).toBe(true);
+      expect(prevented).toBe(true);
+      expect(image.src).toBe("/a.png");
+      expect(title.textContent).toBe("First");
+      imagePreview.handleImagePreviewKeydown({ key: "ArrowLeft", preventDefault() {} });
+      expect(image.src).toBe("/b.png");
+      imagePreview.handleImagePreviewWheel({ deltaY: -1, clientX: 30, clientY: 20, preventDefault() {} });
+      expect(properties.get("--image-preview-scale")).toBeGreaterThan(1);
+      classes.add("is-dragging");
+      frame.scrollTop = 100;
+      imagePreview.navigateImagePreview(-1);
+      expect(image.src).toBe("/a.png");
+      expect(properties.get("--image-preview-scale")).toBe(1);
+      expect(properties.get("--image-preview-x")).toBe("0px");
+      expect(frame.scrollTop).toBe(0);
+      expect(classes.has("is-dragging")).toBe(false);
+      expect(imagePreview.handleImagePreviewKeydown({ key: "ArrowRight", metaKey: true })).toBe(false);
+      expect(imagePreview.handleImagePreviewKeydown({ key: "Enter" })).toBe(false);
+      imagePreview.openImagePreview("/only.png");
+      expect(count.textContent).toBe("1 / 1");
+      expect(buttons.every((button) => button.disabled)).toBe(true);
+      imagePreview.navigateImagePreview(1);
+      expect(image.src).toBe("/only.png");
+
+      const otherScope = {};
+      const scope = { querySelectorAll: () => targets };
+      const makeTarget = (src: string, targetScope: object) => ({
+        dataset: { imagePreviewSrc: src, imagePreviewAlt: src },
+        closest: () => targetScope,
+      });
+      const targets = [makeTarget("/a.png", scope), makeTarget("/other-session.png", otherScope), makeTarget("/b.png", scope)];
+      imagePreview.handleImagePreviewClick({
+        target: { closest: (selector: string) => selector === "[data-image-preview]" ? targets[2] : null },
+        preventDefault() {},
+      });
+      expect(image.src).toBe("/b.png");
+      expect(count.textContent).toBe("2 / 2");
+      imagePreview.navigateImagePreview(1);
+      expect(image.src).toBe("/a.png");
+      modal.hidden = true;
+      expect(imagePreview.handleImagePreviewKeydown({ key: "ArrowLeft" })).toBe(false);
+    } finally {
+      els.imagePreviewModal = previousModal;
+    }
+  });
+
+  test("renders relative screenshot links in completed and streaming responses", () => {
+    const paths = [
+      "artifacts/custom-mcp-chat/01-connect-card.png",
+      "artifacts/custom-mcp-chat/02b-api-key-form.png",
+      "artifacts/custom-mcp-chat/03-approve-agent.png",
+      "artifacts/custom-mcp-chat/06-conversation-handoff.png",
+    ];
+    const message = `Screenshots: ${paths.map((path, index) => `[Screenshot ${index + 1}](${path})`).join(" · ")}`;
+    for (const render of [renderTerminalMarkdownOutput, renderTerminalStreamingTextOutput]) {
+      const output = render(message, { flowId: "flow-1" });
+      for (const path of paths) {
+        expect(output).toContain(`src="/api/flows/flow-1/context-images/preview?path=${encodeURIComponent(path)}"`);
+      }
+      expect(output.match(/data-image-preview /g)).toHaveLength(4);
+      expect(output.match(/class="linear-image"/g)).toHaveLength(4);
+      expect(output).not.toContain('class="file-link-card"');
+      expect(output).not.toContain("](artifacts/");
+      const remote = render("![Remote](https://example.com/proof.png)", { flowId: "flow-1" });
+      expect(remote).toContain('src="https://example.com/proof.png"');
+      const report = render("[Validation report](artifacts/custom-mcp-validation.md)", { flowId: "split-flow" });
+      expect(report).toContain('href="/api/flows/split-flow/files/preview?path=artifacts%2Fcustom-mcp-validation.md"');
+      expect(report).toContain('data-file-preview ');
+    }
+  });
+
   test("reconciles an optimistic prompt when its persisted log arrives", () => {
     const flowId = "optimistic-prompt-flow";
     state.logs.set(flowId, []);
@@ -99,9 +210,15 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("width: 26px;");
   });
 
-  test("hides the Linear tickets pane on narrow screens", () => {
+  test("hides tickets by default on narrow screens and opens them over the session", () => {
     expect(css).toContain("@media (max-width: 980px)");
-    expect(css).toContain("  .ticket-drawer {\n    display: none;\n  }");
+    expect(css).toContain("  body.tickets-collapsed .ticket-drawer,\n  body.app-booting .ticket-drawer {\n    display: none;\n  }");
+    expect(css).toContain("  .ticket-drawer {\n    position: fixed;\n    inset: 0 auto 0 0;");
+    expect(css).toContain("width: min(var(--ticket-drawer-size), 100vw);");
+    expect(app).toContain('window.matchMedia("(max-width: 980px)")');
+    expect(app).toContain("setTicketDrawerHidden(narrowWindow.matches || wideWindowHidden);");
+    expect(app).toContain('narrowWindow.addEventListener("change", ({ matches }) => {');
+    expect(app).toContain("setTicketDrawerHidden(wideWindowHidden);");
     expect(css).not.toContain("max-height: 360px;");
   });
 
@@ -383,6 +500,24 @@ describe("Turbopump pane markup", () => {
     }
   });
 
+  test("keeps agent errors visible in simple mode after a later prompt", () => {
+    const previous = state.agentTraceHidden;
+    state.agentTraceHidden = true;
+    try {
+      const groups = renderableTerminalGroups(
+        [
+          { id: 1, source: "user", message: "investigate", createdAt: "2026-09-04T18:15:27.000Z" },
+          { id: 2, source: "agent:error", message: "request failed", createdAt: "2026-09-04T18:17:38.000Z" },
+          { id: 3, source: "user", message: "cont", createdAt: "2026-09-04T18:17:58.000Z" },
+        ],
+        { agentWorking: true },
+      );
+      expect(groups.map((group: { id: number }) => group.id)).toEqual([1, 2, 3]);
+    } finally {
+      state.agentTraceHidden = previous;
+    }
+  });
+
   test("keeps a live tool preview attached to the preceding agent message across a steer", () => {
     const previous = state.agentTraceHidden;
     state.agentTraceHidden = true;
@@ -412,7 +547,7 @@ describe("Turbopump pane markup", () => {
   test("persists environment settings in a dedicated db table", () => {
     expect(html).toContain('<section class="settings-section environment-settings">');
     expect(html).toContain("<span>Environment</span>");
-    expect(html).toContain('<button id="exportEnvironment" type="button">Export .env</button>');
+    expect(html).toContain('<button id="exportEnvironment" class="icon-button" type="button" aria-label="Export .env">');
     expect(html).toContain('<div class="env-editor" id="envEditor" aria-label="Environment variables"></div>');
     expect(html).not.toContain('<textarea id="envEditor"');
     expect(css).toContain(".env-row {\n  display: grid;");
@@ -511,6 +646,128 @@ describe("Turbopump pane markup", () => {
       ]),
     ).toBe("# API_URL=https://staging.example.com\nAPI_URL=https://example.com\nTOKEN=secret");
     expect(app).toContain('link.download = ".env";');
+  });
+
+  test("filters environment names without removing saved values and clears search with Escape", () => {
+    const previous = {
+      envEditor: els.envEditor,
+      envSearchInput: els.envSearchInput,
+      envSearchEmpty: els.envSearchEmpty,
+      searchEnvironment: els.searchEnvironment,
+    };
+    const rows = ["API_URL", "ALLOW_REMOTE_MODELS", "TOKEN", ""].map((key) => ({
+      hidden: false,
+      querySelector: () => ({ value: key }),
+      querySelectorAll: () => [{
+        dataset: { envActive: "true" },
+        querySelector: () => ({ dataset: { envValue: key ? "secret" : "" } }),
+      }],
+    }));
+    let focused = "";
+    let expanded = "false";
+    const inside = {};
+    const outside = {};
+    const input = { disabled: true, value: "", focus: () => { focused = "input"; }, parentElement: { contains: (target: unknown) => target === inside } };
+    const empty = { hidden: true };
+    Object.assign(els, {
+      envEditor: { querySelectorAll: () => rows },
+      envSearchInput: input,
+      envSearchEmpty: empty,
+      searchEnvironment: {
+        setAttribute: (_name: string, value: string) => { expanded = value; },
+        focus: () => { focused = "button"; },
+      },
+    });
+    try {
+      const contents = envEditorContents();
+      toggleEnvironmentSearch();
+      expect(input.disabled).toBe(false);
+      expect(expanded).toBe("true");
+      expect(focused).toBe("input");
+      handleEnvironmentSearchOutsideClick({ target: inside });
+      expect(input.disabled).toBe(false);
+      input.value = "  remote  ";
+      handleEnvironmentSearchOutsideClick({ target: outside });
+      expect(input.disabled).toBe(false);
+      filterEnvironment();
+      expect(rows.map((row) => row.hidden)).toEqual([true, false, true, true]);
+      expect(empty.hidden).toBe(true);
+      expect(envEditorContents()).toBe(contents);
+      input.value = "secret";
+      filterEnvironment();
+      expect(rows.every((row) => row.hidden)).toBe(true);
+      expect(empty.hidden).toBe(false);
+      let prevented = false;
+      handleEnvironmentSearchKeydown({
+        key: "Escape",
+        preventDefault: () => { prevented = true; },
+        stopPropagation: () => {},
+      });
+      expect(prevented).toBe(true);
+      expect(input.disabled).toBe(true);
+      expect(input.value).toBe("");
+      expect(expanded).toBe("false");
+      expect(focused).toBe("button");
+      expect(rows.every((row) => !row.hidden)).toBe(true);
+      expect(empty.hidden).toBe(true);
+      toggleEnvironmentSearch();
+      input.value = "  ";
+      focused = "outside";
+      handleEnvironmentSearchOutsideClick({ target: outside });
+      expect(input.disabled).toBe(true);
+      expect(input.value).toBe("");
+      expect(focused).toBe("outside");
+    } finally {
+      Object.assign(els, previous);
+    }
+  });
+
+  test("reverses environment filtering from the current animated height", () => {
+    const previous = { envEditor: els.envEditor, envSearchInput: els.envSearchInput, envSearchEmpty: els.envSearchEmpty };
+    const previousStyle = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+    type FilterAnimation = { cancel: () => void; onfinish: (() => void) | null };
+    const animations: FilterAnimation[] = [];
+    const frames: Array<Array<{ height: string }>> = [];
+    let height = 100;
+    const row = {
+      hidden: false,
+      inert: false,
+      querySelector: () => ({ value: "API_URL" }),
+      getBoundingClientRect: () => ({ height: row.hidden ? 0 : height }),
+      animate: (keyframes: Array<{ height: string }>) => {
+        frames.push(keyframes);
+        const animation: FilterAnimation = { cancel: () => { height = 100; }, onfinish: null };
+        animations.push(animation);
+        return animation;
+      },
+    };
+    Object.defineProperty(globalThis, "getComputedStyle", {
+      configurable: true, value: () => ({ paddingTop: "12px", opacity: "1" }),
+    });
+    const input = { value: "missing" };
+    Object.assign(els, { envEditor: { querySelectorAll: () => [row] }, envSearchInput: input, envSearchEmpty: { hidden: true } });
+    try {
+      filterEnvironment();
+      expect(row.hidden).toBe(false);
+      expect(row.inert).toBe(true);
+      expect(frames[0]?.map((frame) => frame.height)).toEqual(["100px", "0px"]);
+      height = 40;
+      input.value = "api";
+      filterEnvironment();
+      expect(frames[1]?.map((frame) => frame.height)).toEqual(["40px", "100px"]);
+      expect(row.inert).toBe(false);
+      animations[0]?.onfinish?.();
+      expect(row.hidden).toBe(false);
+      animations[1]?.onfinish?.();
+      input.value = "missing";
+      filterEnvironment();
+      animations[2]?.onfinish?.();
+      expect(row.hidden).toBe(true);
+    } finally {
+      Object.assign(els, previous);
+      if (previousStyle) Object.defineProperty(globalThis, "getComputedStyle", previousStyle);
+      else Reflect.deleteProperty(globalThis, "getComputedStyle");
+    }
   });
 
   test("makes settings sections collapsible", () => {
@@ -695,11 +952,10 @@ describe("Turbopump pane markup", () => {
     expect(html).toContain('id="createLinearTicket"');
     expect(html).toContain('id="searchLinearTickets"');
     expect(html).toContain('id="resetAgentDeveloperInstructions"');
-    expect(css).toContain(".ticket-drawer-actions {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  margin-left: auto;\n  margin-right: -5px;\n}");
-    expect(css).toContain(".ticket-drawer-header #refreshLinearTickets,\n.ticket-drawer-header #createLinearTicket,\n.ticket-drawer-header #searchLinearTickets,\n.ticket-search-pane #closeTicketSearch {\n  width: 28px;\n  min-width: 28px;\n  min-height: 28px;\n  flex: 0 0 28px;\n}");
-    expect(css).toContain("#refreshLinearTickets,\n#createLinearTicket,\n#searchLinearTickets,\n#closeTicketSearch,\n#resetAgentDeveloperInstructions {\n  border-color: transparent;\n  background: transparent;\n}");
-    expect(css).toContain("#refreshLinearTickets,\n#createLinearTicket,\n#searchLinearTickets,\n#closeTicketSearch {\n  color: var(--muted);\n}");
-    expect(css).toContain("#refreshLinearTickets:hover,\n#createLinearTicket:hover,\n#searchLinearTickets:hover,\n#closeTicketSearch:hover,\n#resetAgentDeveloperInstructions:hover");
+    expect(css).toContain(".ticket-drawer-header #refreshLinearTickets,\n.ticket-drawer-header #createLinearTicket,\n.ticket-drawer-header #searchLinearTickets {\n  width: 28px;\n  min-width: 28px;\n  min-height: 28px;\n  flex: 0 0 28px;\n}");
+    expect(css).toContain("#refreshLinearTickets,\n#createLinearTicket,\n#searchLinearTickets,\n#resetAgentDeveloperInstructions {\n  border-color: transparent;\n  background: transparent;\n}");
+    expect(css).toContain("#refreshLinearTickets,\n#createLinearTicket,\n#searchLinearTickets {\n  color: var(--muted);\n}");
+    expect(css).toContain("#refreshLinearTickets:hover,\n#createLinearTicket:hover,\n#searchLinearTickets:hover,\n#resetAgentDeveloperInstructions:hover");
     expect(app).toContain("linearTicketsLoading: false");
     expect(app).toContain("function updateRefreshLinearTicketsButton()");
     expect(app).toContain('els.refreshLinearTickets.classList.toggle("is-loading", state.linearTicketsLoading);');
@@ -708,20 +964,69 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain("@keyframes refresh-linear-tickets-spin");
   });
 
+  test("expands ticket search while hiding and restoring the other header actions", async () => {
+    // @ts-expect-error The browser's JavaScript modules do not provide declarations.
+    const { setTicketSearchOpen, handleTicketSearchOutsideClick } = await import("../public/js/tickets.js");
+    const previous = {
+      refreshLinearTickets: els.refreshLinearTickets,
+      createLinearTicket: els.createLinearTicket,
+      searchLinearTickets: els.searchLinearTickets,
+      ticketSearchInput: els.ticketSearchInput,
+      ticketSearchPane: els.ticketSearchPane,
+    };
+    const previousOpen = state.ticketSearchOpen;
+    const previousQuery = state.ticketSearchQuery;
+    const refresh = { hidden: false };
+    const create = { hidden: false };
+    const input = { disabled: true, value: "" };
+    const inside = {};
+    const outside = {};
+    let expanded = "false";
+    let focusCount = 0;
+    Object.assign(els, {
+      refreshLinearTickets: refresh,
+      createLinearTicket: create,
+      ticketSearchInput: input,
+      ticketSearchPane: { contains: (target: unknown) => target === inside },
+      searchLinearTickets: { setAttribute: (_name: string, value: string) => { expanded = value; }, focus: () => { focusCount += 1; } },
+    });
+    try {
+      setTicketSearchOpen(true);
+      expect([refresh.hidden, create.hidden, input.disabled, expanded]).toEqual([true, true, false, "true"]);
+      handleTicketSearchOutsideClick({ target: inside });
+      expect(state.ticketSearchOpen).toBe(true);
+      input.value = "query";
+      handleTicketSearchOutsideClick({ target: outside });
+      expect(state.ticketSearchOpen).toBe(true);
+      input.value = "  ";
+      state.ticketSearchQuery = "  ";
+      handleTicketSearchOutsideClick({ target: outside });
+      expect(state.ticketSearchOpen).toBe(false);
+      expect(input.value).toBe("");
+      expect(focusCount).toBe(0);
+      expect([refresh.hidden, create.hidden, input.disabled, expanded]).toEqual([false, false, true, "false"]);
+      setTicketSearchOpen(false);
+      expect([refresh.hidden, create.hidden, input.disabled, expanded]).toEqual([false, false, true, "false"]);
+    } finally {
+      Object.assign(els, previous);
+      state.ticketSearchOpen = previousOpen;
+      state.ticketSearchQuery = previousQuery;
+    }
+  });
+
   test("filters Linear tickets by title from the ticket drawer search pane", () => {
     expect(html.indexOf('id="createLinearTicket"')).toBeLessThan(html.indexOf('id="searchLinearTickets"'));
     expect(html).toContain('id="ticketSearchPane"');
     expect(html).toContain('id="ticketSearchInput"');
-    expect(html).toContain('id="closeTicketSearch"');
     expect(app).toContain("ticketSearchOpen: false");
     expect(app).toContain("ticketSearchQuery: \"\"");
     expect(app).toContain("searchLinearTickets: document.querySelector(\"#searchLinearTickets\"),");
     expect(app).toContain("ticketSearchInput: document.querySelector(\"#ticketSearchInput\"),");
     expect(app).toContain("function openTicketSearch()");
-    expect(app).toContain("function closeTicketSearch()");
+    expect(app).toContain("function closeTicketSearch(restoreFocus = true)");
     expect(app).toContain("els.refreshLinearTickets.hidden = state.ticketSearchOpen;");
     expect(app).toContain("els.createLinearTicket.hidden = state.ticketSearchOpen;");
-    expect(app).toContain("els.searchLinearTickets.hidden = state.ticketSearchOpen;");
+    expect(app).toContain("els.ticketSearchInput.disabled = !state.ticketSearchOpen;");
     expect(app).toContain("function ticketMatchesTicketSearch(ticket, query)");
     expect(app).toContain('return String(ticket.title || "").toLowerCase().includes(query);');
     expect(app).toContain("const pinnedTickets = orderedPinnedTickets(tickets).filter((ticket) => !searchQuery || ticketMatchesTicketSearch(ticket, searchQuery));");
@@ -730,13 +1035,11 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("tickets: group.tickets.filter((ticket) => ticketMatchesTicketSearch(ticket, searchQuery)),");
     expect(app).toContain("for (const group of ticketGroups) {");
     expect(app).not.toContain("renderTicketSearchResults");
-    expect(app).toContain('els.searchLinearTickets.addEventListener("click", openTicketSearch);');
-    expect(app).toContain('els.closeTicketSearch.addEventListener("click", closeTicketSearch);');
+    expect(app).toContain('els.searchLinearTickets.addEventListener("click", () => {');
     expect(app).toContain('els.ticketSearchInput.addEventListener("input", () => {');
     expect(app).toContain('if (event.key !== "Escape") return;');
-    expect(css).toMatch(/\.ticket-drawer \{[^}]*display: grid;[^}]*grid-template-rows: auto auto minmax\(0, 1fr\);/s);
-    expect(css).toContain(".ticket-search-pane {\n  display: grid;");
-    expect(css).toContain(".ticket-search-pane[hidden] {\n  display: none;\n}");
+    expect(css).toMatch(/\.ticket-drawer \{[^}]*display: grid;[^}]*grid-template-rows: auto minmax\(0, 1fr\);/s);
+    expect(css).toContain(".ticket-search-pane {\n  position: absolute;");
   });
 
   test("keeps cached Linear tickets rendered when a ticket refresh fails", () => {
@@ -776,12 +1079,12 @@ describe("Turbopump pane markup", () => {
     expect(server).not.toContain("if (!flow && (isDoneLinearIssue(issue) || isDuplicateLinearIssue(issue))) return [];");
   });
 
-  test("lets the open Linear tickets pane resize between 280 and 320px", () => {
+  test("lets the open Linear tickets pane resize between 240 and 320px", () => {
     expect(html).toContain('class="ticket-drawer-resizer"');
     expect(html).toContain('aria-label="Resize tickets pane"');
-    expect(html).toContain('aria-valuemin="280"');
+    expect(html).toContain('aria-valuemin="240"');
     expect(html).toContain('aria-valuemax="320"');
-    expect(app).toContain('const TICKET_DRAWER_MIN_SIZE = 280;');
+    expect(app).toContain('const TICKET_DRAWER_MIN_SIZE = 240;');
     expect(app).toContain('const TICKET_DRAWER_MAX_SIZE = 320;');
     expect(app).toContain('const TICKET_DRAWER_SIZE_KEY = "flow.ticketDrawerSize";');
     expect(app).toContain("function clampTicketDrawerSize(value)");
@@ -824,12 +1127,150 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain('issue.title !== "Untitled"');
   });
 
+  test.each([false, true])("opens a pending session immediately and rolls back failures (navigated away: %s)", async (navigateAway) => {
+    // @ts-expect-error The browser's JavaScript modules do not provide declarations.
+    const { createSession, ensureSelectedFlow, openTicketInFlowPane } = await import("../public/js/flows.js");
+    // @ts-expect-error The browser's JavaScript modules do not provide declarations.
+    const { syncLinearTicketsWithFlows, renderTickets, orderedPinnedTickets } = await import("../public/js/tickets.js");
+    const previousState = {
+      flows: state.flows, linearTickets: state.linearTickets, pinnedLinearIssues: state.pinnedLinearIssues,
+      creatingSession: state.creatingSession, pendingSessionId: state.pendingSessionId,
+      ticketSearchQuery: state.ticketSearchQuery,
+      selectedFlowId: state.selectedFlowId, selectedLinearIssueId: state.selectedLinearIssueId,
+      activeInputIssueId: state.activeInputIssueId, ticketInputStates: state.ticketInputStates,
+      historySearch: state.historySearch, historyNavigation: state.historyNavigation,
+      terminalFollowPaused: state.terminalFollowPaused, selectionRenderFrame: state.selectionRenderFrame,
+      ticketSwitchFadeTimer: state.ticketSwitchFadeTimer,
+    };
+    const previousEls = { createLinearTicket: els.createLinearTicket, ticketGrid: els.ticketGrid, repoUrl: els.repoUrl, toastStack: els.toastStack, flowPane: els.flowPane };
+    const previousDocument = globalThis.document;
+    const previousFetch = globalThis.fetch;
+    const previousTimeout = window.setTimeout;
+    const previousFrame = Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame");
+    const previousCancelFrame = Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame");
+    const previousStorage = new Map(testLocalStorage);
+    class Node {
+      dataset: Record<string, string> = {};
+      children: Node[] = [];
+      attributes = new Map<string, string>();
+      className = "";
+      innerHTML = "";
+      textContent = "";
+      value = "";
+      disabled = false;
+      scrollTop = 200;
+      scrollHeight = 1000;
+      clientHeight = 0;
+      style = { height: "", setProperty: () => {} };
+      classList = { toggle: () => {}, add: () => {}, remove: () => {} };
+      append(...nodes: Node[]) { this.children.push(...nodes); }
+      appendChild(node: Node) { this.children.push(node); }
+      replaceChildren(...nodes: Node[]) { this.children = nodes; }
+      setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+      addEventListener() {}
+      querySelector(selector: string): Node | null { return selector === ".input-pane-prefix-glyph" ? new Node() : null; }
+      querySelectorAll(): Node[] { return []; }
+      closest(): Node { return this; }
+      matches() { return false; }
+      focus() {}
+      getBoundingClientRect() { return { height: 0 }; }
+    }
+    const grid = new Node();
+    const toasts = new Node();
+    const pane = new Node();
+    const paneNodes = new Map([".slash-menu", ".agent-panel", ".terminal-panel > .message-form", ".terminal-panel > .message-form .message-input", ".shell-command-panel:not(.shell-command-panel-split) .shell-input", ".linear-detail", ".terminal", ".flow-content", ".flow-resizer"].map((selector) => [selector, new Node()]));
+    pane.querySelector = (selector: string) => paneNodes.get(selector) || null;
+    const prompt = paneNodes.get(".terminal-panel > .message-form .message-input")!;
+    prompt.value = "previous draft";
+    let requestCount = 0;
+    let requestedId = "";
+    let rejectRequest!: (error: Error) => void;
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => new Node() } });
+    Object.defineProperty(window, "setTimeout", { configurable: true, value: () => 0 });
+    Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: () => 1 });
+    Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => {} });
+    Object.defineProperty(globalThis, "fetch", { configurable: true, value: (_path: string, options: { body: string }) => {
+      requestCount += 1;
+      requestedId = JSON.parse(options.body).sessionId;
+      return new Promise((_resolve, reject) => { rejectRequest = reject; });
+    } });
+    Object.assign(state, { flows: [{ id: "older-session", title: "older session" }], linearTickets: [], pinnedLinearIssues: new Set(), creatingSession: false, pendingSessionId: "", ticketSearchQuery: "", selectedFlowId: "older-session", selectedLinearIssueId: "older-session", activeInputIssueId: "older-session", ticketInputStates: new Map(), selectionRenderFrame: 0, ticketSwitchFadeTimer: 0 });
+    Object.assign(els, { createLinearTicket: { disabled: false }, ticketGrid: grid, repoUrl: { value: "" }, toastStack: toasts, flowPane: pane });
+    let creation: Promise<void> | undefined;
+    try {
+      creation = createSession();
+      expect(state.selectedLinearIssueId).toBe(state.pendingSessionId);
+      expect(state.selectedFlowId).toBe("");
+      expect(prompt.value).toBe("");
+      await Promise.resolve();
+      expect(toasts.children.map((item) => item.textContent)).toEqual([]);
+      expect(paneNodes.get(".terminal")?.innerHTML).toContain("Creating worktree.");
+      expect(requestCount).toBe(1);
+      expect(requestedId).toBe(state.pendingSessionId);
+      expect(state.creatingSession).toBe(true);
+      expect(els.createLinearTicket.disabled).toBe(true);
+      expect(grid.scrollTop).toBe(0);
+      const firstCard = grid.children[0]?.children[1]?.children[0]?.children[0];
+      expect(firstCard?.dataset.issue).toBe(requestedId);
+      expect(firstCard?.attributes.get("aria-busy")).toBe("true");
+      expect(orderedPinnedTickets(state.linearTickets).map((ticket: { identifier: string }) => ticket.identifier)).toEqual([requestedId, "older-session"]);
+      await createSession();
+      expect(requestCount).toBe(1);
+      const waitingFlow = ensureSelectedFlow().catch((error: Error) => error.message);
+      expect(requestCount).toBe(1);
+      // A websocket update may arrive before the HTTP response.
+      state.flows.push({ id: requestedId, title: "new session" });
+      syncLinearTicketsWithFlows();
+      renderTickets();
+      const reconciled = state.linearTickets.filter((ticket: { identifier: string }) => ticket.identifier === requestedId);
+      expect(reconciled).toHaveLength(1);
+      expect(reconciled[0].pendingSession).toBeUndefined();
+      expect(reconciled[0].flowId).toBe(requestedId);
+      expect(orderedPinnedTickets(state.linearTickets)[0].identifier).toBe(requestedId);
+      // Restore the pending state to exercise a failed request with no server session.
+      state.flows.pop();
+      syncLinearTicketsWithFlows();
+      if (navigateAway) {
+        state.flows.push({ id: "other-session", title: "other session" });
+        syncLinearTicketsWithFlows();
+        await openTicketInFlowPane(state.linearTickets.find((ticket: { identifier: string }) => ticket.identifier === "other-session"));
+        prompt.value = "other draft";
+      }
+      rejectRequest(new Error("Worktree creation failed"));
+      await creation;
+      expect(await waitingFlow).toBe("Worktree creation failed");
+      expect(state.creatingSession).toBe(false);
+      expect(state.pendingSessionId).toBe("");
+      expect(els.createLinearTicket.disabled).toBe(false);
+      expect(state.pinnedLinearIssues.has(requestedId)).toBe(false);
+      expect(state.linearTickets.some((ticket: { identifier: string }) => ticket.identifier === requestedId)).toBe(false);
+      expect(toasts.children[0]?.textContent).toBe("Worktree creation failed");
+      expect(state.selectedLinearIssueId).toBe(navigateAway ? "other-session" : "older-session");
+      expect(prompt.value).toBe(navigateAway ? "other draft" : "previous draft");
+    } finally {
+      rejectRequest?.(new Error("Test cleanup"));
+      await creation?.catch(() => {});
+      Object.assign(state, previousState);
+      Object.assign(els, previousEls);
+      Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
+      Object.defineProperty(globalThis, "fetch", { configurable: true, value: previousFetch });
+      Object.defineProperty(window, "setTimeout", { configurable: true, value: previousTimeout });
+      if (previousFrame) Object.defineProperty(globalThis, "requestAnimationFrame", previousFrame);
+      else Reflect.deleteProperty(globalThis, "requestAnimationFrame");
+      if (previousCancelFrame) Object.defineProperty(globalThis, "cancelAnimationFrame", previousCancelFrame);
+      else Reflect.deleteProperty(globalThis, "cancelAnimationFrame");
+      testLocalStorage.clear();
+      for (const [key, value] of previousStorage) testLocalStorage.set(key, value);
+    }
+  });
+
   test("creates sessions first and lets them create a Linear ticket later", () => {
     expect(html.indexOf('id="refreshLinearTickets"')).toBeLessThan(html.indexOf('id="createLinearTicket"'));
     expect(app).toContain("createLinearTicket: document.querySelector(\"#createLinearTicket\"),");
     expect(html).toContain('id="createLinearTicket" class="icon-button" type="button" aria-label="Create session"');
     expect(app).toContain("async function createSession()");
-    expect(app).toContain('api("/api/flows", { method: "POST", body: "{}" })');
+    expect(app).toContain('api("/api/flows", { method: "POST", body: JSON.stringify({ sessionId }) })');
+    expect(server).toContain('const id = body.sessionId || crypto.randomUUID();');
     expect(app).toContain('els.createLinearTicket.addEventListener("click", () => void createSession());');
     expect(server).toContain('createWorktree(id, parsed.identifier || `session-${id.slice(0, 8)}`)');
     expect(server).toContain('parsed.identifier || "new session"');
@@ -842,7 +1283,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('<svg class="linear-logo" viewBox="0 0 100 100"');
     expect(css).toContain(".linear-create-ticket .linear-logo");
     expect(css).toContain(".linear-create-ticket {");
-    expect(app).toContain("const hasLinearIssue = Boolean(context.flow?.linearIssueId || (!context.flow && context.ticket));");
+    expect(app).toContain("const hasLinearIssue = Boolean(context.flow?.linearIssueId || (!context.flow && context.ticket && !context.ticket.localSession));");
     expect(app).toContain('const priorityControl = hasLinearIssue ? renderLinearPriorityControl(issue) : "";');
     expect(app).toContain('const statusControl = hasLinearIssue ? renderLinearStatusControl(issue, statusName) : "";');
     expect(app).toContain('const githubCiPill = renderGithubCiPill(context.flow);');
@@ -858,15 +1299,16 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('<a class="linear-create-ticket"');
     expect(css).toContain("width: 12px;\n  height: 12px;");
     expect(app).toContain("async function createLinearTicketForFlow(flow)");
-    expect(app).toContain('const { issue } = await api("/api/linear/issues", { method: "POST" });');
+    expect(app).toContain('body: JSON.stringify({ title: flow.title })');
     expect(app).toContain('api(`/api/flows/${encodeURIComponent(flow.id)}/meta`');
     expect(app).toContain('body: JSON.stringify({ linearIssueId: issue.identifier })');
     expect(app).toContain('setLinearIssuePinned(issue.identifier, true, { position: "top" });');
     expect(app).toContain("state.linearDetails.set(issue.identifier, { loading: false, issue });");
-    expect(server).toContain("async function createBlankInEngLinearIssue()");
+    expect(server).toContain("async function createInEngLinearIssue(title: string)");
     expect(server).toContain('linearWorkflowKey(state.name) === "in-eng"');
     expect(server).toContain("issueCreate(input: $input)");
-    expect(server).toContain('title: "turbopump placeholder"');
+    expect(server).toContain("title: issueTitle");
+    expect(server).toContain('const result = await createInEngLinearIssue(body.title || "")');
     expect(server).toContain('url.pathname === "/api/linear/issues" && request.method === "POST"');
   });
 
@@ -1247,7 +1689,7 @@ describe("Turbopump pane markup", () => {
   test("shows ticket id on cards and GitHub before Linear metadata in the Flow pane metadata row", () => {
     expect(app).toContain('class="ticket-meta"');
     expect(app).toContain('class="ticket-id"');
-    expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.localSession ? "SESSION" : ticket.identifier)}</span>');
+    expect(app).toContain('<span class="ticket-id">${escapeHtml(ticket.localSession ? "" : ticket.identifier)}</span>');
     expect(app).toContain("const statusName = issue.state?.name || context.ticket?.state?.name || \"\";");
     expect(app).toContain('const statusControl = hasLinearIssue ? renderLinearStatusControl(issue, statusName) : "";');
     expect(app).toContain("const githubCiPill = renderGithubCiPill(context.flow);");
@@ -1382,7 +1824,7 @@ describe("Turbopump pane markup", () => {
   });
 
   test("opens a pin option when right-clicking a ticket row", () => {
-    expect(app).toContain('card.addEventListener("contextmenu", (event) => showTicketOptionsMenu(event, ticket));');
+    expect(app).toContain('card.addEventListener("contextmenu", (event) => {');
     expect(app).toContain('menu.className = "ticket-options-menu";');
     expect(app).toContain('${pinned ? "Unpin" : "Pin"}');
     expect(css).toContain(".ticket-options-menu {");
@@ -1399,9 +1841,70 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".ticket-options-menu .danger");
   });
 
+  test("shows the deletion spinner during the request and restores the card on failure", async () => {
+    // @ts-expect-error The browser's JavaScript modules do not provide declarations.
+    const { deleteCheckout } = await import("../public/js/checkouts.js");
+    const previousState = { flows: state.flows, linearTickets: state.linearTickets, deletingCheckoutNames: state.deletingCheckoutNames, selectedFlowId: state.selectedFlowId, ticketSearchQuery: state.ticketSearchQuery };
+    const previousEls = { ticketGrid: els.ticketGrid, checkoutList: els.checkoutList, repoUrl: els.repoUrl };
+    const previousDocument = globalThis.document;
+    const previousFetch = globalThis.fetch;
+    class Node {
+      dataset: Record<string, string> = {};
+      children: Node[] = [];
+      attributes = new Map<string, string>();
+      className = "";
+      innerHTML = "";
+      classList = { toggle: () => {} };
+      append(...nodes: Node[]) { this.children.push(...nodes); }
+      replaceChildren(...nodes: Node[]) { this.children = nodes; }
+      setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+      addEventListener() {}
+      querySelector() { return null; }
+      querySelectorAll() { return []; }
+    }
+    const grid = new Node();
+    let requestCount = 0;
+    let rejectRequest!: (error: Error) => void;
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { createElement: () => new Node() } });
+    Object.defineProperty(globalThis, "fetch", { configurable: true, value: () => {
+      requestCount += 1;
+      return new Promise((_resolve, reject) => { rejectRequest = reject; });
+    } });
+    Object.assign(state, {
+      flows: [{ id: "deleting-session", checkoutPath: "/worktrees/session-checkout" }],
+      linearTickets: [{ identifier: "deleting-session", flowId: "deleting-session", title: "session", localSession: true }],
+      deletingCheckoutNames: new Set(), selectedFlowId: "", ticketSearchQuery: "",
+    });
+    Object.assign(els, { ticketGrid: grid, checkoutList: null, repoUrl: { value: "" } });
+    let deletion: Promise<void> | undefined;
+    try {
+      deletion = deleteCheckout("session-checkout");
+      const card = () => grid.children[0]?.children[1]?.children[0]?.children[0];
+      expect(card()?.innerHTML).toContain("ticket-flow-deleting");
+      expect(card()?.innerHTML).toContain("flow-create-spinner");
+      expect(card()?.innerHTML).not.toContain("ticket-flow-mark");
+      expect(card()?.attributes.get("aria-busy")).toBe("true");
+      await deleteCheckout("session-checkout");
+      expect(requestCount).toBe(1);
+      rejectRequest(new Error("Delete failed"));
+      await expect(deletion).rejects.toThrow("Delete failed");
+      expect(state.deletingCheckoutNames.size).toBe(0);
+      expect(card()?.innerHTML).not.toContain("ticket-flow-deleting");
+      expect(card()?.innerHTML).toContain("ticket-flow-mark");
+      expect(css).toContain(".ticket-flow-deleting {\n  color: var(--danger);");
+    } finally {
+      rejectRequest?.(new Error("Test cleanup"));
+      await deletion?.catch(() => {});
+      Object.assign(state, previousState);
+      Object.assign(els, previousEls);
+      Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
+      Object.defineProperty(globalThis, "fetch", { configurable: true, value: previousFetch });
+    }
+  });
+
   test("deletes a fresh session from its right-click menu", () => {
     expect(app).toContain("async function deleteLocalSession(ticket)");
-    expect(app).toContain('window.confirm("Delete this session and its worktree?")');
+    expect(app).not.toContain('window.confirm("Delete this session and its worktree?")');
     expect(app).toContain("await deleteCheckout(checkoutName);");
     expect(app).toContain("ticket.localSession ? deleteLocalSession(ticket) : deleteLinearTicket(ticket)");
   });
@@ -1568,6 +2071,9 @@ describe("Turbopump pane markup", () => {
   test("opens Markdown images in an in-app preview modal", () => {
     expect(html).toContain('class="image-preview-backdrop" id="imagePreviewModal" hidden');
     expect(html).toContain('class="image-preview-modal" role="dialog" aria-modal="true" aria-labelledby="imagePreviewTitle"');
+    expect(html).toContain('data-image-preview-step="-1" aria-label="Previous image"');
+    expect(html).toContain('data-image-preview-step="1" aria-label="Next image"');
+    expect(app).toContain('navigateImagePreview(Number(arrow.dataset.imagePreviewStep))');
     expect(html).not.toContain("image-preview-close");
     expect(markdown).toContain("data-image-preview");
     expect(markdown).not.toContain('target="_blank" rel="noreferrer"><img src="${escapeAttribute(imageSrc)}"');
@@ -1575,7 +2081,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("const MODAL_HIDE_DELAY_MS = 220;");
     expect(app).toContain("function showModalElement(element)");
     expect(app).toContain("void element.offsetWidth;");
-    expect(app).toContain("function openImagePreview(src, alt = \"\")");
+    expect(app).toContain("function openImagePreview(src, alt = \"\", items = [{ src, alt }])");
     expect(app).toContain("function handleImagePreviewWheel(event)");
     expect(app).toContain("const nextScale = Math.min(5, Math.max(1, imagePreviewScale + (event.deltaY < 0 ? 0.15 : -0.15)));");
     expect(app).toContain("const scaleRatio = nextScale / oldScale;");
@@ -2018,7 +2524,7 @@ describe("Turbopump pane markup", () => {
     expect(app).not.toContain('context.querySelector(".agent-context-phase")');
     expect(app).not.toContain("const stageName = ticket.flowStage ? escapeHtml(ticket.flowStage) : \"\";");
     expect(app).not.toContain("titleCase");
-    expect(app).toContain("renderAgentContext(flow || wouldBeAgentContext(ticket));");
+    expect(app).toContain("renderAgentContext(flow || (ticket?.pendingSession ? null : wouldBeAgentContext(ticket)));");
     expect(css).toContain("grid-template-columns: minmax(0, 1fr) var(--shell-resizer-size) var(--shell-pane-size, 28%);");
     expect(css).toContain("padding: 4px 0;");
     expect(css).not.toContain(".agent-context-window::before");
@@ -2159,7 +2665,9 @@ describe("Turbopump pane markup", () => {
   });
 
   test("lets agents update flow metadata including PR URL", () => {
-    expect(server).toContain('if (parts[3] === "meta" && request.method === "POST")');
+    expect(server).toContain('flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/agent-meta`');
+    expect(server).toContain('const agentMetadataRequest = parts[3] === "agent-meta";');
+    expect(server).toContain('if ((parts[3] === "meta" || agentMetadataRequest) && request.method === "POST")');
     expect(server).toContain("async function flowMetaUpdate(flow: Flow, body: Record<string, unknown>): Promise<Partial<Flow>>");
     expect(server).toContain('fields.prUrl = normalizePrUrl(body.prUrl);');
     expect(server).toContain('fields.title = body.title.trim();');
@@ -2176,6 +2684,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("const metadataFlow = flow.parentFlowId ? getFlow(flow.parentFlowId) ?? flow : flow;");
     expect(server).toContain("fields = await flowMetaUpdate(metadataFlow");
     expect(server).toContain("updateFlow(metadataFlow.id, fields);");
+    expect(server).toContain('? new Response(null, { status: 204 })\n        : json({ ok: true, flow: clientFlow');
   });
 
   test("polls selected flow GitHub CI on the server and displays persisted status", () => {
@@ -2416,6 +2925,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain("renderAgentImageContext(\n    terminalPane?.querySelector(\".agent-image-context\"),\n    state.pendingSplitAgentImages,");
     expect(app).toContain('agentMessageWithImages(message || "Use the attached image context.", submittedImages)');
     expect(app).toContain("if (!slashCommand) state.pendingSplitAgentImages = [];");
+    expect(app).toContain("if (!slashCommand) state.pendingSplitAgentImages = [];\n  resizeSplitPromptInput();\n  renderFlowPane();");
     expect(css).not.toContain(".agent-image-drop-overlay");
     expect(css).toContain(".terminal-attached-images");
     expect(css).toContain(".terminal-attached-images .agent-image-chip {\n  border-color: #6b7280;\n}");
@@ -2467,6 +2977,7 @@ describe("Turbopump pane markup", () => {
     expect(server).toContain("context compaction timed out after");
     expect(server).toContain("void startNextQueuedAgentMessage(runtime);");
     expect(server).not.toContain("if (runtime.compacting) return flow;");
+    expect(server).not.toContain("agent heartbeat timed out after");
     expect(server).toContain('insertLog(flow.id, "agent:error", "agent runtime disappeared while status was running\\n");');
     expect(server).toContain("setInterval(() => void sweepAgentHeartbeats(), agentHeartbeatSweepIntervalMs);");
     expect(server).toContain("const logsBeforePageStmt = db.query");
@@ -2538,7 +3049,7 @@ describe("Turbopump pane markup", () => {
     expect(css).toContain(".shell-input-prefix {\n  top: 50%;\n  transform: translateY(-50%);");
     expect(css).toContain(".shell-input-pane:focus-within .shell-input-prefix {\n  color: #22c55e;\n}");
     expect(css).toContain(".message-input {\n  min-width: 0;\n  min-height: 36px;");
-    expect(css).toContain("padding: 10px 10px 6px 30px;");
+    expect(css).toContain("padding: 9px 10px 7px 30px;");
     expect(css).toContain(".message-input:focus {\n  border-color: #d97706;");
     expect(css).toContain(".prompt-input-pane:not(.prompt-queued) .message-input:focus {\n  border-color: #6d28d9;");
     expect(css).toContain("caret-color: var(--text);");
@@ -3366,7 +3877,7 @@ describe("Turbopump pane markup", () => {
     expect(app).toContain('name: "/review"');
     expect(app).toContain('"/effort": ["xhigh", "high", "medium", "low"].map((effort) => ({');
     expect(app).toContain("const AGENT_MODELS = [");
-    expect(app).toContain('const defaultCodexModel = "gpt-5.6-sol";');
+    expect(app).toContain('const defaultCodexModel = "gpt-6-astra";');
     expect(app).toContain('"gpt-5.6-sol",');
     expect(app).toContain('"gpt-5.6-terra",');
     expect(app).toContain('"gpt-5.6-luna",');

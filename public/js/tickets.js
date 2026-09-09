@@ -174,8 +174,8 @@ export function setTicketSearchOpen(open) {
   state.ticketSearchOpen = Boolean(open);
   els.refreshLinearTickets.hidden = state.ticketSearchOpen;
   els.createLinearTicket.hidden = state.ticketSearchOpen;
-  els.searchLinearTickets.hidden = state.ticketSearchOpen;
-  els.ticketSearchPane.hidden = !state.ticketSearchOpen;
+  els.searchLinearTickets.setAttribute("aria-expanded", String(state.ticketSearchOpen));
+  els.ticketSearchInput.disabled = !state.ticketSearchOpen;
 }
 
 export function updateRefreshLinearTicketsButton() {
@@ -194,11 +194,19 @@ export function openTicketSearch() {
   });
 }
 
-export function closeTicketSearch() {
+export function closeTicketSearch(restoreFocus = true) {
+  const hadQuery = Boolean(normalizedTicketSearchQuery());
   state.ticketSearchQuery = "";
   els.ticketSearchInput.value = "";
   setTicketSearchOpen(false);
-  renderTickets();
+  if (hadQuery) renderTickets();
+  if (restoreFocus) els.searchLinearTickets.focus({ preventScroll: true });
+}
+
+export function handleTicketSearchOutsideClick(event) {
+  if (!state.ticketSearchOpen || els.ticketSearchInput.value.trim()) return;
+  if (els.ticketSearchPane.contains(event.target)) return;
+  closeTicketSearch(false);
 }
 
 export function linearIssueUpdatedAtMs(issue) {
@@ -261,6 +269,15 @@ export function syncLinearTicketsWithFlows() {
       state: { name: "Sessions" },
       flowId: flow.id,
       localSession: true,
+    });
+  }
+  if (state.pendingSessionId && !state.flows.some((flow) => flow.id === state.pendingSessionId)) {
+    tickets.unshift({
+      identifier: state.pendingSessionId,
+      title: "new session",
+      state: { name: "Sessions" },
+      localSession: true,
+      pendingSession: true,
     });
   }
   state.linearTickets = tickets;
@@ -393,6 +410,7 @@ export function renderTickets() {
         ticket.priority || "",
         ticket.project?.name || "",
         ticket.flowId || "",
+        ticketFlowDeleting(ticket),
         renderGithubCiPill(flowForTicket(ticket)),
       ].join("\u001f"),
     )
@@ -883,7 +901,7 @@ export async function deleteLinearTicket(ticket) {
 export async function deleteLocalSession(ticket) {
   const flow = flowForTicket(ticket);
   const checkoutName = flow?.checkoutPath?.split(/[\\/]/).pop() || "";
-  if (!checkoutName || !window.confirm("Delete this session and its worktree?")) return;
+  if (!checkoutName) return;
   try {
     await deleteCheckout(checkoutName);
   } catch (error) {
@@ -1253,7 +1271,10 @@ export async function createLinearTicketForFlow(flow) {
   state.creatingLinearTicket = true;
   renderFlowPane();
   try {
-    const { issue } = await api("/api/linear/issues", { method: "POST" });
+    const { issue } = await api("/api/linear/issues", {
+      method: "POST",
+      body: JSON.stringify({ title: flow.title }),
+    });
     if (!issue?.identifier) throw new Error("Linear did not return the created issue.");
     const { flow: updatedFlow } = await api(`/api/flows/${encodeURIComponent(flow.id)}/meta`, {
       method: "POST",
@@ -1285,7 +1306,12 @@ export function ticketAgentWorking(ticket) {
 }
 
 export function ticketFlowCreating(ticket) {
-  return Boolean(ticket?.identifier && state.creatingFlowIssueIds.has(ticket.identifier));
+  return Boolean(ticket?.pendingSession || (ticket?.identifier && state.creatingFlowIssueIds.has(ticket.identifier)));
+}
+
+export function ticketFlowDeleting(ticket) {
+  const checkoutName = flowForTicket(ticket)?.checkoutPath?.split(/[\\/]/).pop();
+  return Boolean(checkoutName && state.deletingCheckoutNames.has(checkoutName));
 }
 
 export function ticketShellRunning(ticket) {
@@ -1353,6 +1379,7 @@ export function animateTicketSwitch() {
 export function renderTicketCard(ticket) {
   const card = document.createElement("article");
   const creatingFlow = ticketFlowCreating(ticket);
+  const deletingFlow = ticketFlowDeleting(ticket);
   card.className = "ticket-card";
   card.classList.toggle("in-flow", Boolean(ticket.flowId));
   card.classList.toggle("can-start-agent", !ticket.flowId && !creatingFlow);
@@ -1365,7 +1392,7 @@ export function renderTicketCard(ticket) {
   card.innerHTML = `
     <div class="ticket-id-row">
       ${renderLinearPriorityIcon(ticket.priority)}
-      <span class="ticket-id">${escapeHtml(ticket.localSession ? "SESSION" : ticket.identifier)}</span>
+      <span class="ticket-id">${escapeHtml(ticket.localSession ? "" : ticket.identifier)}</span>
     </div>
     <p class="ticket-title">${escapeHtml(ticket.title)}</p>
     <div class="ticket-meta">
@@ -1374,7 +1401,9 @@ export function renderTicketCard(ticket) {
       ${projectName ? `<span class="ticket-project">${projectName}</span>` : ""}
     </div>
     ${
-      ticket.flowId
+      deletingFlow
+        ? '<div class="ticket-flow-corner ticket-flow-deleting" role="status" aria-label="Deleting session"><span class="flow-create-spinner" aria-hidden="true"></span></div>'
+        : ticket.flowId
         ? `<div class="ticket-flow-corner"><img class="ticket-flow-mark" src="${DEFAULT_FAVICON_HREF}" alt="In flow" title="In flow"></div>`
         : creatingFlow
           ? renderTicketCreatingFlowIndicator(ticket)
@@ -1382,6 +1411,16 @@ export function renderTicketCard(ticket) {
     }
   `;
   updateTicketCardState(card);
+  if (deletingFlow) {
+    card.draggable = false;
+    card.setAttribute("aria-busy", "true");
+    card.setAttribute("aria-disabled", "true");
+    return card;
+  }
+  if (ticket.pendingSession) {
+    card.draggable = false;
+    card.setAttribute("aria-busy", "true");
+  }
   const startAgentButton = card.querySelector("[data-ticket-start-agent]");
   startAgentButton?.addEventListener("mouseenter", () => updateTicketStartAgentAnimation(startAgentButton));
   startAgentButton?.addEventListener("mouseleave", () => updateTicketStartAgentAnimation(startAgentButton));
@@ -1410,7 +1449,10 @@ export function renderTicketCard(ticket) {
     if (event.target.closest(".github-ci-pill")) return;
     void openTicketInFlowPane(ticket);
   });
-  card.addEventListener("contextmenu", (event) => showTicketOptionsMenu(event, ticket));
+  card.addEventListener("contextmenu", (event) => {
+    if (ticket.pendingSession) return;
+    showTicketOptionsMenu(event, ticket);
+  });
   card.addEventListener("keydown", (event) => {
     if (event.target !== card) return;
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -1487,7 +1529,7 @@ export function renderLinearComment(comment, nested = false) {
 
 export function renderLinearDetail(context, options = {}) {
   const container = els.flowPane.querySelector(".linear-detail");
-  const hasLinearIssue = Boolean(context.flow?.linearIssueId || (!context.flow && context.ticket));
+  const hasLinearIssue = Boolean(context.flow?.linearIssueId || (!context.flow && context.ticket && !context.ticket.localSession));
   const cached = options.light || !hasLinearIssue ? null : state.linearDetails.get(context.issueId);
   const issue = (options.light ? context.ticket || cached?.issue : cached?.issue || context.ticket) || {
     identifier: context.issueId,
@@ -1518,7 +1560,9 @@ export function renderLinearDetail(context, options = {}) {
   const linearButton = hasLinearIssue
     ? ""
     : `<button class="linear-create-ticket" type="button" data-create-linear-ticket="true" aria-label="${createLinearLabel}" title="${createLinearLabel}" aria-busy="${state.creatingLinearTicket}"${state.creatingLinearTicket ? " disabled" : ""}>${linearLogo}</button>`;
-  const titleHtml = editingTitle
+  const titleHtml = context.ticket?.pendingSession
+    ? `<div class="linear-title-row"><h3>${escapeHtml(title)}</h3></div>`
+    : editingTitle
     ? `<form class="linear-title-form" data-linear-title-form="true" data-issue="${escapeAttribute(issueId)}">
         <input class="linear-title-input" name="title" value="${escapeAttribute(title)}" autocomplete="off" required>
         ${linearButton}

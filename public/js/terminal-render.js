@@ -233,6 +233,10 @@ export function renderTerminalAttachedImages(images, flowId) {
   return `<div class="terminal-attached-images">${images.map((image) => renderAgentImageChip(image, { flowId })).join("")}</div>`;
 }
 
+export function agentFilePreviewSource(path, flowId = state.selectedFlowId) {
+  return `/api/flows/${encodeURIComponent(flowId || "")}/files/preview?path=${encodeURIComponent(path)}`;
+}
+
 export function renderTerminalMarkdownContent(message, options = {}) {
   const parsed = splitTerminalAttachedImages(message);
   return `${renderLinearMarkdown(parsed.message, "", {
@@ -240,7 +244,8 @@ export function renderTerminalMarkdownContent(message, options = {}) {
     links: true,
     compactBlankLines: true,
     copyCode: options.copyCode !== false,
-    imageSource: (path) => path.startsWith("/") ? agentImagePreviewSource({ path }, options.flowId) : linearImageSource(path),
+    fileSource: (path) => agentFilePreviewSource(path, options.flowId),
+    imageSource: (path) => /^https?:\/\//i.test(path) ? linearImageSource(path) : agentImagePreviewSource({ path }, options.flowId),
   })}${renderTerminalAttachedImages(parsed.images, options.flowId)}`;
 }
 
@@ -256,7 +261,8 @@ export function renderTerminalStreamingTextOutput(message, options = {}) {
     links: true,
     compactBlankLines: true,
     copyCode: false,
-    imageSource: (path) => path.startsWith("/") ? agentImagePreviewSource({ path }, options.flowId) : linearImageSource(path),
+    fileSource: (path) => agentFilePreviewSource(path, options.flowId),
+    imageSource: (path) => /^https?:\/\//i.test(path) ? linearImageSource(path) : agentImagePreviewSource({ path }, options.flowId),
   })}</div>`;
 }
 
@@ -935,7 +941,6 @@ export function isAgentToolOutputGroup(group) {
     "agent:output",
     "agent:cmd",
     "agent:stderr",
-    "agent:error",
     "agent:approval",
     "agent:input",
     "agent:protocol",

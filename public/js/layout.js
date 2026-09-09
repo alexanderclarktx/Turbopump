@@ -46,6 +46,20 @@ export function toggleTicketDrawerHidden() {
   setTicketDrawerHidden(!state.ticketDrawerHidden);
 }
 
+export function initializeResponsiveTicketDrawer() {
+  const narrowWindow = window.matchMedia("(max-width: 980px)");
+  let wideWindowHidden = state.ticketDrawerHidden;
+  setTicketDrawerHidden(narrowWindow.matches || wideWindowHidden);
+  narrowWindow.addEventListener("change", ({ matches }) => {
+    if (matches) {
+      wideWindowHidden = state.ticketDrawerHidden;
+      setTicketDrawerHidden(true);
+    } else {
+      setTicketDrawerHidden(wideWindowHidden);
+    }
+  });
+}
+
 export function applyTicketDrawerSize() {
   const applied = state.ticketDrawerHidden ? 12 : clampTicketDrawerSize(state.ticketDrawerSize);
   els.main.style.setProperty("--ticket-drawer-size", `${applied}px`);

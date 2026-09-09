@@ -33,8 +33,8 @@ describe("Agent providers", () => {
 
   test("keeps codex behavior behind the codex provider", () => {
     expect(server).toContain("const codexProvider: AgentProvider = {");
-    expect(server).toContain('["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]');
-    expect(server).toContain('const codexDefaultModel = "gpt-5.6-sol";');
+    expect(server).toContain('["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]');
+    expect(server).toContain('const codexDefaultModel = "gpt-6-astra";');
     expect(server).toContain("model: flow.agentModel || codexDefaultModel,");
     expect(server).toContain("async function handleCodexSlashCommand(flow: Flow, command: string, message: string, userLogId: number)");
     expect(server).toContain("startRuntime: (flow) => startCodexAppServer(flow),");
@@ -160,6 +160,7 @@ describe("Agent providers", () => {
     expect(app).toContain('"agent:message": { label: agentLabel, marker: ">", tone: "assistant" },');
     expect(app).toContain('{ name: "/model", description: "Set the agent model for this flow" }');
     expect(app).toContain('name: `/model ${model}`,');
+    expect(app).toContain('"gpt-6-astra",');
     expect(app).toContain('"gpt-5.6-sol",');
     expect(app).toContain('"gpt-5.6-terra",');
     expect(app).toContain('"gpt-5.6-luna",');
