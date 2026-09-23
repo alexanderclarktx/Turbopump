@@ -24,3 +24,5 @@ export function renderInlineMarkdown(
 export function renderTextWithSentenceBreaks(value: unknown): string;
 
 export function linearImageSource(url: unknown): string;
+
+export function renderJsonObject(value: unknown, options?: { copyCode?: boolean }): string;

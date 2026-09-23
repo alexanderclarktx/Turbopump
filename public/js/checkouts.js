@@ -64,7 +64,7 @@ function nextSessionTicket(flow) {
     .map((card) => state.linearTickets.find((ticket) => ticket.identifier === card.dataset.issue))
     .filter((ticket) => ticket && sessionIds.has(ticket.identifier));
   const index = tickets.findIndex((ticket) => ticket.identifier === flowSelectionId(flow));
-  return tickets[index + 1] || tickets[index - 1] || null;
+  return tickets[index - 1] || tickets[index + 1] || null;
 }
 
 export async function deleteCheckout(name) {
@@ -75,7 +75,10 @@ export async function deleteCheckout(name) {
   renderCheckouts();
   renderTickets();
   try {
-    const data = await api(`/api/checkouts/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const data = await api(`/api/checkouts/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(15000),
+    });
     if (data.flows) setFlows(data.flows);
     if (data.checkouts) setCheckouts(data.checkouts);
     else state.checkouts = state.checkouts.filter((checkout) => checkout.name !== name);

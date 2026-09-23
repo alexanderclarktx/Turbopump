@@ -226,7 +226,7 @@ export function resizeSplitPromptInput() {
 function setAgentSplitSize(size) {
   const column = els.flowPane.querySelector(".agent-column");
   const resizer = els.flowPane.querySelector(".message-form-split-resizer");
-  const applied = Math.max(15, Math.min(85, size));
+  const applied = Math.max(15, Math.min(100, size));
   column?.style.setProperty("--agent-split-size", `${applied}%`);
   resizer?.setAttribute("aria-valuenow", String(Math.round(applied)));
 }
@@ -260,7 +260,7 @@ export function handleAgentSplitResizeKeydown(event) {
   if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
   const current = Number.parseFloat(event.currentTarget.closest(".agent-column")?.style.getPropertyValue("--agent-split-size")) || 50;
-  setAgentSplitSize(event.key === "Home" ? 15 : event.key === "End" ? 85 : current + (event.key === "ArrowDown" ? 5 : -5));
+  setAgentSplitSize(event.key === "Home" ? 15 : event.key === "End" ? 100 : current + (event.key === "ArrowDown" ? 5 : -5));
 }
 
 export function clearSplitQueuedPrompt() {

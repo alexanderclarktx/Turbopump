@@ -26,6 +26,7 @@ import {
 } from "./input-history.js";
 import {
   revealShellPaneForInputFocus,
+  setTicketDrawerHidden,
   toggleShellPaneHidden,
   toggleTheme,
   toggleTicketDrawerHidden,
@@ -42,7 +43,7 @@ import {
   renderShellOutputPane,
   terminalAtLatest,
 } from "./terminal-render.js";
-import { renderTickets } from "./tickets.js";
+import { openTicketSearch, renderTickets } from "./tickets.js";
 import { escapeAttribute, escapeHtml } from "./ui.js";
 
 export function ticketInputState(issueId) {
@@ -601,6 +602,7 @@ export function shouldFocusMessageInputForKey(event) {
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key.length !== 1) return false;
   if (isEditableKeyTarget(event.target)) return false;
+  if (event.target instanceof Element && event.target.closest(".markdown-json-field > summary")) return false;
   const input = promptInput();
   return Boolean(input && document.activeElement !== input);
 }
@@ -652,11 +654,12 @@ export function handleCommandE(event) {
 }
 
 export function handleCommandK(event) {
-  if (!event.metaKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== "k") return false;
-  if (focusedInputPaneKind() !== "shell") return false;
+  if (event.isComposing || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "k") return false;
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (!event.repeat) void submitShellCommand("clear");
+  if (event.repeat) return true;
+  if (state.ticketDrawerHidden) setTicketDrawerHidden(false);
+  openTicketSearch();
   return true;
 }
 

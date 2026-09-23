@@ -37,7 +37,7 @@ import {
   toggleShellPaneHidden,
   toggleTheme,
 } from "./js/layout.js";
-import { loadLogs, loadOlderTerminalTraceMessages } from "./js/logs.js";
+import { loadOlderTerminalTraceMessages } from "./js/logs.js";
 import { api, connectWs } from "./js/net.js";
 import { acknowledgeSelectedLinearIssueNotification, updateBrowserTabNotification } from "./js/notifications.js";
 import {
@@ -194,13 +194,11 @@ async function bootstrap() {
   renderEnvEditor(env.contents || "");
   state.lastSavedEnv = envEditorContents();
   render();
+  // Cached tickets should not wait for the selected session's transcript.
+  const ticketsLoading = state.linearSignedIn ? loadLinearTickets() : Promise.resolve();
   const flow = selectedFlow();
-  if (flow) {
-    await loadLogs(flow.id);
-    void loadFlowDiff(flow.id, { force: true });
-  }
-  if (state.linearSignedIn) await loadLinearTickets();
-  void connectWs().catch(() => {});
+  if (flow) void loadFlowDiff(flow.id, { force: true });
+  await Promise.all([ticketsLoading, connectWs()]);
 }
 
 els.settingsToggle.addEventListener("click", (event) => {

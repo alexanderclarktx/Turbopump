@@ -2,7 +2,49 @@ import { renderLinearMarkdown } from "../linear-markdown.js";
 
 let pendingPreview = null;
 let previousFocus = null;
+let closeTimer = null;
 const dialog = document.querySelector("#filePreviewModal");
+
+function showFilePreview() {
+  if (closeTimer) clearTimeout(closeTimer);
+  closeTimer = null;
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => dialog.classList.add("is-visible"));
+}
+
+function closeFilePreview() {
+  if (!dialog?.open || closeTimer) return;
+  dialog.classList.remove("is-visible");
+  closeTimer = setTimeout(() => {
+    closeTimer = null;
+    dialog.close();
+  }, 200);
+}
+
+export function filePreviewLanguage(path) {
+  const name = String(path || "").split("/").pop()?.toLowerCase() || "";
+  const extension = name.includes(".") ? name.split(".").pop() : "";
+  return ({
+    bash: "bash",
+    css: "css",
+    go: "go",
+    htm: "markup",
+    html: "markup",
+    js: "javascript",
+    json: "json",
+    jsx: "jsx",
+    py: "python",
+    rs: "rust",
+    sh: "bash",
+    ts: "typescript",
+    tsx: "tsx",
+    xhtml: "markup",
+    xml: "markup",
+    yaml: "yaml",
+    yml: "yaml",
+    zsh: "bash",
+  })[extension] || "";
+}
 
 export async function handleFilePreviewClick(event) {
   const card = event.target.closest?.("[data-file-preview]");
@@ -17,15 +59,15 @@ export async function handleFilePreviewClick(event) {
   const body = dialog.querySelector(".file-preview-body");
   const download = dialog.querySelector("[data-file-download]");
   const url = new URL(card.getAttribute("href"), window.location.href);
-  title.textContent = card.querySelector(".file-link-label")?.textContent || "File preview";
-  path.textContent = card.dataset.filePreviewPath;
+  title.textContent = "";
+  path.textContent = "";
   body.textContent = "Loading file…";
   body.setAttribute("aria-busy", "true");
   const downloadUrl = new URL(url);
   downloadUrl.searchParams.set("download", "1");
   download.href = downloadUrl.href;
   download.hidden = true;
-  if (!dialog.open) dialog.showModal();
+  showFilePreview();
   try {
     const response = await fetch(url, { signal: controller.signal });
     const file = await response.json();
@@ -50,12 +92,15 @@ export async function handleFilePreviewClick(event) {
       window.Prism?.highlightAllUnder?.(body);
     } else if (file.kind === "text") {
       const pre = document.createElement("pre");
-      pre.className = "file-preview-code";
+      pre.className = "file-preview-code linear-markdown";
+      const language = filePreviewLanguage(file.path);
+      const grammar = language && window.Prism?.languages?.[language];
       for (const [index, text] of file.content.split("\n").entries()) {
         const line = document.createElement("span");
         line.className = "file-preview-line";
         line.dataset.line = String(index + 1);
-        line.textContent = text;
+        if (grammar) line.innerHTML = window.Prism.highlight(text, grammar, language);
+        else line.textContent = text;
         if (index + 1 === file.line) line.classList.add("is-highlighted");
         pre.append(line);
       }
@@ -66,17 +111,25 @@ export async function handleFilePreviewClick(event) {
     body.scrollTop = 0;
     body.querySelector(".is-highlighted")?.scrollIntoView({ block: "center" });
   } catch (error) {
-    if (!controller.signal.aborted) body.textContent = error.message || "Could not load this file.";
+    if (!controller.signal.aborted) {
+      title.textContent = "File preview";
+      body.textContent = error.message || "Could not load this file.";
+    }
   } finally {
     if (!controller.signal.aborted) body.setAttribute("aria-busy", "false");
   }
 }
 
 dialog?.addEventListener("click", (event) => {
-  if (event.target === dialog || event.target.closest("[data-file-preview-close], [data-image-preview]")) dialog.close();
+  if (event.target === dialog || event.target.closest("[data-file-preview-close], [data-image-preview]")) closeFilePreview();
   else handleFilePreviewClick(event);
 });
+dialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeFilePreview();
+});
 dialog?.addEventListener("close", () => {
+  dialog.classList.remove("is-visible");
   pendingPreview?.abort();
   dialog.querySelector(".file-preview-body").replaceChildren();
   previousFocus?.focus?.({ preventScroll: true });

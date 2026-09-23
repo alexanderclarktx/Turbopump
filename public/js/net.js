@@ -15,7 +15,7 @@ import { notifyAgentTurnEnded, refreshFlowDiffAfterAgentTurn } from "./notificat
 import { render } from "./render.js";
 import { selectedCompanionFlow } from "./split.js";
 import { state } from "./state.js";
-import { isAgentTurnEndedLog, isShellOnlyRenderLog } from "./terminal-groups.js";
+import { isAgentTurnEndedLog, isCompactionTurnEndedLog, isShellOnlyRenderLog } from "./terminal-groups.js";
 import { renderLogs, renderShellOutputPane, scheduleLogRender, scheduleShellOutputRender } from "./terminal-render.js";
 import { renderTickets } from "./tickets.js";
 
@@ -182,7 +182,7 @@ export function connectWs() {
       appendLogEntry(log);
       if (isAgentTurnEndedLog(log)) {
         refreshFlowDiffAfterAgentTurn(log.flowId);
-        notifyAgentTurnEnded(log.flowId);
+        if (!isCompactionTurnEndedLog(log, state.logs.get(log.flowId) || [])) notifyAgentTurnEnded(log.flowId);
       }
       if (isShellOnlyRenderLog(log)) {
         scheduleShellOutputRender(log.flowId);

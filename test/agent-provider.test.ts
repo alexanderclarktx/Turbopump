@@ -28,13 +28,16 @@ describe("Agent providers", () => {
     expect(server).toContain("await providerForRuntime(runtime).sendTurn(runtime, updated, composeTurnMessage(updated.id, userMessage), userLogId);");
     expect(server).toContain("await providerForRuntime(runtime).interrupt(runtime, flow ?? (getFlow(flowId) as Flow));");
     expect(server).toContain('providerForRuntime(runtime).stop(runtime, "agent environment updated");');
-    expect(server).toContain('providerForRuntime(agentRuntime).stop(agentRuntime, "flow deleted");');
+    expect(server).toContain('cleanupFailedRuntimeProcess(agentRuntime, "flow deleted");');
   });
 
   test("keeps codex behavior behind the codex provider", () => {
     expect(server).toContain("const codexProvider: AgentProvider = {");
-    expect(server).toContain('["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]');
-    expect(server).toContain('const codexDefaultModel = "gpt-6-astra";');
+    expect(server).toContain('["gpt-6-sol", "gpt-6-astra", "gpt-6-luna"]');
+    expect(server).toContain('const codexDefaultModel = "gpt-6-sol";');
+    expect(server).toContain('const codexDefaultReasoningEffort = "medium";');
+    expect(server).toContain(": { reasoningEffort: codexDefaultReasoningEffort }),");
+    expect(server).toContain('defaultAgentProviderKind() === "codex" ? codexDefaultReasoningEffort : "low",');
     expect(server).toContain("model: flow.agentModel || codexDefaultModel,");
     expect(server).toContain("async function handleCodexSlashCommand(flow: Flow, command: string, message: string, userLogId: number)");
     expect(server).toContain("startRuntime: (flow) => startCodexAppServer(flow),");
@@ -161,9 +164,10 @@ describe("Agent providers", () => {
     expect(app).toContain('{ name: "/model", description: "Set the agent model for this flow" }');
     expect(app).toContain('name: `/model ${model}`,');
     expect(app).toContain('"gpt-6-astra",');
-    expect(app).toContain('"gpt-5.6-sol",');
-    expect(app).toContain('"gpt-5.6-terra",');
-    expect(app).toContain('"gpt-5.6-luna",');
+    expect(app).not.toContain('"gpt-5.6-sol",');
+    expect(app).not.toContain('"gpt-5.6-terra",');
+    expect(app).not.toContain('"gpt-5.5",');
+    expect(app).toContain('"gpt-6-luna",');
     expect(app).toContain("/^(starting|resuming) Claude session\\b/i.test(message)");
   });
 

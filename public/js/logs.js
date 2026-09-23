@@ -19,7 +19,7 @@ import {
   terminalRowCount,
   terminalVisibleTurnCount,
 } from "./terminal-render.js";
-import { sortedLinearTickets } from "./tickets.js";
+import { linearStatusIconKind, sortedLinearTickets } from "./tickets.js";
 
 const coalescedStreamingSources = new Set(["agent:message", "agent:reasoning", "agent:thinking"]);
 
@@ -79,6 +79,7 @@ export async function loadLogs(id, options = {}) {
   const appendedLogs = [];
   if (shouldLoadRecent) {
     let renderedFirstPage = false;
+    let pagesLoaded = 0;
     while (true) {
       const before = state.firstLogId.get(id) || Number.MAX_SAFE_INTEGER;
       const data = await wsRequest("logs", { flowId: id, before, limit: LOG_PAGE_SIZE });
@@ -86,6 +87,7 @@ export async function loadLogs(id, options = {}) {
         if (appendLogEntry(log)) appendedLogs.push(log);
       }
       rememberLoadedLogBounds(id, data.logs);
+      pagesLoaded += 1;
       if (!renderedFirstPage && !options.shellOnly && data.logs.length) {
         // Paint the newest page immediately; older pages keep loading behind.
         renderedFirstPage = true;
@@ -97,7 +99,8 @@ export async function loadLogs(id, options = {}) {
       }
       const flow = state.flows.find((item) => item.id === id) || null;
       const groups = terminalGroups(state.logs.get(id) || [], flow);
-      if (terminalRowCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;
+      // Long turns can span thousands of rows. Leave older history to Load more.
+      if (pagesLoaded >= 3 || terminalRowCount(groups) >= AGENT_TRACE_INITIAL_TURN_COUNT) break;
     }
     state.logBackfilledFlowIds.add(id);
     state.terminalVisibleTurnCounts.set(id, AGENT_TRACE_INITIAL_TURN_COUNT);
@@ -197,9 +200,20 @@ export function scheduleTicketLogPrefetch() {
   }, LOG_PREFETCH_DELAY_MS);
 }
 
+export function ticketLogPrefetchCandidates() {
+  const pins = [...state.pinnedLinearIssues];
+  const rank = new Map(pins.map((identifier, index) => [identifier, index]));
+  return sortedLinearTickets(state.linearTickets)
+    .filter((ticket) => rank.has(ticket.identifier) || (
+      linearStatusIconKind(ticket.state?.name, ticket.state?.type) !== "done" &&
+      ticket.state?.type !== "canceled"
+    ))
+    .sort((a, b) => (rank.get(a.identifier) ?? Infinity) - (rank.get(b.identifier) ?? Infinity));
+}
+
 export async function prefetchTicketLogs() {
   const flowIds = [];
-  for (const ticket of sortedLinearTickets(state.linearTickets)) {
+  for (const ticket of ticketLogPrefetchCandidates()) {
     const flow = flowForTicket(ticket);
     if (
       !flow?.id ||
@@ -231,7 +245,7 @@ export async function prefetchTicketLogs() {
 
   if (
     state.logPrefetchedFlowCount < LOG_PREFETCH_MAX_FLOW_COUNT &&
-    sortedLinearTickets(state.linearTickets).some((ticket) => {
+    ticketLogPrefetchCandidates().some((ticket) => {
       const flow = flowForTicket(ticket);
       return (
         flow?.id &&

@@ -159,6 +159,7 @@ export const state = {
   logPrefetchedFlowCount: 0,
   selectionRenderFrame: 0,
   ticketSwitchFadeTimer: 0,
+  ticketSwitchFadingOut: false,
   pendingShellOutputRenders: new Set(),
   shellOutputRenderFrame: 0,
   shellOutputClearAfterLogId: new Map(),

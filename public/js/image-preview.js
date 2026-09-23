@@ -51,13 +51,17 @@ function renderImagePreview() {
   frame.scrollLeft = 0;
   els.imagePreviewModal.querySelector(".image-preview-count").textContent = `${imagePreviewIndex + 1} / ${imagePreviewItems.length}`;
   for (const button of els.imagePreviewModal.querySelectorAll("[data-image-preview-step]")) {
-    button.disabled = imagePreviewItems.length < 2;
+    button.disabled = Number(button.dataset.imagePreviewStep) < 0
+      ? imagePreviewIndex === 0
+      : imagePreviewIndex === imagePreviewItems.length - 1;
   }
 }
 
 export function navigateImagePreview(step) {
   if (!els.imagePreviewModal || els.imagePreviewModal.hidden || els.imagePreviewModal.classList.contains("is-closing") || imagePreviewItems.length < 2) return;
-  imagePreviewIndex = (imagePreviewIndex + step + imagePreviewItems.length) % imagePreviewItems.length;
+  const nextIndex = imagePreviewIndex + step;
+  if (nextIndex < 0 || nextIndex >= imagePreviewItems.length || nextIndex === imagePreviewIndex) return;
+  imagePreviewIndex = nextIndex;
   renderImagePreview();
 }
 

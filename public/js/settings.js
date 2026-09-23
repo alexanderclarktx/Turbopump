@@ -244,54 +244,14 @@ export function renderEnvEditor(contents) {
   filterEnvironment();
 }
 
-const envFilterAnimations = new WeakMap();
-
-function setEnvRowFiltered(row, hidden) {
-  const previous = envFilterAnimations.get(row);
-  if (row.hidden === hidden && !previous) return;
-  if (!row.animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    previous?.cancel();
-    envFilterAnimations.delete(row);
-    row.hidden = hidden;
-    row.inert = hidden;
-    return;
-  }
-
-  // Read the current animated size before canceling so rapid typing reverses smoothly.
-  const style = getComputedStyle(row);
-  const from = {
-    height: `${row.getBoundingClientRect().height}px`,
-    paddingTop: row.hidden ? "0px" : style.paddingTop,
-    opacity: row.hidden ? "0" : style.opacity,
-  };
-  previous?.cancel();
-  row.hidden = false;
-  row.inert = hidden;
-  const to = {
-    height: hidden ? "0px" : `${row.getBoundingClientRect().height}px`,
-    paddingTop: hidden ? "0px" : getComputedStyle(row).paddingTop,
-    opacity: hidden ? "0" : "1",
-  };
-  const animation = row.animate([
-    { ...from, overflow: "hidden", boxSizing: "border-box" },
-    { ...to, overflow: "hidden", boxSizing: "border-box" },
-  ], { duration: 200, easing: "cubic-bezier(0.2, 0, 0, 1)", fill: "both" });
-  envFilterAnimations.set(row, animation);
-  animation.onfinish = () => {
-    if (envFilterAnimations.get(row) !== animation) return;
-    row.hidden = hidden;
-    animation.cancel();
-    envFilterAnimations.delete(row);
-  };
-}
-
 export function filterEnvironment() {
   const query = els.envSearchInput.value.trim().toLowerCase();
   let matches = 0;
   for (const row of els.envEditor.querySelectorAll(".env-row")) {
     const key = row.querySelector(".env-key").value.toLowerCase();
     const hidden = Boolean(query) && !key.includes(query);
-    setEnvRowFiltered(row, hidden);
+    row.hidden = hidden;
+    row.inert = hidden;
     if (!hidden && key.trim()) matches += 1;
   }
   els.envSearchEmpty.hidden = !query || matches > 0;
@@ -301,12 +261,22 @@ export function toggleEnvironmentSearch() {
   if (!els.envSearchInput.disabled) return closeEnvironmentSearch();
   els.envSearchInput.disabled = false;
   els.searchEnvironment.setAttribute("aria-expanded", "true");
-  els.envSearchInput.focus();
+  setEnvironmentSearchMode(true);
+  els.envSearchInput.focus({ preventScroll: true });
+  els.settingsContent.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function setEnvironmentSearchMode(active) {
+  els.settingsContent.classList.toggle("environment-search-active", active);
+  for (const section of els.settingsContent.querySelectorAll(".settings-search-section:not(:has(.environment-settings))")) {
+    section.inert = active;
+  }
 }
 
 function closeEnvironmentSearch(restoreFocus = true) {
   els.envSearchInput.disabled = true;
   els.searchEnvironment.setAttribute("aria-expanded", "false");
+  setEnvironmentSearchMode(false);
   els.envSearchInput.value = "";
   filterEnvironment();
   if (restoreFocus) els.searchEnvironment.focus();

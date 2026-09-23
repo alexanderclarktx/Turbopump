@@ -56,14 +56,16 @@ export function persistLinearIssueNotifications() {
 }
 
 export function normalizeLinearIssueNotifications() {
+  const validIdentifiers = new Set(state.flows.map((flow) => flowSelectionIdForFlowId(flow.id)));
   let changed = false;
-  for (const identifier of state.notifiedLinearIssueIds) {
-    const normalized = flowSelectionIdForFlowId(identifier);
-    if (!normalized || normalized === identifier) continue;
+  for (const identifier of [...state.notifiedLinearIssueIds]) {
+    const normalized = flowSelectionIdForFlowId(identifier) || identifier;
+    const keep = validIdentifiers.has(normalized) && (
+      normalized !== state.selectedLinearIssueId || !canAcknowledgeSelectedNotification()
+    );
+    if (keep && normalized === identifier) continue;
     state.notifiedLinearIssueIds.delete(identifier);
-    if (normalized !== state.selectedLinearIssueId || !canAcknowledgeSelectedNotification()) {
-      state.notifiedLinearIssueIds.add(normalized);
-    }
+    if (keep) state.notifiedLinearIssueIds.add(normalized);
     changed = true;
   }
   if (changed) {

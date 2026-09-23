@@ -511,6 +511,7 @@ export function renderTicketStatusGroup(group) {
   const section = document.createElement("section");
   section.className = "ticket-status-group";
   section.classList.toggle("shell-command-active", group.tickets.some(ticketShellRunning));
+  section.classList.toggle("agent-turn-notified", group.tickets.some((ticket) => state.notifiedLinearIssueIds.has(ticket.identifier)));
   section.dataset.status = group.key;
   section.dataset.stateId = group.stateId;
   section.dataset.collapsed = String(group.collapsed);
@@ -1347,6 +1348,7 @@ export function updateTicketStatusGroupShellStates() {
           (ticket) => !isLinearIssuePinned(ticket.identifier) && linearStatusKey(linearStatusName(ticket)) === statusKey,
         );
     section.classList.toggle("shell-command-active", tickets.some(ticketShellRunning));
+    section.classList.toggle("agent-turn-notified", tickets.some((ticket) => state.notifiedLinearIssueIds.has(ticket.identifier)));
   }
 }
 
@@ -1363,17 +1365,31 @@ export function updateTicketSelectionCards(previousIssueId, nextIssueId) {
   updateTicketCardsForIdentifiers(previousIssueId, nextIssueId);
 }
 
-export function animateTicketSwitch() {
+export function animateTicketSwitch(renderContent, changed = true) {
   const content = els.flowPane.querySelector(".flow-content");
-  if (!content) return;
   if (state.ticketSwitchFadeTimer) window.clearTimeout(state.ticketSwitchFadeTimer);
-  content.classList.remove("ticket-switch-fade-in");
+  state.ticketSwitchFadeTimer = 0;
+  state.ticketSwitchFadingOut = false;
+  content?.classList.remove("ticket-switch-fade-out", "ticket-switch-fade-in");
+  if (!content || !changed || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    renderContent();
+    return;
+  }
+
+  state.ticketSwitchFadingOut = true;
   void content.offsetWidth;
-  content.classList.add("ticket-switch-fade-in");
+  content.classList.add("ticket-switch-fade-out");
   state.ticketSwitchFadeTimer = window.setTimeout(() => {
-    content.classList.remove("ticket-switch-fade-in");
+    state.ticketSwitchFadingOut = false;
     state.ticketSwitchFadeTimer = 0;
-  }, 120);
+    renderContent();
+    content.classList.remove("ticket-switch-fade-out");
+    content.classList.add("ticket-switch-fade-in");
+    state.ticketSwitchFadeTimer = window.setTimeout(() => {
+      content.classList.remove("ticket-switch-fade-in");
+      state.ticketSwitchFadeTimer = 0;
+    }, 100);
+  }, 50);
 }
 
 export function renderTicketCard(ticket) {

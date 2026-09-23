@@ -48,7 +48,7 @@ export function syncAgentOutputToolbar(toolbar, flowId) {
   trace?.setAttribute("aria-pressed", String(traceHidden));
   trace?.setAttribute("aria-label", traceHidden ? "Show tool output messages" : "Hide tool output messages");
   markdown?.setAttribute("aria-pressed", String(!rawMarkdown));
-  markdown?.setAttribute("aria-label", rawMarkdown ? "Show rendered agent responses" : "Show raw agent Markdown");
+  markdown?.setAttribute("aria-label", rawMarkdown ? "Show rendered messages" : "Show raw Markdown");
 }
 
 export function toggleAgentOutput(flowId, kind) {
@@ -203,7 +203,7 @@ export function usesTerminalBlockMarkdown(source) {
 }
 
 export function usesRawAgentMarkdown(source) {
-  return ["agent", "agent:message"].includes(source);
+  return ["user", "user:queued", "agent", "agent:message"].includes(source);
 }
 
 export function splitTerminalAttachedImages(message) {
@@ -282,7 +282,8 @@ export async function copyAgentBranchName(branchName) {
 }
 
 export async function copyMarkdownCodeBlock(button) {
-  const code = button.closest(".markdown-code-block")?.querySelector("code")?.textContent || "";
+  const block = button.closest(".markdown-code-block");
+  const code = block?.dataset.codeSource ?? block?.querySelector("code")?.textContent ?? "";
   if (!code) return;
   try {
     await copyTextToClipboard(code);
@@ -417,6 +418,7 @@ export function applyTerminalMessageClamps(root) {
       ((entry.classList.contains("terminal-entry-assistant") || entry.classList.contains("terminal-entry-output")) &&
         !entry.closest(".terminal-trace-body")) ||
       body.classList.contains("agent-working") ||
+      body.querySelector(".markdown-json-block") ||
       body.closest(".shell-output-pane")
     ) {
       continue;
@@ -466,7 +468,7 @@ export function appendTerminalBlock(fragment, group, options = {}) {
     return;
   }
 
-  const meta = logMeta(group.source, group.agentLabel);
+  const meta = logMeta(group.source, group.agentLabel, group.message);
   const block = document.createElement("section");
   block.className = `terminal-entry terminal-entry-${meta.tone}`;
   if (group.source === "shell:status") block.classList.add("terminal-entry-shell-status");
@@ -484,9 +486,10 @@ export function appendTerminalBlock(fragment, group, options = {}) {
     marker.textContent =
       group.simpleModeToolCallCount !== undefined ? `└─ ${group.simpleModeToolCallCount}` : meta.marker;
 
+    const message = formatTerminalMessage(group.source, group.message);
     const body = document.createElement("pre");
     body.className = "terminal-entry-body";
-    body.innerHTML = renderInlineMarkdown(formatTerminalMessage(group.source, group.message), {
+    body.innerHTML = renderInlineMarkdown(message, {
       images: false,
       links: false,
     });
@@ -516,11 +519,11 @@ export function appendTerminalBlock(fragment, group, options = {}) {
     time.textContent = formatTerminalTimestamp(group.createdAt);
   }
 
-  const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
-  body.className = "terminal-entry-body";
   const message = formatTerminalMessage(group.source, group.message, {
     preserveTrailingNewlines: Boolean(group.liveStreaming),
   });
+  const body = document.createElement(usesTerminalBlockMarkdown(group.source) ? "div" : "pre");
+  body.className = "terminal-entry-body";
   if (usesTerminalBlockMarkdown(group.source)) {
     body.classList.add("terminal-markdown-output");
     if (rawAgentMarkdownForFlow(group.flowId) && usesRawAgentMarkdown(group.source)) {
@@ -956,7 +959,7 @@ export function latestAgentToolOutputGroupIndex(groups) {
     }
   }
   for (let index = groups.length - 1; index > latestUserIndex; index -= 1) {
-    if (isAgentToolOutputGroup(groups[index])) return index;
+    if (groups[index].source === "agent:tool") return index;
   }
   return -1;
 }
@@ -1054,12 +1057,77 @@ export function scheduleLogRender(id, options = {}) {
   });
 }
 
+// Adjacent streamed deltas mutate only the last log. Keep a snapshot of the
+// rendered tail so those updates do not regroup history or detach older rows.
+export function streamingTerminalSnapshot(logs, groups, flow) {
+  const log = logs.at(-1);
+  const group = groups.at(-1);
+  if (!log || !group?.liveStreaming || group.children ||
+      !["agent:message", "agent:reasoning", "agent:thinking"].includes(log.source) ||
+      group.source !== log.source || group.logIds?.at(-1) !== log.id ||
+      !group.message.endsWith(log.message)) return null;
+  return {
+    logs, length: logs.length, log, flow, group,
+    message: log.message,
+    prefix: group.message.slice(0, group.message.length - log.message.length),
+    raw: rawAgentMarkdownForFlow(flow.id),
+    simple: agentOutputSimpleMode(flow.id),
+    visibleCount: terminalVisibleTurnCount(flow.id),
+    submittingFlowId: state.messageSubmittingFlowId,
+  };
+}
+
+export function streamingTerminalGroup(snapshot, logs, flow) {
+  if (!snapshot || snapshot.logs !== logs || snapshot.length !== logs.length ||
+      snapshot.log !== logs.at(-1) || snapshot.flow !== flow ||
+      snapshot.raw !== rawAgentMarkdownForFlow(flow.id) ||
+      snapshot.simple !== agentOutputSimpleMode(flow.id) ||
+      snapshot.visibleCount !== terminalVisibleTurnCount(flow.id) ||
+      snapshot.submittingFlowId !== state.messageSubmittingFlowId ||
+      snapshot.log.message.length <= snapshot.message.length ||
+      !snapshot.log.message.startsWith(snapshot.message)) return null;
+  return {
+    ...snapshot.group,
+    message: snapshot.prefix + snapshot.log.message,
+    lastAt: snapshot.log.lastCreatedAt || snapshot.log.createdAt,
+  };
+}
+
+function updateStreamingTerminal(terminal, logs, flow, options) {
+  if (options.force || !agentWorkingForFlow(flow) || state.optimisticPromptByFlowId.has(flow?.id) ||
+      terminalTraceInteractionActive(terminal)) return false;
+  const snapshot = terminal._streamingSnapshot;
+  const group = streamingTerminalGroup(snapshot, logs, flow);
+  if (!group) return false;
+  const key = terminalGroupRenderKey(group);
+  const cached = terminal._flowLogNodeCache?.get(key);
+  if (!cached || cached.node.parentNode !== terminal) return false;
+  const atLatest = options.scrollToLatest || terminalAtLatest(terminal);
+  const scrollTop = terminal.scrollTop;
+  const scrollHeight = options.preserveScrollTop ? terminal.scrollHeight : 0;
+  const fragment = document.createDocumentFragment();
+  appendTerminalBlock(fragment, group);
+  const node = fragment.lastElementChild;
+  cached.node.replaceWith(node);
+  applyTerminalMessageClamps(node);
+  terminal._flowLogNodeCache.set(key, { node, signature: terminalGroupNodeSignature(group) });
+  snapshot.group = group;
+  snapshot.message = snapshot.log.message;
+  // A subsequent structural update must pass through the full renderer.
+  terminal._flowLogSignature = `streaming:${group.id}:${group.message.length}`;
+  if (atLatest) scrollTerminalToLatestNow(terminal);
+  else if (options.preserveScrollTop) terminal.scrollTop = scrollTop + terminal.scrollHeight - scrollHeight;
+  return true;
+}
+
 export function renderLogs(id, options = {}) {
   const terminal = terminalForFlowLogs(id);
   if (!terminal || terminal.closest(".terminal-split-pane")?.hidden) return;
-  renderShellOutputPane(id);
   const flow = state.flows.find((item) => item.id === id) || null;
   const persistedLogs = state.logs.get(id) || [];
+  if (updateStreamingTerminal(terminal, persistedLogs, flow, options)) return;
+  terminal._streamingSnapshot = null;
+  renderShellOutputPane(id);
   const optimisticPrompt = state.optimisticPromptByFlowId.get(id);
   const logs = optimisticPrompt
     ? [...persistedLogs, { id: Number.MAX_SAFE_INTEGER, flowId: id, source: "user", ...optimisticPrompt }]
@@ -1120,6 +1188,7 @@ export function renderLogs(id, options = {}) {
   terminal._flowLogSignature = signature;
   terminal._flowLogRenderedKeys = nextKeys;
   terminal._flowLogNodeCache = nextNodeCache;
+  if (!optimisticPrompt && agentWorking) terminal._streamingSnapshot = streamingTerminalSnapshot(persistedLogs, groups, flow);
   terminal._flowLogPending = "";
   terminal._flowLogPendingOptions = null;
   if (atLatest) scrollTerminalToLatestNow(terminal);

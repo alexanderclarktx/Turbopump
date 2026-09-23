@@ -37,7 +37,7 @@ import {
 } from "./tickets.js";
 import { escapeAttribute, toast } from "./ui.js";
 
-const defaultCodexModel = "gpt-6-astra";
+const defaultCodexModel = "gpt-6-sol";
 const defaultClaudeModel = "claude-fable-5";
 const defaultCodexReasoningEffort = "medium";
 let pendingSessionRequest = null;
@@ -170,13 +170,13 @@ export function setFlows(flows, options = {}) {
     if (!nextIds.has(flow.id)) clearFlowClientState(flow.id);
   }
   state.flows = nextFlows;
-  normalizeLinearIssueNotifications();
   const selected = state.flows.find((flow) => flow.id === state.selectedFlowId);
   const selectedId = flowSelectionId(selected);
   if (selectedId && state.selectedLinearIssueId !== selectedId) {
     state.selectedLinearIssueId = selectedId;
     localStorage.setItem("flow.selectedLinearIssueId", selectedId);
   }
+  normalizeLinearIssueNotifications();
   syncShellOutputClearState(state.flows);
   syncLinearTicketsWithFlows();
   scheduleQueuedPromptFlush();
@@ -521,9 +521,11 @@ export async function selectFlow(id) {
   localStorage.setItem("flow.selectedLinearIssueId", state.selectedLinearIssueId);
   resumeTerminalFollow();
   updateTicketSelectionCards(previousIssueId, state.selectedLinearIssueId);
-  renderFlowPane({ light: true });
-  if (previousIssueId !== state.selectedLinearIssueId) animateTicketSwitch();
-  scheduleSelectedFlowPaneRender(state.selectedLinearIssueId, id);
+  syncTicketInputState(state.selectedLinearIssueId);
+  animateTicketSwitch(() => {
+    renderFlowPane({ light: true });
+    scheduleSelectedFlowPaneRender(state.selectedLinearIssueId, id);
+  }, previousIssueId !== state.selectedLinearIssueId);
 }
 
 export async function openTicketInFlowPane(ticket) {
@@ -541,9 +543,11 @@ export async function openTicketInFlowPane(ticket) {
   }
   resumeTerminalFollow();
   updateTicketSelectionCards(previousIssueId, ticket.identifier);
-  renderFlowPane({ light: true });
-  if (previousIssueId !== ticket.identifier) animateTicketSwitch();
-  scheduleSelectedFlowPaneRender(ticket.identifier, flow?.id || "");
+  syncTicketInputState(ticket.identifier);
+  animateTicketSwitch(() => {
+    renderFlowPane({ light: true });
+    scheduleSelectedFlowPaneRender(ticket.identifier, flow?.id || "");
+  }, previousIssueId !== ticket.identifier && !ticket.pendingSession);
 }
 
 export async function startTicketAgentSession(ticket) {
@@ -558,6 +562,7 @@ export async function startTicketAgentSession(ticket) {
 }
 
 export function renderFlowPane(options = {}) {
+  if (state.ticketSwitchFadingOut) return;
   const selectedFlowById = state.flows.find((item) => item.id === state.selectedFlowId) || null;
   if (!selectedFlowById && state.selectedFlowId) {
     state.selectedFlowId = "";

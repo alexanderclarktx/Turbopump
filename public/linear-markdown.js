@@ -3,6 +3,8 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
   const inlineOptions = { ...options, images, links };
   const text = String(value || fallback);
   if (!text) return "";
+  const json = renderJsonObject(text, { copyCode });
+  if (json) return json;
 
   const lines = text.split("\n");
   const blocks = [];
@@ -17,6 +19,13 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
       continue;
     }
 
+    const jsonBlock = renderJsonBlock(lines, index, { copyCode });
+    if (jsonBlock) {
+      blocks.push(jsonBlock.html);
+      index = jsonBlock.index;
+      continue;
+    }
+
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
@@ -28,7 +37,9 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
     if (/^>\s?/.test(line)) {
       const quote = [];
       while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quote.push(`&gt; ${renderInlineMarkdown(lines[index].replace(/^>\s?/, ""), inlineOptions)}`);
+        const [, markers, contents] = lines[index].match(/^(>+)\s?(.*)$/);
+        const rendered = `${"&gt;".repeat(markers.length)} ${renderInlineMarkdown(contents, inlineOptions)}`;
+        quote.push(markers.length > 1 ? `<span class="markdown-nested-quote">${rendered}</span>` : rendered);
         index += 1;
       }
       blocks.push(`<blockquote>${quote.join("<br>")}</blockquote>`);
@@ -70,6 +81,7 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
       const current = lines[index];
       if (
         !current.trim() ||
+        (paragraph.length > 0 && renderJsonBlock(lines, index, { copyCode })) ||
         matchCodeFenceStart(current) ||
         /^(#{1,6})\s+(.+)$/.test(current) ||
         /^>\s?/.test(current) ||
@@ -85,6 +97,38 @@ export function renderLinearMarkdown(value, fallback = "", options = {}) {
   }
 
   return blocks.join("");
+}
+
+function renderJsonBlock(lines, startIndex, options) {
+  if (!/^[{\[]/.test(lines[startIndex].trimStart())) return null;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = startIndex; index < lines.length; index += 1) {
+    const line = lines[index];
+    for (let column = 0; column < line.length; column += 1) {
+      const character = line[column];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{" || character === "[") depth += 1;
+      else if (character === "}" || character === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          if (line.slice(column + 1).trim()) return null;
+          const html = renderJsonObject(lines.slice(startIndex, index + 1).join("\n"), options);
+          return html ? { html, index: index + 1 } : null;
+        }
+      }
+    }
+    // JSON strings cannot contain literal line breaks.
+    if (quoted) return null;
+  }
+  return null;
 }
 
 function matchCodeFenceStart(line) {
@@ -111,13 +155,153 @@ function renderCodeFence(lines, startIndex, fence = matchCodeFenceStart(lines[st
   const prismLanguage = prismLanguageName(fence?.language || "");
   const language = prismLanguage ? ` data-language="${escapeAttribute(prismLanguage)}"` : "";
   const className = prismLanguage ? ` class="language-${escapeAttribute(prismLanguage)}"` : "";
-  const copyButton = copyCode
-    ? '<button class="markdown-code-copy" type="button" data-code-copy="true" aria-label="Copy code" title="Copy code"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="6.25" y="2.25" width="7.25" height="7.25" rx="1.4"/><rect x="2.5" y="6" width="7.25" height="7.25" rx="1.4"/></svg></button>'
-    : "";
+  const source = codeLines.join("\n");
+  const json = !fence?.language || prismLanguage === "json"
+    ? renderJsonObject(source, { copyCode }) : "";
   return {
-    html: `<pre class="markdown-code-block${prismLanguage ? ` language-${escapeAttribute(prismLanguage)}` : ""}"${language}>${copyButton}<code${className}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+    html: json || `<pre class="markdown-code-block${prismLanguage ? ` language-${escapeAttribute(prismLanguage)}` : ""}"${language}>${renderCodeCopyButton(copyCode)}<code${className}>${escapeHtml(source)}</code></pre>`,
     index,
   };
+}
+
+function renderCodeCopyButton(enabled) {
+  return enabled
+    ? '<button class="markdown-code-copy" type="button" data-code-copy="true" aria-label="Copy code" title="Copy code"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="6.25" y="2.25" width="7.25" height="7.25" rx="1.4"/><rect x="2.5" y="6" width="7.25" height="7.25" rx="1.4"/></svg></button>'
+    : "";
+}
+
+function jsonContainerFields(text) {
+  // Slice the validated source so large numbers, duplicate keys, and escapes stay intact.
+  const fields = [];
+  let depth = 0;
+  let start = 1;
+  for (const match of text.matchAll(/"(?:\\[\s\S]|[^"\\])*"|[{}\[\],]/g)) {
+    const token = match[0];
+    if (token === "{" || token === "[") depth += 1;
+    else if (token === "}" || token === "]") depth -= 1;
+    if ((token === "," && depth === 1) || depth === 0) {
+      const field = text.slice(start, match.index).trim();
+      if (field) fields.push(field);
+      start = match.index + 1;
+    }
+  }
+  return fields;
+}
+
+function renderJsonBracket(bracket) {
+  const kind = bracket === "[" || bracket === "]" ? "array" : "object";
+  return `<span class="markdown-json-bracket-${kind}">${bracket}</span>`;
+}
+
+function renderJsonString(token, kind) {
+  return `<span class="markdown-json-${kind}">${escapeHtml(token.slice(1, -1))}</span>`;
+}
+
+function renderJsonKey(token) {
+  return renderJsonString(token, "key");
+}
+
+function renderJsonScalar(value) {
+  const text = String(value);
+  const contents = text.startsWith('"') && text.endsWith('"')
+    ? escapeHtml(text.slice(1, -1))
+    : escapeHtml(text);
+  return `<span class="markdown-json-value-token">${contents}</span>`;
+}
+
+function compactJsonObjectSeparators(value) {
+  const text = String(value);
+  let compacted = "";
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      compacted += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      compacted += character;
+      continue;
+    }
+    if (character === "}" && text[index + 1] === ",") {
+      let next = index + 2;
+      while (/\s/.test(text[next] || "")) next += 1;
+      if (text[next] === "{") {
+        compacted += "}, {";
+        index = next;
+        continue;
+      }
+    }
+    compacted += character;
+  }
+  return compacted;
+}
+
+function dedentJsonContents(value) {
+  const lines = String(value).replace(/^\s*\n/, "").replace(/\n\s*$/, "").split("\n");
+  const indentation = Math.min(...lines.filter((line) => line.trim()).map((line) => line.match(/^\s*/)[0].length));
+  return Number.isFinite(indentation) ? lines.map((line) => line.slice(indentation)).join("\n") : "";
+}
+
+function renderJsonContents(value) {
+  const text = compactJsonObjectSeparators(value);
+  let html = "";
+  let index = 0;
+  for (const match of text.matchAll(/"(?:\\[\s\S]|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/g)) {
+    const token = match[0];
+    const offset = match.index;
+    html += escapeHtml(text.slice(index, offset));
+    if (token.startsWith('"')) {
+      const isKey = /^\s*:/.test(text.slice(offset + token.length));
+      html += isKey ? renderJsonKey(token) : renderJsonString(token, "value-token");
+    } else {
+      html += `<span class="markdown-json-value-token">${escapeHtml(token)}</span>`;
+    }
+    index = offset + token.length;
+  }
+  return html + escapeHtml(text.slice(index));
+}
+
+export function renderJsonObject(value, { copyCode = true } = {}) {
+  const source = String(value ?? "");
+  const text = source.trim();
+  const array = text.startsWith("[");
+  if (array ? !text.endsWith("]") : !text.startsWith("{") || !text.endsWith("}")) return "";
+  try {
+    JSON.parse(text);
+  } catch {
+    return "";
+  }
+
+  const fields = jsonContainerFields(text);
+  const rows = fields.map((field, index) => {
+    const match = array ? null : field.match(/^("(?:\\[\s\S]|[^"\\])*")\s*:\s*([\s\S]*)$/);
+    const prefix = array ? "" : `${renderJsonKey(match[1])}: `;
+    const contents = array ? field : match[2];
+    const comma = index < fields.length - 1 ? "," : "";
+    if (contents.startsWith("{") || contents.startsWith("[")) {
+      const items = jsonContainerFields(contents);
+      const contentsArray = contents.startsWith("[");
+      const keys = contents.startsWith("{")
+        ? items.map((field) => field.match(/^"((?:\\[\s\S]|[^"\\])*)"/)[1])
+        : [];
+      const openingBracket = renderJsonBracket(contentsArray ? "[" : "{");
+      const preview = contentsArray
+        ? `${items.length || ""}${renderJsonBracket("]")}${comma}`
+        : `${keys.length ? ` ${keys.map((key) => `<span class="markdown-json-key">${escapeHtml(key)}</span>`).join(", ")} ` : ""}${renderJsonBracket("}")}${comma}`;
+      const brackets = `${openingBracket}<span class="markdown-json-collapsed-preview">${preview}</span>`;
+      const expandedValue = dedentJsonContents(contents.slice(1, -1));
+      const expandedClose = `<div class="markdown-json-expanded-close">${renderJsonBracket(contentsArray ? "]" : "}")}${comma}</div>`;
+      return `<details class="markdown-json-field"><summary>${prefix}${brackets}</summary><div class="markdown-json-content"><pre class="markdown-json-value"><code>${renderJsonContents(expandedValue)}</code></pre>${expandedClose}</div></details>`;
+    }
+    return `<div class="markdown-json-scalar">${prefix}${renderJsonScalar(contents)}${comma}</div>`;
+  }).join("");
+  return `<div class="markdown-code-block markdown-json-block" data-code-source="${escapeAttribute(source)}">${renderCodeCopyButton(copyCode)}<div>${renderJsonBracket(array ? "[" : "{")}</div><div class="markdown-json-fields${array ? " markdown-json-array-fields" : ""}">${rows}</div><div>${renderJsonBracket(array ? "]" : "}")}</div></div>`;
 }
 
 function prismLanguageName(language) {
@@ -173,9 +357,10 @@ function renderTable(lines, startIndex, options) {
     })
     .join("");
   const columnHtml = alignments.map((_, cellIndex) => `<col data-markdown-column-index="${cellIndex}">`).join("");
+  const tableHead = header.some((cell) => cell.trim()) ? `<thead><tr>${headerHtml}</tr></thead>` : "";
 
   return {
-    html: `<table class="markdown-resizable-table"><colgroup>${columnHtml}</colgroup><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
+    html: `<table class="markdown-resizable-table"><colgroup>${columnHtml}</colgroup>${tableHead}<tbody>${bodyHtml}</tbody></table>`,
     index,
   };
 }
@@ -372,7 +557,7 @@ export function renderInlineMarkdown(value, options = {}) {
     } else if (links && options.fileSource && !imageMarker && isLocalFileLink(url) && !isLocalImageLink(url)) {
       const source = options.fileSource(url);
       const name = url.split("/").pop() || url;
-      html += `<a class="file-link-card" href="${escapeAttribute(source)}" data-file-preview data-file-preview-path="${escapeAttribute(url)}" title="${escapeAttribute(label || name)}"><svg class="file-link-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M9 1.75H4a1.25 1.25 0 0 0-1.25 1.25v10A1.25 1.25 0 0 0 4 14.25h8A1.25 1.25 0 0 0 13.25 13V6L9 1.75Z"/><path d="M8.75 1.75V6h4.5"/></svg><span class="file-link-label">${escapeHtml(label || name)}</span></a>`;
+      html += `<a class="file-link-card" href="${escapeAttribute(source)}" data-file-preview data-file-preview-path="${escapeAttribute(url)}"><svg class="file-link-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M9 1.75H4a1.25 1.25 0 0 0-1.25 1.25v10A1.25 1.25 0 0 0 4 14.25h8A1.25 1.25 0 0 0 13.25 13V6L9 1.75Z"/><path d="M8.75 1.75V6h4.5"/></svg><span class="file-link-label">${escapeHtml(label || name)}</span></a>`;
     } else if (!isSupportedLink(url)) {
       html += renderTextWithSentenceBreaks(markdown);
     } else if (images && (imageMarker || (options.imageSource && isLocalImageLink(url)))) {
@@ -424,6 +609,9 @@ export function linearImageSource(url) {
     const parsed = new URL(url);
     if (parsed.hostname === "uploads.linear.app") {
       return `/api/linear/attachment?url=${encodeURIComponent(url)}`;
+    }
+    if (parsed.protocol === "https:" && parsed.hostname === "github.com" && /^\/user-attachments\/assets\/[0-9a-f-]+$/i.test(parsed.pathname)) {
+      return `/api/github/attachment?url=${encodeURIComponent(url)}`;
     }
   } catch {
     return url;

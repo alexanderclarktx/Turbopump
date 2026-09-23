@@ -576,8 +576,35 @@ body.theme-dark .theme-icon-sun {
   visibility: visible;
   will-change: opacity;
   transition:
+    row-gap 180ms ease,
     opacity 140ms ease,
     visibility 0ms linear 0ms;
+}
+
+.settings-content.environment-search-active {
+  row-gap: 0;
+}
+
+.settings-search-section {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-width: 0;
+  transition: grid-template-rows 180ms ease, opacity 180ms ease, visibility 180ms;
+}
+
+.settings-search-section:not(:has(.environment-settings)) > .settings-section {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-search-section:has(> .settings-section[hidden]) {
+  display: none;
+}
+
+.environment-search-active > .settings-search-section:not(:has(.environment-settings)) {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
 }
 
 body.settings-collapsed .sidebar {
@@ -1557,13 +1584,14 @@ body.ticket-drawer-resizing main {
   height: 28px;
   overflow: hidden;
   border-radius: 6px;
-  background: var(--panel);
+  background: transparent;
   color: var(--muted);
   transition: width 220ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .ticket-search-pane:has([aria-expanded="true"]) {
   width: 100%;
+  background: var(--panel);
 }
 
 #searchLinearTickets {
@@ -1788,6 +1816,21 @@ body.ticket-drawer-resizing main {
   height: 5px;
   border-radius: 999px;
   background: #22c55e;
+}
+
+.ticket-status-group[data-collapsed="true"].agent-turn-notified .ticket-status-count::before {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #ffff00;
+}
+
+.ticket-status-group[data-collapsed="true"].agent-turn-notified.shell-command-active .ticket-status-count::before {
+  right: 6px;
 }
 
 .ticket-card {
@@ -2280,6 +2323,11 @@ body.theme-dark .ticket-flow-start:focus-visible {
   transition: --top-pane-size var(--motion-pane);
 }
 
+.flow-content.ticket-switch-fade-out {
+  animation: ticket-switch-fade-out 50ms ease-in both;
+  pointer-events: none;
+}
+
 .flow-content.ticket-switch-fade-in {
   animation: ticket-switch-fade-in 100ms ease-out both;
 }
@@ -2380,6 +2428,19 @@ body.theme-dark .ticket-flow-start:focus-visible {
 
 .terminal-panel.agent-split-open .agent-column {
   grid-template-rows: minmax(0, var(--agent-split-size, 50%)) minmax(0, 1fr);
+}
+
+.terminal-panel.agent-split-open .agent-column > .terminal {
+  /* Keep the scroll viewport shrinkable to zero while retaining content spacing. */
+  padding-block: 0;
+}
+
+.terminal-panel.agent-split-open .agent-column > .terminal > :first-child {
+  margin-top: 14px;
+}
+
+.terminal-panel.agent-split-open .agent-column > .terminal > :last-child {
+  margin-bottom: 14px;
 }
 
 .terminal-panel.shell-split-open .shell-column {
@@ -3116,6 +3177,16 @@ body.theme-dark .terminal-entry-body blockquote {
   color: #75d99a;
 }
 
+.linear-markdown .markdown-nested-quote,
+.terminal-entry-body .markdown-nested-quote {
+  color: #c2410c;
+}
+
+body.theme-dark .linear-markdown .markdown-nested-quote,
+body.theme-dark .terminal-entry-body .markdown-nested-quote {
+  color: #fb923c;
+}
+
 .linear-markdown blockquote + br,
 .terminal-entry-body blockquote + br {
   display: none;
@@ -3279,6 +3350,113 @@ body.markdown-table-resizing {
 
 .terminal-entry-user .markdown-code-block {
   margin-top: 12px;
+}
+
+.linear-markdown .markdown-json-block,
+.terminal-entry-body .markdown-json-block {
+  margin-top: 20px;
+  margin-bottom: 0;
+  padding-left: 0;
+  padding-bottom: 0;
+  border: 0;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.markdown-json-fields {
+  padding-left: 2ch;
+  overflow-x: auto;
+}
+
+.markdown-json-array-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1ch;
+}
+
+.markdown-json-field::details-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 180ms ease-in-out,
+    opacity 180ms ease-in-out,
+    content-visibility 180ms allow-discrete;
+}
+
+.markdown-json-field[open]::details-content {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.markdown-json-content {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.markdown-json-field[open] > summary .markdown-json-collapsed-preview {
+  display: none;
+}
+
+.markdown-json-field > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  width: fit-content;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.markdown-json-field > summary::-webkit-details-marker {
+  display: none;
+}
+
+.markdown-json-bracket-array {
+  color: var(--terminal-ink);
+}
+
+.markdown-json-bracket-object {
+  color: var(--terminal-ink);
+}
+
+.markdown-json-key {
+  color: #d97706;
+}
+
+.markdown-json-value-token {
+  color: #6d28d9;
+}
+
+body.theme-dark .markdown-json-key {
+  color: #fbbf24;
+}
+
+body.theme-dark .markdown-json-value-token {
+  color: #c084fc;
+}
+
+.markdown-json-field > summary:hover > .markdown-json-key {
+  color: var(--accent);
+}
+
+.markdown-json-field > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.markdown-json-scalar {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown-json-field .markdown-json-value {
+  margin: 4px 0 6px;
+  padding-left: 2ch;
+}
+
+.markdown-json-expanded-close {
+  margin-left: 0;
 }
 
 .linear-markdown .markdown-code-copy,
@@ -3738,14 +3916,14 @@ body.markdown-table-resizing {
   padding-bottom: 10px;
 }
 
-.terminal-trace-group summary {
+.terminal-trace-group > summary {
   cursor: pointer;
   list-style: none;
   user-select: none;
   -webkit-user-select: none;
 }
 
-.terminal-trace-group summary::-webkit-details-marker {
+.terminal-trace-group > summary::-webkit-details-marker {
   display: none;
 }
 
@@ -4267,6 +4445,16 @@ body.theme-dark .terminal-entry-body .ansi-fg-bright-white {
 
   to {
     opacity: 1;
+  }
+}
+
+@keyframes ticket-switch-fade-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
   }
 }
 
@@ -5299,45 +5487,27 @@ body.theme-dark .diff-modal-summary .diff-deletions {
 }
 
 .file-link-card {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  box-sizing: border-box;
-  margin: 2px 4px 2px 0;
-  padding: 3px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--ink) !important;
-  text-decoration: none !important;
-  vertical-align: middle;
-  white-space: nowrap;
-  line-height: 18px;
+  font-weight: 700;
 }
 
-.file-link-card:hover, .file-link-card:focus-visible {
-  border-color: currentColor;
+.file-link-card:hover {
+  text-decoration: underline;
+}
+
+.file-link-card:focus-visible {
   outline-offset: 2px;
 }
 
 .file-link-icon {
-  flex: 0 0 13px;
-  width: 13px;
-  height: 13px;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.25em;
+  vertical-align: -0.125em;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.25;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.file-link-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 11px;
-  font-weight: 600;
 }
 
 .file-preview-modal {
@@ -5349,9 +5519,13 @@ body.theme-dark .diff-modal-summary .diff-deletions {
   border-radius: 8px;
   color: var(--ink);
   background: var(--panel);
+  opacity: 0;
+  transition: opacity 200ms ease;
 }
 .file-preview-modal[open] { display: flex; flex-direction: column; }
-.file-preview-modal::backdrop { background: rgb(15 23 42 / 62%); }
+.file-preview-modal.is-visible { opacity: 1; }
+.file-preview-modal::backdrop { background: rgb(15 23 42 / 62%); opacity: 0; transition: opacity 200ms ease; }
+.file-preview-modal.is-visible::backdrop { opacity: 1; }
 .file-preview-header { display: flex; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .file-preview-header > div { flex: 1; min-width: 0; }
 .file-preview-header h2 { margin: 0 0 4px; font-size: 14px; }
@@ -5389,6 +5563,9 @@ body.theme-dark .diff-modal-summary .diff-deletions {
 
 .image-preview-modal {
   display: grid;
+  outline: none;
+  user-select: none;
+  -webkit-user-select: none;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(1120px, 100%);
   max-height: min(860px, calc(100vh - 48px));
@@ -5636,11 +5813,16 @@ body.theme-dark .diff-modal-summary .diff-deletions {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .markdown-json-field::details-content {
+    transition: none;
+  }
+
   .ticket-drawer-actions,
   .ticket-search-pane,
   #ticketSearchInput,
   .env-search,
   #envSearchInput,
+  .settings-search-section,
   main,
   .sidebar,
   .ticket-drawer,
@@ -5663,6 +5845,7 @@ body.theme-dark .diff-modal-summary .diff-deletions {
     animation-delay: 0ms;
   }
 
+  .flow-content.ticket-switch-fade-out,
   .flow-content.ticket-switch-fade-in {
     animation-duration: 1ms;
     animation-delay: 0ms;
