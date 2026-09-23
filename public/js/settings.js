@@ -241,6 +241,58 @@ export function renderEnvEditor(contents) {
     els.envEditor.append(createEnvRow(group.key, group.values));
   }
   ensureTrailingEnvRow();
+  filterEnvironment();
+}
+
+export function filterEnvironment() {
+  const query = els.envSearchInput.value.trim().toLowerCase();
+  let matches = 0;
+  for (const row of els.envEditor.querySelectorAll(".env-row")) {
+    const key = row.querySelector(".env-key").value.toLowerCase();
+    const hidden = Boolean(query) && !key.includes(query);
+    row.hidden = hidden;
+    row.inert = hidden;
+    if (!hidden && key.trim()) matches += 1;
+  }
+  els.envSearchEmpty.hidden = !query || matches > 0;
+}
+
+export function toggleEnvironmentSearch() {
+  if (!els.envSearchInput.disabled) return closeEnvironmentSearch();
+  els.envSearchInput.disabled = false;
+  els.searchEnvironment.setAttribute("aria-expanded", "true");
+  setEnvironmentSearchMode(true);
+  els.envSearchInput.focus({ preventScroll: true });
+  els.settingsContent.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function setEnvironmentSearchMode(active) {
+  els.settingsContent.classList.toggle("environment-search-active", active);
+  for (const section of els.settingsContent.querySelectorAll(".settings-search-section:not(:has(.environment-settings))")) {
+    section.inert = active;
+  }
+}
+
+function closeEnvironmentSearch(restoreFocus = true) {
+  els.envSearchInput.disabled = true;
+  els.searchEnvironment.setAttribute("aria-expanded", "false");
+  setEnvironmentSearchMode(false);
+  els.envSearchInput.value = "";
+  filterEnvironment();
+  if (restoreFocus) els.searchEnvironment.focus();
+}
+
+export function handleEnvironmentSearchOutsideClick(event) {
+  if (els.envSearchInput.disabled || els.envSearchInput.value.trim()) return;
+  if (els.envSearchInput.parentElement.contains(event.target)) return;
+  closeEnvironmentSearch(false);
+}
+
+export function handleEnvironmentSearchKeydown(event) {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleEnvironmentSearch();
 }
 
 export function envEditorContents() {

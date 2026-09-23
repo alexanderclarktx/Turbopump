@@ -7,6 +7,7 @@ export function renderLinearMarkdown(
     compactBlankLines?: boolean;
     copyCode?: boolean;
     imageSource?: (url: string) => string;
+    fileSource?: (url: string) => string;
   },
 ): string;
 
@@ -16,9 +17,12 @@ export function renderInlineMarkdown(
     images?: boolean;
     links?: boolean;
     imageSource?: (url: string) => string;
+    fileSource?: (url: string) => string;
   },
 ): string;
 
 export function renderTextWithSentenceBreaks(value: unknown): string;
 
 export function linearImageSource(url: unknown): string;
+
+export function renderJsonObject(value: unknown, options?: { copyCode?: boolean }): string;

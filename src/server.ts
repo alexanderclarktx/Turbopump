@@ -1,4 +1,8 @@
 import { Database } from "bun:sqlite";
+import { createCodexTurnReconciler, type InactiveCodexStatus } from "./codex-turn-state";
+import { serveFilePreview } from "./file-preview";
+import { fetchGithubAttachment } from "./github-attachment";
+import { createWorktreeCleanup } from "./worktree-cleanup";
 import {
   appendFileSync,
   copyFileSync,
@@ -150,8 +154,9 @@ const defaultCodexAppServerCommand = "codex app-server --listen stdio://";
 const serviceTiers = new Set<ServiceTier>(["fast", "flex"]);
 const reasoningEfforts = new Set<ReasoningEffort>(["low", "medium", "high", "xhigh"]);
 const agentSandboxes = new Set<AgentSandbox>(["read-only", "workspace-write", "danger-full-access"]);
-const agentModels = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
-const codexDefaultModel = "gpt-5.6-sol";
+const agentModels = new Set(["gpt-6-sol", "gpt-6-astra", "gpt-6-luna"]);
+const codexDefaultModel = "gpt-6-sol";
+const codexDefaultReasoningEffort = "medium";
 const agentProviderKinds = new Set<AgentProviderKind>(["codex", "claude"]);
 const defaultAgentProviderSettingKey = "defaultAgentProvider";
 const claudeAgentModels = new Set(["claude-fable-5", "claude-opus-5"]);
@@ -299,6 +304,13 @@ const agentRuntimeRecoveries = new Map<string, Promise<RuntimeProcess | null>>()
 const shellProcesses = new Map<string, RuntimeProcess>();
 const linearIssueCache = new Map<string, LinearIssue>();
 const deletedFlowIds = new Set<string>();
+const deletingFlowIds = new Set<string>();
+const worktreeDeletions = new Map<string, Promise<{ deletedFlowId: string }>>();
+const worktreeCleanup = createWorktreeCleanup({
+  directory: join(dataDir, "deleted-worktrees"),
+  onError: (path, error) => console.warn(`worktree cleanup will retry ${path}: ${String(error)}`),
+});
+let worktreePruning: Promise<void> | undefined;
 let selectedGithubCiFlowId = "";
 let githubCiPolling = false;
 let warmedRepoPulling = false;
@@ -316,11 +328,14 @@ type RuntimeProcess = {
   stdoutBuffer?: string;
   threadId?: string;
   activeTurnId?: string;
+  turnStateVersion?: number;
+  turnLifecycleVersion?: number;
   activeTurnTraceAfterLogId?: number;
   activeTurnTree?: string;
   compacting?: boolean;
   compactingStartedAt?: number;
   compactionPromptLogId?: number;
+  codexProjectId?: string;
   queuedAgentMessages?: Array<{ message: string; queuedLogId: number }>;
   lastSeenAt?: number;
   stopping?: boolean;
@@ -944,28 +959,50 @@ function worktreePathForName(name: string) {
   return target;
 }
 
-function deleteWorktree(name: string) {
+async function deleteWorktree(name: string) {
+  const pending = worktreeDeletions.get(name);
+  if (pending) return pending;
+  const deletion = deleteWorktreeOnce(name);
+  worktreeDeletions.set(name, deletion);
+  try {
+    return await deletion;
+  } finally {
+    worktreeDeletions.delete(name);
+  }
+}
+
+async function deleteWorktreeOnce(name: string) {
   const target = worktreePathForName(name);
   if (!existsSync(target)) throw new Error("Worktree not found.");
   const stats = statSync(target);
   if (!stats.isDirectory()) throw new Error("Worktree is not a directory.");
   const flow = worktreeFlowMap().get(name) ?? null;
   const companion = flow ? companionFlowFor(flow.id) : null;
-  if (companion) stopFlowRuntimesForDelete(companion.id);
-  if (flow) stopFlowRuntimesForDelete(flow.id);
-  if (existsSync(repoCheckoutDir) && isGitWorktree(target)) {
-    try {
-      runGit(["worktree", "remove", "--force", target], repoCheckoutDir);
-    } catch {
-      rmSync(target, { recursive: true, force: true });
-    }
-    runGit(["worktree", "prune"], repoCheckoutDir);
-  } else {
-    rmSync(target, { recursive: true, force: true });
+  const flowIds = [companion?.id, flow?.id].filter((id): id is string => Boolean(id));
+  for (const id of flowIds) deletingFlowIds.add(id);
+  try {
+    for (const id of flowIds) stopFlowRuntimesForDelete(id);
+    await worktreeCleanup.stage(target);
+    db.transaction(() => {
+      for (const id of flowIds) deleteFlowTraceData(id);
+    })();
+    return { deletedFlowId: flow?.id ?? "" };
+  } finally {
+    for (const id of flowIds) deletingFlowIds.delete(id);
+    void worktreeCleanup.run();
+    void pruneDeletedWorktrees();
   }
-  if (companion) deleteFlowTraceData(companion.id);
-  if (flow) deleteFlowTraceData(flow.id);
-  return { deletedFlowId: flow?.id ?? "" };
+}
+
+function pruneDeletedWorktrees(): Promise<void> {
+  if (worktreePruning) return worktreePruning;
+  if (!existsSync(repoCheckoutDir)) return Promise.resolve();
+  // Prune only missing worktree registrations; never remove a path that may have
+  // been reused while background cleanup was running.
+  worktreePruning = runGitAsync(["worktree", "prune", "--expire", "now"], repoCheckoutDir, process.env, 5000)
+    .then(() => {}, (error) => console.warn(`worktree metadata cleanup will retry: ${String(error)}`))
+    .finally(() => { worktreePruning = undefined; });
+  return worktreePruning;
 }
 
 function isGitWorktree(path: string) {
@@ -976,25 +1013,26 @@ function isGitWorktree(path: string) {
   }
 }
 
+void worktreeCleanup.run();
+setInterval(() => { void worktreeCleanup.run(); void pruneDeletedWorktrees(); }, 30000);
+
 function stopFlowRuntimesForDelete(flowId: string) {
   const shellRuntime = shellProcesses.get(flowId);
   if (shellRuntime) {
-    shellRuntime.stopping = true;
-    shellProcesses.delete(flowId);
-    signalRuntimeProcess(shellRuntime, "SIGTERM");
+    cleanupFailedRuntimeProcess(shellRuntime, "flow deleted");
   }
 
   const agentRuntime = agentProcesses.get(flowId);
   if (agentRuntime) {
-    agentProcesses.delete(flowId);
-    providerForRuntime(agentRuntime).stop(agentRuntime, "flow deleted");
+    cleanupFailedRuntimeProcess(agentRuntime, "flow deleted");
   }
 
   if (serveProcess?.flowId === flowId) {
     const previous = serveProcess;
-    serveProcess = null;
-    signalRuntimeProcess(previous, "SIGTERM");
+    cleanupFailedRuntimeProcess(previous, "flow deleted");
   }
+  setActiveTurnId(flowId);
+  updateFlow(flowId, { agentStatus: "stopped" });
 }
 
 function deleteFlowTraceData(flowId: string) {
@@ -1252,7 +1290,7 @@ async function pollSelectedGithubCiStatus() {
   }
 }
 
-setInterval(() => void pollSelectedGithubCiStatus(), 5000);
+setInterval(() => void pollSelectedGithubCiStatus(), 2000);
 
 function updateFlow(id: string, fields: Partial<Flow>) {
   const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
@@ -1278,11 +1316,13 @@ function flowHasWorktree(flow: Flow) {
 }
 
 function assertFlowWorktree(flow: Flow) {
+  if (deletingFlowIds.has(flow.id) || deletedFlowIds.has(flow.id)) throw new Error("Session is being deleted.");
   if (flowHasWorktree(flow)) return flow;
   throw new Error(`Worktree does not exist: ${flow.checkoutPath}`);
 }
 
 function ensureFlowWorktree(flow: Flow) {
+  if (deletingFlowIds.has(flow.id) || deletedFlowIds.has(flow.id)) throw new Error("Session is being deleted.");
   if (flowHasWorktree(flow)) return flow;
 
   if (flow.checkoutPath && !existsSync(flow.checkoutPath)) {
@@ -1313,6 +1353,7 @@ function flowStatusAgeMs(flow: Flow, nowMs = Date.now()) {
 }
 
 async function recoverAgentRuntime(flow: Flow) {
+  if (deletingFlowIds.has(flow.id) || deletedFlowIds.has(flow.id)) return null;
   const existing = agentProcesses.get(flow.id);
   if (existing) return existing;
   if (flow.agentStatus !== "running" && flow.agentStatus !== "interrupting") return null;
@@ -1334,9 +1375,11 @@ async function recoverAgentRuntime(flow: Flow) {
         return runtime;
       }
       const runtime = await startCodexAppServer(flow);
-      runtime.activeTurnId = runtime.activeTurnId || activeTurnId;
       runtime.lastSeenAt = Date.now();
-      updateFlow(flow.id, { agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running" });
+      await reconcileCodexTurn(runtime, Date.now(), true);
+      if (runtime.activeTurnId) {
+        updateFlow(flow.id, { agentStatus: flow.agentStatus === "interrupting" ? "interrupting" : "running" });
+      }
       return runtime;
     } catch {
       updateFlow(flow.id, { agentStatus: "failed" });
@@ -1353,8 +1396,12 @@ async function recoverAgentRuntime(flow: Flow) {
 }
 
 async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
+  if (deletingFlowIds.has(flow.id) || deletedFlowIds.has(flow.id)) return getFlow(flow.id) ?? flow;
   const shellRuntime = shellProcesses.get(flow.id);
   if (shellRuntime) {
+    const runtime = agentProcesses.get(flow.id);
+    if (runtime) await reconcileCodexTurn(runtime, nowMs);
+    flow = getFlow(flow.id) ?? flow;
     const shellStatus = shellRuntime.stopping ? "interrupting" : "running";
     if (flow.agentStatus !== shellStatus) {
       updateFlow(flow.id, { agentStatus: shellStatus });
@@ -1392,26 +1439,46 @@ async function reconcileAgentHeartbeat(flow: Flow, nowMs = Date.now()) {
 
   if (!runtime.activeTurnId) {
     if (statusAge < agentRuntimeStartGraceMs) return flow;
+    setActiveTurnId(flow.id);
     insertLog(flow.id, "agent:status", "agent runtime idle while status was running");
     updateFlow(flow.id, { agentStatus: "idle" });
+    void startNextQueuedAgentMessage(runtime);
     return getFlow(flow.id) ?? flow;
   }
 
-  const lastSeenAt = runtime.lastSeenAt ?? nowMs;
-  const staleMs = runtime.provider === "claude" ? claudeRuntimeStaleMs : agentRuntimeStaleMs;
-  if (nowMs - lastSeenAt <= staleMs) return flow;
+  await reconcileCodexTurn(runtime, nowMs);
+  return getFlow(flow.id) ?? flow;
+}
 
+const reconcileCodexTurn = createCodexTurnReconciler<RuntimeProcess>({
+  intervalMs: agentHeartbeatSweepIntervalMs,
+  isCurrent: (runtime) => agentProcesses.get(runtime.flowId) === runtime,
+  readThread: async (runtime, threadId) => await sendCodexRequest(
+    runtime, "thread/read", { threadId, includeTurns: false }, agentHeartbeatSweepIntervalMs,
+  ) as { thread?: { id?: string; status?: { type?: string } } },
+  onInactive: finishInactiveCodexTurn,
+});
+
+function finishInactiveCodexTurn(runtime: RuntimeProcess, status: InactiveCodexStatus) {
+  const afterLogId = runtime.activeTurnTraceAfterLogId;
+  const tree = runtime.activeTurnTree;
+  runtime.turnStateVersion = (runtime.turnStateVersion ?? 0) + 1;
+  runtime.turnLifecycleVersion = (runtime.turnLifecycleVersion ?? 0) + 1;
   runtime.activeTurnId = undefined;
   runtime.activeTurnTraceAfterLogId = undefined;
   runtime.activeTurnTree = undefined;
-  insertLog(flow.id, "agent:error", `agent heartbeat timed out after ${Math.round(staleMs / 1000)}s\n`);
-  updateFlow(flow.id, { agentStatus: "failed" });
-  return getFlow(flow.id) ?? flow;
+  setActiveTurnId(runtime.flowId);
+  const failed = status === "systemError";
+  const endLogId = insertLog(runtime.flowId, "agent:status",
+    `turn ${failed ? "failed" : "stopped"}: reconciled Codex thread status ${status}`);
+  createCompletedTurnTraceGroupAfterLog(runtime.flowId, afterLogId, endLogId + 1, fileChangesSince(runtime.flowId, tree));
+  updateFlow(runtime.flowId, { ...worktreeBranchUpdate(runtime.flowId), agentStatus: failed ? "failed" : "idle" });
+  if (!failed) void startNextQueuedAgentMessage(runtime);
 }
 
 async function sweepAgentHeartbeats() {
   const nowMs = Date.now();
-  for (const flow of listFlows()) await reconcileAgentHeartbeat(flow, nowMs);
+  await Promise.allSettled(listFlows().map((flow) => reconcileAgentHeartbeat(flow, nowMs)));
 }
 
 setInterval(() => void sweepAgentHeartbeats(), agentHeartbeatSweepIntervalMs);
@@ -1562,6 +1629,27 @@ function runGit(args: string[], cwd = rootDir, env = process.env) {
     throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
   }
   return stdout;
+}
+
+async function runGitAsync(args: string[], cwd = rootDir, env = process.env, timeoutMs = 0) {
+  const result = Bun.spawn({
+    cmd: ["git", ...args],
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    env,
+    ...(timeoutMs > 0 ? { timeout: timeoutMs, killSignal: "SIGKILL" as const } : {}),
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(result.stdout).text(),
+    new Response(result.stderr).text(),
+    result.exited,
+  ]);
+  if (exitCode !== 0) {
+    const output = stderr.trim() || stdout.trim();
+    throw new Error(output ? `${gitCommandLabel(args)} failed: ${output}` : `${gitCommandLabel(args)} failed`);
+  }
+  return stdout.trim();
 }
 
 function worktreeTree(flow: Flow) {
@@ -1834,7 +1922,7 @@ function ensureRepoCheckout(repoUrl: string) {
   runGit(["worktree", "prune"], repoCheckoutDir);
 }
 
-function pullWarmedRepo() {
+async function pullWarmedRepo() {
   if (warmedRepoPulling) return;
   if (!serverHasActiveWork()) return;
   if (!existsSync(repoCheckoutDir)) return;
@@ -1842,10 +1930,10 @@ function pullWarmedRepo() {
   if (!repoUrl) return;
   warmedRepoPulling = true;
   try {
-    const configuredUrl = runGit(["remote", "get-url", "origin"], repoCheckoutDir);
+    const configuredUrl = await runGitAsync(["remote", "get-url", "origin"], repoCheckoutDir, process.env, 5000);
     if (configuredUrl !== repoUrl) return;
-    runGit(["worktree", "prune"], repoCheckoutDir);
-    runGit(["pull", "--ff-only"], repoCheckoutDir);
+    await runGitAsync(["worktree", "prune"], repoCheckoutDir, process.env, 5000);
+    await runGitAsync(["pull", "--ff-only"], repoCheckoutDir, process.env, 120000);
   } catch (error) {
     console.warn(`warmed repo pull failed: ${String(error)}`);
   } finally {
@@ -1974,12 +2062,20 @@ function sendCodexNotification(runtime: RuntimeProcess, method: string, params?:
   });
 }
 
-function sendCodexRequest(runtime: RuntimeProcess, method: string, params?: unknown) {
+function sendCodexRequest(runtime: RuntimeProcess, method: string, params?: unknown, timeoutMs = 0) {
   if (!runtime.pending) runtime.pending = new Map();
   runtime.requestId = (runtime.requestId ?? 0) + 1;
   const id = runtime.requestId;
   const promise = new Promise<unknown>((resolve, reject) => {
-    runtime.pending?.set(id, { method, resolve, reject });
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      runtime.pending?.delete(id);
+      reject(new Error(`${method} timed out`));
+    }, timeoutMs) : undefined;
+    runtime.pending?.set(id, {
+      method,
+      resolve: (value) => { clearTimeout(timer); resolve(value); },
+      reject: (error) => { clearTimeout(timer); reject(error); },
+    });
   });
   writeCodexMessage(runtime, {
     method,
@@ -2020,7 +2116,7 @@ function agentTemplateContext(flow: Flow) {
     title: flow.title,
     prUrl: flow.prUrl,
     checkoutPath: flow.checkoutPath,
-    flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/meta`,
+    flowMetaApiUrl: `${apiBaseUrl}/api/flows/${flow.id}/agent-meta`,
   };
 }
 
@@ -2047,7 +2143,7 @@ function codexThreadOverrides(flow: Flow) {
     model: flow.agentModel || codexDefaultModel,
     ...(reasoningEfforts.has(flow.agentReasoningEffort as ReasoningEffort)
       ? { reasoningEffort: flow.agentReasoningEffort as ReasoningEffort }
-      : {}),
+      : { reasoningEffort: codexDefaultReasoningEffort }),
     ...(serviceTiers.has(flow.agentServiceTier as ServiceTier)
       ? { serviceTier: flow.agentServiceTier as ServiceTier }
       : {}),
@@ -2103,7 +2199,7 @@ function codexTokenUsageMetadata(params: Record<string, unknown>): Partial<Flow>
   };
 }
 
-function codexThreadParams(flow: Flow, sessionStartSource: ThreadStartSource = "startup") {
+function codexThreadParams(flow: Flow, sessionStartSource: ThreadStartSource = "startup", projectId?: string) {
   return {
     ...codexThreadOverrides(flow),
     cwd: flow.checkoutPath,
@@ -2112,10 +2208,27 @@ function codexThreadParams(flow: Flow, sessionStartSource: ThreadStartSource = "
     sandbox: codexSandboxMode(flow),
     developerInstructions: flowDeveloperInstructions(flow),
     serviceName: "turbopump",
+    ...(projectId ? { projectId } : {}),
     experimentalRawEvents: false,
     persistExtendedHistory: true,
     sessionStartSource,
   };
+}
+
+async function ensureCodexProject(runtime: RuntimeProcess) {
+  const name = getSetting("repoName") || repoBasename(getSetting("repoUrl"));
+  if (!name || name === "repo") return;
+  try {
+    const response = (await sendCodexRequest(runtime, "project/create", {
+      name,
+      roots: [{ path: resolve(repoCheckoutDir) }],
+      metadata: { service: "turbopump" },
+      idempotencyKey: `turbopump:${getSetting("repoUrl") || resolve(repoCheckoutDir)}`,
+    })) as { project?: { id?: string } };
+    runtime.codexProjectId = response.project?.id;
+  } catch (error) {
+    insertLog(runtime.flowId, "agent:status", `could not label Codex project ${name}: ${String(error)}`);
+  }
 }
 
 function codexThreadResumeParams(flow: Flow, threadId: string) {
@@ -2349,7 +2462,19 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
   const threadId = typeof params.threadId === "string" ? params.threadId : "";
   if (threadId && runtime.threadId && threadId !== runtime.threadId) return;
 
+  if (method === "thread/status/changed") {
+    if (!threadId || threadId !== runtime.threadId) return;
+    runtime.turnStateVersion = (runtime.turnStateVersion ?? 0) + 1;
+    const status = params.status as { type?: string } | undefined;
+    if (status?.type === "idle" || status?.type === "notLoaded" || status?.type === "systemError") {
+      void reconcileCodexTurn(runtime, Date.now(), true);
+    }
+    return;
+  }
+
   if (method === "turn/started") {
+    runtime.turnStateVersion = (runtime.turnStateVersion ?? 0) + 1;
+    runtime.turnLifecycleVersion = (runtime.turnLifecycleVersion ?? 0) + 1;
     const turn = params.turn as { id?: string } | undefined;
     runtime.activeTurnId = turn?.id;
     setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
@@ -2361,6 +2486,9 @@ function handleCodexNotification(runtime: RuntimeProcess, message: Record<string
 
   if (method === "turn/completed") {
     const turn = params.turn as { id?: string; status?: string; error?: { message?: string } | null } | undefined;
+    if (turn?.id && turn.id !== runtime.activeTurnId) return;
+    runtime.turnStateVersion = (runtime.turnStateVersion ?? 0) + 1;
+    runtime.turnLifecycleVersion = (runtime.turnLifecycleVersion ?? 0) + 1;
     if (!turn?.id || turn.id === runtime.activeTurnId) runtime.activeTurnId = undefined;
     if (!runtime.activeTurnId) setActiveTurnId(runtime.flowId);
     const activeTurnTraceAfterLogId = runtime.activeTurnTraceAfterLogId;
@@ -2586,6 +2714,7 @@ async function startCodexAppServer(flow: Flow) {
       },
     });
     sendCodexNotification(runtime, "initialized");
+    await ensureCodexProject(runtime);
 
     const savedThreadId = getSetting(codexThreadSettingKey(activeFlow.id));
     let threadResponse: unknown;
@@ -2599,7 +2728,7 @@ async function startCodexAppServer(flow: Flow) {
       }
     }
     if (!threadResponse) {
-      threadResponse = await sendCodexRequest(runtime, "thread/start", codexThreadParams(activeFlow));
+      threadResponse = await sendCodexRequest(runtime, "thread/start", codexThreadParams(activeFlow, "startup", runtime.codexProjectId));
     }
 
     const threadPayload = threadResponse as {
@@ -2611,6 +2740,13 @@ async function startCodexAppServer(flow: Flow) {
     const thread = threadPayload.thread;
     if (!thread?.id) throw new Error("Codex app-server did not return a thread id.");
     runtime.threadId = thread.id;
+    if (runtime.codexProjectId && savedThreadId) {
+      try {
+        await sendCodexRequest(runtime, "thread/metadata/update", { threadId: thread.id, projectId: runtime.codexProjectId });
+      } catch (error) {
+        insertLog(activeFlow.id, "agent:status", `could not label resumed Codex thread: ${String(error)}`);
+      }
+    }
     if (activeFlow.agentStatus === "running" || activeFlow.agentStatus === "interrupting") {
       runtime.activeTurnId = persistedActiveTurnId(activeFlow.id) || runtime.activeTurnId;
     }
@@ -2627,6 +2763,7 @@ async function startCodexAppServer(flow: Flow) {
 
 async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: string, userLogId = 0) {
   if (!runtime.threadId) throw new Error("Codex thread is not ready.");
+  runtime.turnStateVersion = (runtime.turnStateVersion ?? 0) + 1;
   runtime.lastSeenAt = Date.now();
   if (runtime.activeTurnId) {
     try {
@@ -2646,13 +2783,17 @@ async function sendAgentTurn(runtime: RuntimeProcess, flow: Flow, message: strin
     }
   }
   const activeTurnTree = worktreeTree(flow);
+  runtime.activeTurnTraceAfterLogId = userLogId || undefined;
+  runtime.activeTurnTree = activeTurnTree;
+  const startVersion = runtime.turnLifecycleVersion;
   const response = (await sendCodexRequest(runtime, "turn/start", codexTurnParams(runtime, flow, message))) as {
     turn?: { id?: string };
   };
-  runtime.activeTurnId = response.turn?.id;
-  runtime.activeTurnTraceAfterLogId = userLogId || undefined;
-  runtime.activeTurnTree = activeTurnTree;
-  setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
+  // Notifications may have already started and completed this turn before its reply arrives.
+  if (runtime.turnLifecycleVersion === startVersion) {
+    runtime.activeTurnId = response.turn?.id;
+    setActiveTurnId(runtime.flowId, runtime.activeTurnId ?? "");
+  }
 }
 
 function parseSlashCommand(message: string) {
@@ -2738,13 +2879,24 @@ function statusResetDate(window: unknown) {
     : "unknown";
 }
 
+function statusCredits(credits: unknown) {
+  if (!credits || typeof credits !== "object") return "unknown";
+  const data = credits as { unlimited?: boolean; balance?: string | null; hasCredits?: boolean };
+  if (data.unlimited) return "unlimited";
+  if (typeof data.balance === "string" && data.balance.trim() && Number.isFinite(Number(data.balance))) {
+    return String(Math.trunc(Number(data.balance)));
+  }
+  return statusValue(data.balance, data.hasCredits === false ? "0" : "unknown");
+}
+
 function codexRateLimits(value: unknown) {
   const data = value as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null };
-  const rateLimits = (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown };
+  const rateLimits = (data.rateLimitsByLimitId?.codex || data.rateLimits || {}) as { primary?: unknown; secondary?: unknown; credits?: unknown };
   const windows = [rateLimits.primary, rateLimits.secondary];
   const duration = (window: unknown) => (window as { windowDurationMins?: unknown } | null)?.windowDurationMins;
   if (!windows.some((window) => typeof duration(window) === "number")) return rateLimits;
   return {
+    ...rateLimits,
     primary: windows.find((window) => duration(window) === 300),
     secondary: windows.find((window) => duration(window) === 10_080),
   };
@@ -2752,7 +2904,7 @@ function codexRateLimits(value: unknown) {
 
 function markdownTable(rows: Array<[string, unknown]>) {
   const cell = (value: unknown) => String(value ?? "unknown").replaceAll("|", "\\|").replaceAll("\n", "<br>");
-  return ["| Field | Value |", "| --- | --- |", ...rows.map((row) => `| ${cell(row[0])} | ${cell(row[1])} |`)].join("\n");
+  return ["| | |", "| --- | --- |", ...rows.map((row) => `| ${cell(row[0])} | ${cell(row[1])} |`)].join("\n");
 }
 
 async function flowStatusMessage(runtime: RuntimeProcess) {
@@ -2765,7 +2917,7 @@ async function flowStatusMessage(runtime: RuntimeProcess) {
 
   return markdownTable([
     ["Account", accountStatusValue(account)],
-    ["5h left", statusPercentLeft(rateLimits.primary)],
+    ["Credits", statusCredits(rateLimits.credits)],
     [`until ${statusResetDate(rateLimits.secondary)}`, statusPercentLeft(rateLimits.secondary)],
   ]);
 }
@@ -2782,7 +2934,7 @@ async function startFreshCodexThread(runtime: RuntimeProcess, flow: Flow) {
   runtime.compactingStartedAt = undefined;
   runtime.compactionPromptLogId = undefined;
   runtime.queuedAgentMessages = [];
-  const threadResponse = (await sendCodexRequest(runtime, "thread/start", codexThreadParams(flow, "clear"))) as {
+  const threadResponse = (await sendCodexRequest(runtime, "thread/start", codexThreadParams(flow, "clear", runtime.codexProjectId))) as {
     thread?: { id?: string };
     model?: string;
     reasoningEffort?: string | null;
@@ -3846,6 +3998,8 @@ async function interruptAgent(flowId: string) {
     await providerForRuntime(runtime).interrupt(runtime, flow ?? (getFlow(flowId) as Flow));
   } catch (error) {
     if (!isNoActiveTurnInterruptError(error)) throw error;
+    if (agentProcesses.get(flowId) !== runtime || runtime.activeTurnId !== turnId) return;
+    runtime.turnStateVersion = (runtime.turnStateVersion ?? 0) + 1;
     runtime.activeTurnId = undefined;
     runtime.activeTurnTraceAfterLogId = undefined;
     runtime.activeTurnTree = undefined;
@@ -4138,7 +4292,9 @@ function linearWorkflowKey(name = "") {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-async function createBlankInEngLinearIssue() {
+async function createInEngLinearIssue(title: string) {
+  const issueTitle = title.trim();
+  if (!issueTitle) throw new Error("Linear title is required.");
   const data = await linearGraphql<{
     viewer: {
       id: string;
@@ -4214,7 +4370,7 @@ async function createBlankInEngLinearIssue() {
         teamId: state.team.id,
         stateId: state.id,
         assigneeId: data.viewer.id,
-        title: "turbopump placeholder",
+        title: issueTitle,
       },
     },
   );
@@ -4475,7 +4631,7 @@ async function handleApi(request: Request, url: URL) {
   if (parts[0] === "api" && parts[1] === "checkouts" && parts[2] && request.method === "DELETE") {
     let result: { deletedFlowId: string };
     try {
-      result = deleteWorktree(decodeURIComponent(parts[2]));
+      result = await deleteWorktree(decodeURIComponent(parts[2]));
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
     }
@@ -4568,8 +4724,13 @@ async function handleApi(request: Request, url: URL) {
     return await fetchLinearAttachment(url.searchParams.get("url") ?? "");
   }
 
+  if (url.pathname === "/api/github/attachment" && request.method === "GET") {
+    return await fetchGithubAttachment(url.searchParams.get("url") ?? "", { apiKey: getSetting("githubApiKey") });
+  }
+
   if (url.pathname === "/api/linear/issues" && request.method === "POST") {
-    const result = await createBlankInEngLinearIssue();
+    const body = await readJson<{ title?: string }>(request);
+    const result = await createInEngLinearIssue(body.title || "");
     setSetting("linearViewerName", result.viewer.name);
     return json({ ok: true, ...result });
   }
@@ -4616,6 +4777,7 @@ async function handleApi(request: Request, url: URL) {
 
   if (url.pathname === "/api/flows" && request.method === "POST") {
     const body = await readJson<{
+      sessionId?: string;
       issue?: string;
       title?: string;
       url?: string;
@@ -4626,21 +4788,27 @@ async function handleApi(request: Request, url: URL) {
     const existing = parsed.identifier ? getFlowByIssue(parsed.identifier) : null;
     if (existing) return json({ ok: true, alreadyExists: true, flow: clientFlow(existing) });
 
-    const id = crypto.randomUUID();
+    if (body.sessionId !== undefined && (parsed.identifier || typeof body.sessionId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.sessionId))) {
+      return json({ error: "Invalid session ID" }, { status: 400 });
+    }
+    const id = body.sessionId || crypto.randomUUID();
+    const existingSession = getFlow(id);
+    if (existingSession) return json({ ok: true, alreadyExists: true, flow: clientFlow(existingSession) });
     const linearIssue = cachedLinearIssue(parsed.identifier);
     const { target, branch, baseSha } = createWorktree(id, parsed.identifier || `session-${id.slice(0, 8)}`);
     const createdAt = now();
     db.query(`
       insert into flows (
-        id, linearIssueId, linearIssueUrl, title, linearStatus, agentServiceTier, agentProvider,
-        checkoutPath, branchName, baseSha, agentStatus, serving, createdAt, updatedAt
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, linearIssueId, linearIssueUrl, title, linearStatus, agentReasoningEffort, agentServiceTier,
+        agentProvider, checkoutPath, branchName, baseSha, agentStatus, serving, createdAt, updatedAt
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       parsed.identifier,
       body.url?.trim() || linearIssue?.url || parsed.url,
       body.title?.trim() || linearIssue?.title || parsed.identifier || "new session",
       body.linearStatus?.trim() || body.state?.name?.trim() || linearIssue?.state?.name || "",
+      defaultAgentProviderKind() === "codex" ? codexDefaultReasoningEffort : "low",
       "",
       defaultAgentProviderKind(),
       target,
@@ -4697,6 +4865,10 @@ async function handleApi(request: Request, url: URL) {
       }
     }
 
+    if (parts[3] === "files" && parts[4] === "preview" && request.method === "GET") {
+      return await serveFilePreview(assertFlowWorktree(flow).checkoutPath, url.searchParams.get("path") ?? "", url.searchParams.get("download") === "1");
+    }
+
     if (parts[3] === "context-images" && parts[4] === "preview" && request.method === "GET") {
       return await serveFlowContextImage(assertFlowWorktree(flow), url.searchParams.get("path") ?? "");
     }
@@ -4705,7 +4877,8 @@ async function handleApi(request: Request, url: URL) {
       return json(await getDiff(flow, { patch: url.searchParams.get("patch") === "1" }));
     }
 
-    if (parts[3] === "meta" && request.method === "POST") {
+    const agentMetadataRequest = parts[3] === "agent-meta";
+    if ((parts[3] === "meta" || agentMetadataRequest) && request.method === "POST") {
       const metadataFlow = flow.parentFlowId ? getFlow(flow.parentFlowId) ?? flow : flow;
       let fields: Partial<Flow>;
       try {
@@ -4722,7 +4895,9 @@ async function handleApi(request: Request, url: URL) {
         if (selectedGithubCiFlowId === metadataFlow.id) void pollSelectedGithubCiStatus();
       }
       if (fields.linearIssueId !== undefined) insertLog(metadataFlow.id, "flow", `Linear issue set to ${fields.linearIssueId}\n`);
-      return json({ ok: true, flow: clientFlow(getFlow(metadataFlow.id) ?? metadataFlow) });
+      return agentMetadataRequest
+        ? new Response(null, { status: 204 })
+        : json({ ok: true, flow: clientFlow(getFlow(metadataFlow.id) ?? metadataFlow) });
     }
 
     if (parts[3] === "split" && request.method === "POST") {

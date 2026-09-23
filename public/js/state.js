@@ -159,6 +159,7 @@ export const state = {
   logPrefetchedFlowCount: 0,
   selectionRenderFrame: 0,
   ticketSwitchFadeTimer: 0,
+  ticketSwitchFadingOut: false,
   pendingShellOutputRenders: new Set(),
   shellOutputRenderFrame: 0,
   shellOutputClearAfterLogId: new Map(),
@@ -224,6 +225,7 @@ export const state = {
   deletingOutputLogIds: new Set(),
   creatingLinearTicket: false,
   creatingSession: false,
+  pendingSessionId: "",
   githubCiSelectedFlowId: "",
 };
 
@@ -255,9 +257,11 @@ export const els = {
   searchLinearTickets: document.querySelector("#searchLinearTickets"),
   ticketSearchPane: document.querySelector("#ticketSearchPane"),
   ticketSearchInput: document.querySelector("#ticketSearchInput"),
-  closeTicketSearch: document.querySelector("#closeTicketSearch"),
   linearState: document.querySelector("#linearState"),
   exportEnvironment: document.querySelector("#exportEnvironment"),
+  searchEnvironment: document.querySelector("#searchEnvironment"),
+  envSearchInput: document.querySelector("#envSearchInput"),
+  envSearchEmpty: document.querySelector("#envSearchEmpty"),
   envEditor: document.querySelector("#envEditor"),
   checkoutList: document.querySelector("#checkoutList"),
   ticketState: document.querySelector("#ticketState"),

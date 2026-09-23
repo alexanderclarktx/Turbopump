@@ -9,10 +9,13 @@ export function agentSenderLabel(agentModel, agentProvider) {
   return model.replace(/^claude-/, "");
 }
 
-export function logMeta(source, agentLabel = "") {
+export function logMeta(source, agentLabel = "", message = "") {
   const userLabel = state.linearViewer?.name || state.linearViewerName || "user";
   agentLabel ||= agentSenderLabel();
   if (source === "user:queued") return { label: userLabel, marker: "o", tone: "user" };
+  if (source === "agent:status" && /^turn (?:stopped|failed): reconciled Codex thread status\b/.test(message.trim())) {
+    return { label: "status", marker: "!", tone: "error" };
+  }
   const map = {
     user: { label: userLabel, marker: ">", tone: "user" },
     "agent:message": { label: agentLabel, marker: ">", tone: "assistant" },
@@ -123,6 +126,17 @@ export function isAgentTurnEndedLog(log) {
     log.source === "agent:status" &&
     /^turn (completed|failed|canceled|cancelled|interrupted|stopped)\b/.test(String(log.message || "").trim())
   );
+}
+
+export function isCompactionTurnEndedLog(log, logs) {
+  if (!isAgentTurnEndedLog(log)) return false;
+  const turnLogId = Number(log.id) || Number.POSITIVE_INFINITY;
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const candidate = logs[index];
+    if (Number(candidate.id) >= turnLogId || !isSubmittedUserLogSource(candidate.source)) continue;
+    return /^\/compact(?:\s|$)/i.test(String(candidate.message || "").trim());
+  }
+  return false;
 }
 
 export function agentModelFromStatus(log) {
@@ -494,16 +508,26 @@ export function terminalGroups(logs, flow) {
   for (const log of normalizedLogs) {
     if (log.source === "agent:trace-group") continue;
     const statusModel = agentModelFromStatus(log);
-    if (statusModel) agentLabel = agentSenderLabel(statusModel);
+    if (statusModel) {
+      agentLabel = agentSenderLabel(statusModel);
+      activeAgentMessageGroup = null;
+      forceTerminalGroupBoundary = true;
+    }
     if (log.source === "agent:status" && /^turn started\b/.test(String(log.message || "").trim())) {
       activeAgentTurnStartId = Number(log.id);
+      activeAgentMessageGroup = null;
+      forceTerminalGroupBoundary = true;
     }
     if (isAgentMessageBoundarySource(log.source)) {
       activeAgentMessageGroup = null;
       forceTerminalGroupBoundary = true;
       continue;
     }
-    if (isUserLogSource(log.source) || isAgentTurnEndedLog(log)) activeAgentMessageGroup = null;
+    // A submitted or queued prompt can arrive while the same message is streaming.
+    if (isAgentTurnEndedLog(log)) {
+      activeAgentMessageGroup = null;
+      forceTerminalGroupBoundary = true;
+    }
     const previousGroup = groups[groups.length - 1];
     if (
       log.source === "agent:tool" &&
@@ -564,6 +588,10 @@ export function terminalGroups(logs, flow) {
   const visibleGroups = mergeAdjacentStreamingGroups(flattenSingleChildTraceGroups(groups));
   markPendingTerminalTurnGroups(visibleGroups, flow);
   markLiveTerminalGroup(visibleGroups, flow);
+  if (activeAgentMessageGroup && flowAgentRunning(flow) && state.messageSubmittingFlowId !== flow?.id) {
+    activeAgentMessageGroup.turnPending = true;
+    activeAgentMessageGroup.liveStreaming = true;
+  }
   return visibleGroups;
 }
 

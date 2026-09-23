@@ -62,7 +62,7 @@ export const MARKDOWN_CODE_COPY_SIZE = 24;
 
 export const MARKDOWN_TABLE_MIN_COLUMN_WIDTH = 72;
 
-export const TICKET_DRAWER_MIN_SIZE = 280;
+export const TICKET_DRAWER_MIN_SIZE = 240;
 
 export const TICKET_DRAWER_MAX_SIZE = 320;
 

@@ -4,6 +4,8 @@ Turbopump is a local-first agent workflow app.
 
 It accepts one repo, creates isolated Git worktrees for Linear tickets, runs Codex/Claude inside each worktree, and stores agent traces.
 
+![Turbopump with pinned tickets, a real Codex conversation, and shell test output](artifacts/turbopump-live-session.png)
+
 ## Setup
 
 ```bash

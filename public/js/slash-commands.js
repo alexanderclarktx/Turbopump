@@ -3,10 +3,9 @@ import { promptInput, promptQueuedForSelectedFlow, resizeMessageInput, shellInpu
 import { els, state } from "./state.js";
 
 const AGENT_MODELS = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-5.5",
+  "gpt-6-sol",
+  "gpt-6-astra",
+  "gpt-6-luna",
   "claude-fable-5",
   "claude-opus-5",
 ];
